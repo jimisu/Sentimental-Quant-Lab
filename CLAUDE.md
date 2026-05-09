@@ -4,55 +4,53 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Common Development Commands
 
-- **Setup virtual environment**
-  ```bash
-  python3 -m venv .venv            # create isolated environment
-  source .venv/bin/activate         # macOS / Linux
-  # Windows: .venv\\Scripts\\activate
-  ```
-- **Install dependencies**
-  ```
-  # The repository does not currently ship a requirements.txt, but the script requires the `requests` library.
-  pip install requests
-  ```
-- **Run the script**
-  ```
-  python test.py                     # prints the latest TSMC price (online mode)
-  ```
-
-- **Execute a specific function from an interactive session**
-  ```bash
-  python -c "from test import get_latest_price; print(get_latest_price())"
-  ```
-
-- **Lint / format (if added later)** – no linting configuration is present, but you can use a standard tool such as `ruff` or `black` when they are introduced.
-
-## High‑Level Code Architecture
-
-The repository consists of a single entry‑point script **`test.py`** that implements a small, self‑contained utility for retrieving the latest closing price of the TSMC stock (symbol `2330.TW`). The logical layers are:
-
-1. **Dependency handling** – attempts to import `requests`; if unavailable, the script fails early with a clear error.
-2. **Network fetch layer (`_fetch_online`)** – builds a Yahoo Finance query URL, performs an HTTP GET with retry logic (`MAX_RETRIES` and `RETRY_DELAY`), validates the response, parses JSON, and extracts the most recent close price.
-3. **Public API (`get_latest_price`)** – a thin wrapper that returns a tuple `(price, "online")`. It purposefully propagates any exception so callers can decide how to handle failures (e.g., fallback to a hard‑coded value in “offline” mode).
-4. **CLI entry point** – guarded by `if __name__ == "__main__"`, prints the price to stdout on success or an error message to stderr on failure.
-
-Future contributors can extend this architecture by:
-- Adding an offline fallback implementation (e.g., returning a cached or hard‑coded price) inside `get_latest_price` when `_fetch_online` raises.
-- Splitting the script into a package (e.g., `src/price_fetcher/`) and moving the helper functions there, leaving a lightweight command‑line wrapper in `bin/`.
-- Introducing unit tests under a `tests/` directory that mock the network call (`requests.get`) to verify retry and error handling logic.
-
-## Repository Layout Overview
-
-```
-.
-├─ CLAUDE.md          # (this file) guidance for Claude Code
-├─ README.md          # high‑level description and quick‑start
-├─ .gitignore         # ignores virtual env and caches
-├─ test.py            # main script described above
-└─ venv/              # optional local virtual environment (not version‑controlled)
+### Environment Setup
+```bash
+python3 -m venv venv              # create main virtual environment
+source venv/bin/activate           # macOS / Linux
+pip install -r requirements.txt    # install all dependencies
 ```
 
-No additional source directories (`src/`, `tests/`) exist yet, but the README references them as a conventional layout for future expansion.
+### Run Scripts
+```bash
+python test.py                                          # latest TSMC price via Yahoo Finance
+python finmind_tsmc.py [--token TOKEN] [--output-dir DIR]  # 1-year TSMC data via FinMind API
+python sentiment_engine.py                              # run sentiment analysis example
+python test_openrouter_models.py                        # test OpenRouter free models (needs OPENROUTER_API_KEY)
+```
 
----
-*When adding new features or files, update this CLAUDE.md to reflect any new commands, architectural changes, or important conventions.*
+### Testing & Linting
+```bash
+pytest                   # run all tests (pytest installed as dev dependency)
+pytest tests/test_file.py::test_name  # run a single test
+# No linting config yet; ruff or black can be introduced later
+```
+
+## High-Level Architecture
+
+The repository is a quant lab combining stock price data fetching (TSMC/2330.TW) with sentiment analysis capabilities. The codebase has four main functional areas:
+
+### Stock Price Fetching
+- **`test.py`** — Lightweight Yahoo Finance client for the latest TSMC closing price. Implements retry logic (`MAX_RETRIES=3`) and propagates exceptions for caller-side fallback handling.
+- **`finmind_tsmc.py`** — FinMind API client that fetches one year of TSMC daily price and institutional investor buy/sell data. Outputs to JSON and CSV (pandas optional). Supports `--token` for higher rate limits and `--output-dir` for output path.
+
+### Sentiment Analysis
+- **`sentiment_engine.py`** — Finished sentiment analysis engine using VaderSentiment. Exposes `get_sentiment(text)` returning neg/neu/pos/compound scores.
+
+### Model Testing
+- **`test_openrouter_models.py`** — Scans OpenRouter for free models, scores them by performance/quality/latency, and runs a chat completion test. Requires `OPENROUTER_API_KEY` environment variable.
+
+### Data
+- **`test_data/`** (untracked) — Pre-fetched TSMC price and institutional investor data (JSON/CSV) from FinMind, generated by `finmind_tsmc.py`.
+
+## Repository Layout
+
+Key files and directories (full list discoverable via `ls`):
+- **Config**: `CLAUDE.md`, `README.md`, `.gitignore`, `requirements.txt`, `assistant_sandbox_config.json`
+- **Scripts**: `test.py`, `finmind_tsmc.py`, `sentiment_engine.py`, `test_openrouter_models.py`
+- **Data**: `test_data/` (untracked, pre-fetched TSMC data from FinMind)
+- **Environments**: `venv/` (ignored), `sentiment_venv/` (untracked)
+
+## Notes
+- `src/` and `tests/` directories mentioned in README do not exist yet.
+- FinMind API optionally accepts a token via `--token` for higher rate limits.
