@@ -3,3 +3,5 @@ httpx
 rich
 pytest
 vaderSentiment
+pandas
+yfinance
