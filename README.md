@@ -7,7 +7,8 @@ A quantitative analysis laboratory that combines **stock market data acquisition
 This repository provides tools to:
 - Fetch TSMC's monthly revenue year‑over‑year (YoY) from FinMind.
 - Retrieve quarterly gross margin and operating margin from financial statements.
-- Detect consecutive three‑day volume declines for both TSMC and the Taiwan weighted index (^TWII) using yfinance.
+- Detect consecutive three‑day traded-value declines for both TSMC and the Taiwan weighted index using TWSE data.
+- Display the past 10 trading days of TSMC and Taiwan weighted index traded value in a separate table.
 - Display a colour‑coded dashboard in the terminal using the `rich` library.
 
 ## 📂 Project Structure
@@ -48,7 +49,7 @@ export FINMIND_TOKEN=your_token_here
 ### Data Sources
 - **Monthly Revenue**: `TaiwanStockMonthRevenue` dataset (FinMind) – calculates YoY change.
 - **Quarterly Margins**: `TaiwanStockFinancialStatements` dataset – computes gross margin and operating margin, and quarter‑over‑quarter changes.
-- **Volume Data**: `yfinance` – fetches daily volume for `2330.TW` (TSMC) and `^TWII` (Taiwan Weighted Index).
+- **Traded Value Data**: TWSE `STOCK_DAY` for `2330` and TWSE `FMTQIK` for the Taiwan weighted index – displays the latest 10 trading days in a separate table from oldest to newest.
 
 ### Colour Logic (Dashboard)
 | Indicator | Condition | Colour |
@@ -58,7 +59,7 @@ export FINMIND_TOKEN=your_token_here
 | **Gross Margin** | QoQ decline > 2 pp | Yellow |
 | **Operating Margin** | QoQ decline > 2 pp | Yellow |
 | **Both Margins** | Both QoQ declines > 2 pp | Red |
-| **Market Sentiment** | TSMC and ^TWII each show 3‑day consecutive volume decline | Red banner: “市場情緒指標：個股與大盤交易量連三降” |
+| **Market Sentiment** | TSMC and the Taiwan weighted index each show 3‑day consecutive traded-value decline | Red banner: “市場情緒指標：個股與大盤交易量連三降”; this uses TWSE traded value as the volume proxy and the summary is treated as red alert |
 
 ### Summary Message
 After the table, a sentence is printed:
@@ -74,13 +75,12 @@ requests
 httpx
 rich
 pandas
-yfinance
 ```
 (Pytest and vaderSentiment were removed as they are not used in the current dashboard.)
 
 ## 📝 Notes
 
-- The script automatically handles missing data (e.g., if volume data cannot be retrieved, the market sentiment check is skipped).
+- The script automatically handles missing data (e.g., if traded value data cannot be retrieved, the market sentiment check is skipped).
 - All outputs are printed to the terminal; no files are written by default.
 - The dashboard is intended for quick visual inspection; for deeper analysis, modify the script or import its functions.
 

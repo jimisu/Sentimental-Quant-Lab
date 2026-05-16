@@ -3,7 +3,7 @@
 TSMC 信號儀表板
 抓取台積電 (2330.TW) 最新 12 個月的月營收 YoY 與最近 4 季的毛利率、營業利益率，
 並使用 rich 庫輸出彩色儀表板。
-新增：個股與大盤交易量連三降偵測 (using yfinance)。
+新增：從 TWSE 列出近 10 個交易日成交金額，並偵測個股與大盤交易量連三降。
 """
 
 import datetime as dt
@@ -13,12 +13,12 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
-import yfinance as yf
 from rich import box
 from rich.console import Console
 from rich.table import Table
 
 API_URL = "https://api.finmindtrade.com/api/v4/data"
+TWSE_AFTER_TRADING_URL = "https://www.twse.com.tw/rwd/zh/afterTrading"
 
 # 日期範圍
 TODAY = dt.date.today()
@@ -215,52 +215,149 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
     return result
 
 
-def get_recent_volumes() -> Dict[str, List[float]]:
+def parse_twse_int(value) -> Optional[int]:
     """
-    抓取最近 5 個交易日的成交量（股票 2330.TW 與大盤 ^TWII）使用 yfinance。
-    回傳 dict: {'2330': [V0, V1, V2, V3, V4], 'TWII': [...]},
-    其中 V0 為最新一天的成交量。
+    將 TWSE 回傳的數字字串轉成 int，例如 '1,234,567'。
     """
-    # Define tickers
-    stock_ticker = "2330.TW"
-    index_ticker = "^TWII"
-
-    # Fetch data for the last 7 days to ensure we have 5 trading days
-    end = TODAY
-    start = end - dt.timedelta(days=7)
-    data = {}
-    for ticker, label in [(stock_ticker, "2330"), (index_ticker, "TWII")]:
-        try:
-            df = yf.download(ticker, start=start.isoformat(), end=end.isoformat(), progress=False)
-            if df.empty or "Volume" not in df.columns:
-                data[label] = []
-            else:
-                # Drop NA and ensure we have a Series
-                vol_series = df["Volume"].dropna()
-                # Get last 5 trading days (most recent at the end)
-                if len(vol_series) >= 5:
-                    vol_last5 = vol_series.iloc[-5:]
-                else:
-                    vol_last5 = vol_series
-                # Convert to list and reverse so most recent is first
-                vol_list = vol_last5.tolist()
-                data[label] = list(reversed(vol_list))
-        except Exception as e:
-            print(f"Error fetching {ticker}: {e}", file=sys.stderr)
-            data[label] = []
-    return data
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "")
+    if text in {"", "--", "X", "除權息"}:
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
 
 
-def has_three_consecutive_decline(volumes: List[float]) -> bool:
+def parse_twse_date(value) -> Optional[str]:
     """
-    檢查是否存在連續三天每日成交量均低於前一天。
-    volumes 為 list，最新在前：[V0, V1, V2, ...]
+    將 TWSE 民國日期（例如 115/05/15）轉成 YYYY-MM-DD。
+    """
+    if value is None:
+        return None
+    parts = str(value).strip().split("/")
+    if len(parts) != 3:
+        return None
+    try:
+        year = int(parts[0])
+        if year < 1911:
+            year += 1911
+        month = int(parts[1])
+        day = int(parts[2])
+        return dt.date(year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def get_recent_month_starts(months: int = 3) -> List[dt.date]:
+    """
+    回傳從本月往前推的月份起始日。
+    """
+    month_starts = []
+    year = TODAY.year
+    month = TODAY.month
+    for _ in range(months):
+        month_starts.append(dt.date(year, month, 1))
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    return month_starts
+
+
+def fetch_twse_report(report: str, params: Dict[str, str]) -> List[List[str]]:
+    """
+    從 TWSE afterTrading API 取得報表資料列。
+    """
+    url = f"{TWSE_AFTER_TRADING_URL}/{report}"
+    request_params = {"response": "json", **params}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, params=request_params, headers=headers, timeout=30)
+    if resp.status_code != 200:
+        print(
+            f"Error: TWSE request failed with status {resp.status_code}: {resp.text}",
+            file=sys.stderr,
+        )
+        return []
+
+    payload = resp.json()
+    if payload.get("stat") not in {"OK", "很抱歉，沒有符合條件的資料!"}:
+        print(f"Error: TWSE returned status: {payload.get('stat')}", file=sys.stderr)
+        return []
+    return payload.get("data", [])
+
+
+def get_twse_stock_trading_values(stock_no: str, months: int = 3) -> pd.DataFrame:
+    """
+    從 TWSE STOCK_DAY 抓取個股各日成交金額。
+    """
+    records = []
+    for month_start in get_recent_month_starts(months):
+        rows = fetch_twse_report(
+            "STOCK_DAY",
+            {"date": month_start.strftime("%Y%m%d"), "stockNo": stock_no},
+        )
+        for row in rows:
+            if len(row) < 3:
+                continue
+            date = parse_twse_date(row[0])
+            trading_value = parse_twse_int(row[2])
+            if date and trading_value is not None:
+                records.append({"日期": date, "台積電成交金額": trading_value})
+
+    if not records:
+        return pd.DataFrame(columns=["日期", "台積電成交金額"])
+    return pd.DataFrame(records).drop_duplicates(subset=["日期"]).sort_values("日期")
+
+
+def get_twse_market_trading_values(months: int = 3) -> pd.DataFrame:
+    """
+    從 TWSE FMTQIK 抓取大盤各日成交金額。
+    """
+    records = []
+    for month_start in get_recent_month_starts(months):
+        rows = fetch_twse_report("FMTQIK", {"date": month_start.strftime("%Y%m%d")})
+        for row in rows:
+            if len(row) < 3:
+                continue
+            date = parse_twse_date(row[0])
+            trading_value = parse_twse_int(row[2])
+            if date and trading_value is not None:
+                records.append({"日期": date, "大盤成交金額": trading_value})
+
+    if not records:
+        return pd.DataFrame(columns=["日期", "大盤成交金額"])
+    return pd.DataFrame(records).drop_duplicates(subset=["日期"]).sort_values("日期")
+
+
+def get_recent_trading_value_history(days: int = 10) -> pd.DataFrame:
+    """
+    從 TWSE 抓取最近 N 個交易日的成交金額。
+    回傳 DataFrame，日期由舊到新，欄位包含日期、台積電成交金額、大盤成交金額。
+    """
+    stock_df = get_twse_stock_trading_values("2330")
+    market_df = get_twse_market_trading_values()
+
+    if stock_df.empty and market_df.empty:
+        return pd.DataFrame(columns=["日期", "台積電成交金額", "大盤成交金額"])
+
+    value_df = pd.merge(stock_df, market_df, on="日期", how="outer")
+    value_df = value_df.sort_values("日期").tail(days).reset_index(drop=True)
+
+    return value_df
+
+
+def has_three_consecutive_decline(values: List[float]) -> bool:
+    """
+    檢查是否存在連續三天每日成交金額均低於前一天。
+    values 為 list，最新在前：[V0, V1, V2, ...]
     條件：V0 < V1 < V2 （即三天遞減）
     """
-    if len(volumes) < 3:
+    if len(values) < 3:
         return False
-    for i in range(len(volumes) - 2):
-        if volumes[i] < volumes[i + 1] < volumes[i + 2]:
+    for i in range(len(values) - 2):
+        if values[i] < values[i + 1] < values[i + 2]:
             return True
     return False
 
@@ -360,9 +457,13 @@ def apply_color_logic(df: pd.DataFrame) -> pd.DataFrame:
     return styled
 
 
-def print_dashboard(styled_df: pd.DataFrame, market_sentiment_red: bool):
+def print_dashboard(
+    styled_df: pd.DataFrame,
+    value_df: pd.DataFrame,
+    market_sentiment_red: bool,
+):
     """
-    使用 rich 輸出彩色表格，並在需要時顯示市場情緒指標紅色警示。
+    使用 rich 輸出彩色表格、成交金額表格，並在需要時顯示市場情緒指標紅色警示。
     """
     console = Console()
     table = Table(show_header=True, header_style="bold magenta", box=box.SIMPLE_HEAVY)
@@ -371,23 +472,26 @@ def print_dashboard(styled_df: pd.DataFrame, market_sentiment_red: bool):
     table.add_column("毛利率 (%)", justify="right")
     table.add_column("營業利益率 (%)", justify="right")
 
+    def format_number(value) -> str:
+        return "-" if pd.isna(value) else f"{value:.2f}"
+
     for _, row in styled_df.iterrows():
         # 營收 YoY 顏色
-        rev_text = f"{row['營收 YoY (%)']:.2f}"
+        rev_text = format_number(row["營收 YoY (%)"])
         if row["營收 YoY 色彩"] == "red":
             rev_text = f"[red]{rev_text}[/red]"
         elif row["營收 YoY 色彩"] == "yellow":
             rev_text = f"[yellow]{rev_text}[/yellow]"
 
         # 毛利率 顏色
-        gross_text = f"{row['毛利率 (%)']:.2f}"
+        gross_text = format_number(row["毛利率 (%)"])
         if row["毛利率 色彩"] == "red":
             gross_text = f"[red]{gross_text}[/red]"
         elif row["毛利率 色彩"] == "yellow":
             gross_text = f"[yellow]{gross_text}[/yellow]"
 
         # 營業利益率 顏色
-        op_text = f"{row['營業利益率 (%)']:.2f}"
+        op_text = format_number(row["營業利益率 (%)"])
         if row["營業利益率 色彩"] == "red":
             op_text = f"[red]{op_text}[/red]"
         elif row["營業利益率 色彩"] == "yellow":
@@ -402,12 +506,32 @@ def print_dashboard(styled_df: pd.DataFrame, market_sentiment_red: bool):
 
     console.print(table)
 
+    value_table = Table(
+        title="近 10 個交易日成交金額",
+        show_header=True,
+        header_style="bold cyan",
+        box=box.SIMPLE_HEAVY,
+    )
+    value_table.add_column("日期", style="dim", width=12)
+    value_table.add_column("台積電成交金額", justify="right")
+    value_table.add_column("大盤成交金額", justify="right")
+
+    for _, row in value_df.iterrows():
+        tsmc_value = row.get("台積電成交金額")
+        market_value = row.get("大盤成交金額")
+        tsmc_text = "-" if pd.isna(tsmc_value) else f"{int(tsmc_value):,}"
+        market_text = "-" if pd.isna(market_value) else f"{int(market_value):,}"
+        value_table.add_row(str(row["日期"]), tsmc_text, market_text)
+
+    console.print()
+    console.print(value_table)
+
     # 市場情緒指標：若同時符合條件則顯示紅色警示
     if market_sentiment_red:
         console.print("[red]市場情緒指標：個股與大盤交易量連三降[/red]")
 
 
-def generate_summary(styled_df: pd.DataFrame) -> str:
+def generate_summary(styled_df: pd.DataFrame, market_sentiment_red: bool) -> str:
     """
     根據表格顏色產生一句總結。
     """
@@ -415,6 +539,7 @@ def generate_summary(styled_df: pd.DataFrame) -> str:
         (styled_df["營收 YoY 色彩"] == "red").any()
         or (styled_df["毛利率 色彩"] == "red").any()
         or (styled_df["營業利益率 色彩"] == "red").any()
+        or market_sentiment_red
     )
     has_yellow = (
         (styled_df["營收 YoY 色彩"] == "yellow").any()
@@ -440,7 +565,7 @@ def main():
     # 取得資料
     revenue_yoy = get_monthly_revenue_yoy(token)
     quarterly_margins = get_quarterly_margins(token)
-    volumes_dict = get_recent_volumes()
+    value_df = get_recent_trading_value_history(days=10)
 
     if not revenue_yoy:
         print("錯誤：未能取得月營收資料。", file=sys.stderr)
@@ -455,18 +580,27 @@ def main():
     styled_df = apply_color_logic(df)
 
     # 判斷市場情緒指標：個股與大盤交易量連三降
-    stock_vol = volumes_dict.get("2330", [])
-    index_vol = volumes_dict.get("TWII", [])
+    latest_first_values = value_df.sort_values("日期", ascending=False)
+    stock_values = (
+        latest_first_values["台積電成交金額"].dropna().tolist()
+        if "台積電成交金額" in latest_first_values
+        else []
+    )
+    index_values = (
+        latest_first_values["大盤成交金額"].dropna().tolist()
+        if "大盤成交金額" in latest_first_values
+        else []
+    )
     market_sentiment_red = (
-        has_three_consecutive_decline(stock_vol)
-        and has_three_consecutive_decline(index_vol)
+        has_three_consecutive_decline(stock_values)
+        and has_three_consecutive_decline(index_values)
     )
 
     # 輸出儀表板
-    print_dashboard(styled_df, market_sentiment_red)
+    print_dashboard(styled_df, value_df, market_sentiment_red)
 
     # 產生並印出總結
-    summary = generate_summary(styled_df)
+    summary = generate_summary(styled_df, market_sentiment_red)
     print("\n" + summary)
 
 
