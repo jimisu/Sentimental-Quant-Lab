@@ -11,6 +11,13 @@ source venv/bin/activate           # macOS / Linux
 pip install -r requirements.txt    # install all dependencies
 ```
 
+### Automatic Environment Setup (Recommended)
+To ensure the correct environment is always set up, you can use the environment setup skill:
+- Claude Code will automatically detect and suggest running environment setup when needed
+- Or manually trigger with: `/skill environment-setup`
+
+## Run Scripts
+
 ### Run Scripts
 ```bash
 python test.py                                          # latest TSMC price via Yahoo Finance
