@@ -515,7 +515,7 @@ class GlobalMacroAgent(TSMCBaseAgent):
             )
             return report, score
         except Exception as e:
-            return f"宏觀專家: Yahoo Finance 抓取失敗 ({e})", 100
+            return f"⚠️ 宏觀專家: 外部數據抓取失敗 ({e})，請檢查網路連線或 API 狀態。", 100
 
     def _fetch_yahoo_price(self, ticker: str) -> float:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -566,23 +566,27 @@ class Orchestrator:
         print(f"[籌碼專家] > {chip_report}")
         print(f"[宏觀專家] > {macro_report}")
         
-        print("\n--- 綜合評分總結 ---")
-        print(f"● 技術分項: 早期({tech_scores['early']})*0.1 | 短期({tech_scores['short']})*0.1 | 中期({tech_scores['mid']})*0.15 | 長期({tech_scores['long']})*0.15")
-        print(f"● 籌碼面總分: ({chip_score}) * 0.25 | 全球宏觀(長期趨勢): ({macro_score}) * 0.25")
-        print(f"● 綜合健康得分: {comprehensive_score:.1f}/100")
-        print("------------------")
+        # 整合評分總結字串
+        score_summary = (
+            f"● 技術分項: 早期({tech_scores['early']})*0.1 | 短期({tech_scores['short']})*0.1 | 中期({tech_scores['mid']})*0.15 | 長期({tech_scores['long']})*0.15\n"
+            f"● 籌碼面總分: ({chip_score}) * 0.25 | 全球宏觀(長期趨勢): ({macro_score}) * 0.25\n"
+            f"● 綜合健康得分: {comprehensive_score:.1f}/100"
+        )
+
+        print(f"\n--- 綜合評分總結 ---\n{score_summary}\n------------------")
 
         # 寫入日誌
-        self._append_to_log(dashboard_summary, fin_report, str(tech_report), str(chip_report), macro_report)
+        self._append_to_log(dashboard_summary, fin_report, tech_report, chip_report, macro_report, score_summary)
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
-    def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str, chip_report: str, macro_report: str) -> None:
+    def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str, chip_report: str, macro_report: str, score_summary: str) -> None:
         """將分析結果以 Markdown 格式附加到檔案"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         log_content = [
             f"## 分析日期: {timestamp}",
             f"**儀表板總結**: {dashboard_summary}",
+            f"### 綜合評分\n{score_summary}",
             f"- **財務 Agent 分析**: {fin_report}",
             f"- **技術 Agent 分析**: {tech_report}",
             f"- **籌碼 Agent 分析**: {chip_report}",
