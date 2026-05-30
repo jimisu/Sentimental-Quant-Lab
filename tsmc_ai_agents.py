@@ -5,6 +5,7 @@ TSMC AI Agents 模組
 """
 
 import pandas as pd
+import requests
 try:
     import matplotlib.pyplot as plt
     HAS_MATPLOTLIB = True
@@ -481,14 +482,48 @@ class GlobalMacroAgent(TSMCBaseAgent):
     """
     def __init__(self):
         super().__init__("全球宏觀 Agent")
-        self.source = "Yahoo Finance / OpenRouter (Global Market Data)"
+        self.source = "Yahoo Finance (TSM ADR & TWD=X)"
         self.logic = "分析美股 ADR 溢價狀況與費半指數走勢，捕捉台股開盤前的外部衝擊。"
 
-    def analyze_global_risk(self, adr_data: Dict) -> Tuple[str, int]:
-        # 假設邏輯：如果 ADR 較母股折價超過 1%，則視為負面訊號
-        # 目前先以回傳平穩狀態為主，預留給未來 API 對接
-        report = "數據來源: " + self.source + "\n分析邏輯: " + self.logic + "\n結論: 全球半導體情緒穩定，ADR 溢價處於正常區間。"
-        return report, 100
+    def analyze_global_risk(self, tw_price: float) -> Tuple[str, int]:
+        if tw_price <= 0:
+            return "宏觀專家: 無法取得台股收盤價，跳過 ADR 分析。", 100
+
+        try:
+            # 取得 TSM (ADR) 與 TWD=X (匯率)
+            tsm_price = self._fetch_yahoo_price("TSM")
+            usdtwd = self._fetch_yahoo_price("TWD=X")
+            
+            # 1 TSM ADR = 5 2330 Ordinary Shares
+            adr_tw_equiv = (tsm_price * usdtwd) / 5
+            premium = (adr_tw_equiv - tw_price) / tw_price * 100
+            
+            score = 100
+            if premium < -1:
+                score -= 40
+            elif premium < 0:
+                score -= 20
+            
+            status = "溢價" if premium >= 0 else "折價"
+            conclusion = f"{status} {abs(premium):.2f}% (ADR折算價: {adr_tw_equiv:.2f} / 台股現價: {tw_price:.2f})"
+            
+            report = (
+                f"數據來源: {self.source}\n"
+                f"分析邏輯: {self.logic}\n"
+                f"結論: {conclusion}\n"
+                f"匯率參考: {usdtwd:.2f}"
+            )
+            return report, score
+        except Exception as e:
+            return f"宏觀專家: Yahoo Finance 抓取失敗 ({e})", 100
+
+    def _fetch_yahoo_price(self, ticker: str) -> float:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return float(data['chart']['result'][0]['meta']['regularMarketPrice'])
 
 class Orchestrator:
     """
@@ -510,16 +545,18 @@ class Orchestrator:
         fin_report = self.fin_agent.analyze_margins(quarterly_data)
         tech_report, tech_flags, tech_scores = self.tech_agent.analyze_sentiment(trading_df)
         chip_report, chip_flags, chip_score = self.chip_agent.analyze_flow(chip_data)
-        macro_report, macro_score = self.macro_agent.analyze_global_risk({})
+        tw_price = trading_df['台積電收盤價'].iloc[-1] if not trading_df.empty else 0
+        macro_report, macro_score = self.macro_agent.analyze_global_risk(tw_price)
         
         # 計算綜合分數 (根據用戶要求權重)
-        # 1.早期警示 10%, 2.短期形態 20%, 3.中期趨勢 20%, 4.長期趨勢 25%, 5.籌碼分析 25%
+        # 1.早期 10%, 2.短期 10%, 3.中期 15%, 4.技術長期 15%, 5.籌碼分析 25%, 6.全球宏觀(長期趨勢) 25%
         comprehensive_score = (
             tech_scores["early"] * 0.10 +
-            tech_scores["short"] * 0.20 +
-            tech_scores["mid"] * 0.20 +
-            tech_scores["long"] * 0.25 +
-            chip_score * 0.25
+            tech_scores["short"] * 0.10 +
+            tech_scores["mid"] * 0.15 +
+            tech_scores["long"] * 0.15 +
+            chip_score * 0.25 +
+            macro_score * 0.25
         )
 
         # 控制台輸出
@@ -530,16 +567,16 @@ class Orchestrator:
         print(f"[宏觀專家] > {macro_report}")
         
         print("\n--- 綜合評分總結 ---")
-        print(f"● 技術分項: 早期({tech_scores['early']})*0.1 | 短期({tech_scores['short']})*0.2 | 中期({tech_scores['mid']})*0.2 | 長期({tech_scores['long']})*0.25")
-        print(f"● 籌碼面總分: ({chip_score}) * 0.25")
+        print(f"● 技術分項: 早期({tech_scores['early']})*0.1 | 短期({tech_scores['short']})*0.1 | 中期({tech_scores['mid']})*0.15 | 長期({tech_scores['long']})*0.15")
+        print(f"● 籌碼面總分: ({chip_score}) * 0.25 | 全球宏觀(長期趨勢): ({macro_score}) * 0.25")
         print(f"● 綜合健康得分: {comprehensive_score:.1f}/100")
         print("------------------")
 
         # 寫入日誌
-        self._append_to_log(dashboard_summary, fin_report, tech_report, chip_report)
+        self._append_to_log(dashboard_summary, fin_report, str(tech_report), str(chip_report), macro_report)
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
-    def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str, chip_report: str) -> None:
+    def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str, chip_report: str, macro_report: str) -> None:
         """將分析結果以 Markdown 格式附加到檔案"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -549,6 +586,7 @@ class Orchestrator:
             f"- **財務 Agent 分析**: {fin_report}",
             f"- **技術 Agent 分析**: {tech_report}",
             f"- **籌碼 Agent 分析**: {chip_report}",
+            f"- **宏觀 Agent 分析**: {macro_report}",
             "\n---\n"
         ]
         
