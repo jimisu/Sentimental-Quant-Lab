@@ -5,3 +5,5 @@ __pycache__/
 .idea/
 .vscode/
 sentiment_venv/
+charts/
+local_cache/

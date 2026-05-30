@@ -7,7 +7,9 @@ TSMC 信號儀表板
 """
 
 import datetime as dt
+import json
 import os
+import re
 import sys
 from typing import Dict, List, Optional, Tuple
 
@@ -16,13 +18,103 @@ import requests
 from rich import box
 from rich.console import Console
 from rich.table import Table
+from tsmc_ai_agents import Orchestrator
 
 API_URL = "https://api.finmindtrade.com/api/v4/data"
 TWSE_AFTER_TRADING_URL = "https://www.twse.com.tw/rwd/zh/afterTrading"
+CACHE_DIR = "local_cache"
+CACHE_KEEP = 3
+
+REVENUE_KEYS = ["Revenue", "TotalRevenue"]
+GROSS_PROFIT_KEYS = ["GrossProfit", "Gross_Profit"]
+OPERATING_INCOME_KEYS = ["OperatingIncome", "Operating_Income"]
+NET_INCOME_KEYS = [
+    "IncomeAfterTaxes",
+    "Net_Income",
+    "NetIncome",
+    "Net_Income_Attributable_To_Owners_Of_The_Parent",
+    "ProfitLossAttributableToOwnersOfParent",
+    "Consolidated_Net_Income_Attributable_To_Stockholders_Of_The_Parent",
+    "NetIncomeAfterTax",
+    "Net_Income_After_Tax",
+]
+NET_INCOME_ORIGIN_KEYWORDS = ["本期淨利", "稅後淨利"]
+NET_INCOME_ORIGIN_EXCLUDE_KEYWORDS = ["稅前", "綜合損益", "其他綜合", "歸屬"]
 
 # 日期範圍
 TODAY = dt.date.today()
 TWO_YEARS_AGO = TODAY - dt.timedelta(days=730)  # 約兩年，以便計算 YoY
+
+# TWSE 限制：查詢日期地板，根據回傳訊息彈性調整 (最早可達民國 79/01/04)
+TWSE_MIN_DATE = dt.date(1990, 1, 4)
+
+
+def build_cache_key(*parts) -> str:
+    """
+    建立檔名安全的 cache key。
+    """
+    raw_key = "_".join(str(part) for part in parts if part is not None)
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_key).strip("_")
+
+
+def write_circular_cache(cache_key: str, payload: Dict) -> None:
+    """
+    寫入本機快取，並讓同一 cache key 只保留最新 CACHE_KEEP 份。
+    """
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filepath = os.path.join(CACHE_DIR, f"{cache_key}_{timestamp}.json")
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    prefix = f"{cache_key}_"
+    cache_files = sorted(
+        filename
+        for filename in os.listdir(CACHE_DIR)
+        if filename.startswith(prefix) and filename.endswith(".json")
+    )
+    for old_filename in cache_files[:-CACHE_KEEP]:
+        try:
+            os.remove(os.path.join(CACHE_DIR, old_filename))
+        except OSError as exc:
+            print(f"刪除舊快取失敗: {old_filename} ({exc})", file=sys.stderr)
+
+
+def read_latest_cache(cache_key: str) -> Optional[Dict]:
+    """
+    讀取同一 cache key 的最新本機快取。
+    """
+    if not os.path.exists(CACHE_DIR):
+        return None
+
+    prefix = f"{cache_key}_"
+    cache_files = sorted(
+        filename
+        for filename in os.listdir(CACHE_DIR)
+        if filename.startswith(prefix) and filename.endswith(".json")
+    )
+    if not cache_files:
+        return None
+
+    latest_path = os.path.join(CACHE_DIR, cache_files[-1])
+    try:
+        with open(latest_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"讀取快取失敗: {latest_path} ({exc})", file=sys.stderr)
+        return None
+
+
+def get_cached_data(cache_key: str):
+    """
+    取出最新快取中的 data 欄位。
+    """
+    cached = read_latest_cache(cache_key)
+    if cached is None:
+        return None
+    print(f"  -> 使用本機快取: {cache_key}")
+    return cached.get("data")
 
 
 def fetch_finmind_dataset(
@@ -44,13 +136,27 @@ def fetch_finmind_dataset(
     if token:
         params["token"] = token
 
+    cache_key = build_cache_key("finmind", dataset, data_id)
+    cache_metadata = {k: v for k, v in params.items() if k != "token"}
+
     print(f"Fetching {dataset} for {data_id} from {start_date} to {end_date}...")
-    resp = requests.get(API_URL, params=params, timeout=30)
+    try:
+        resp = requests.get(API_URL, params=params, timeout=30)
+    except requests.RequestException as exc:
+        print(f"Error: API request failed: {exc}", file=sys.stderr)
+        cached_data = get_cached_data(cache_key)
+        if cached_data is not None:
+            return cached_data
+        sys.exit(1)
+
     if resp.status_code != 200:
         print(
             f"Error: API request failed with status {resp.status_code}: {resp.text}",
             file=sys.stderr,
         )
+        cached_data = get_cached_data(cache_key)
+        if cached_data is not None:
+            return cached_data
         sys.exit(1)
 
     data = resp.json()
@@ -59,9 +165,21 @@ def fetch_finmind_dataset(
             f"Error: FinMind returned error status: {data.get('msg')}",
             file=sys.stderr,
         )
+        cached_data = get_cached_data(cache_key)
+        if cached_data is not None:
+            return cached_data
         sys.exit(1)
 
     records = data.get("data", [])
+    write_circular_cache(
+        cache_key,
+        {
+            "source": "FinMind",
+            "metadata": cache_metadata,
+            "cached_at": dt.datetime.now().isoformat(timespec="seconds"),
+            "data": records,
+        },
+    )
     print(f"  -> Received {len(records)} records.")
     return records
 
@@ -130,6 +248,36 @@ def get_monthly_revenue_yoy(token: Optional[str] = None) -> List[Dict]:
     return result
 
 
+def get_financial_value(
+    quarter_values: Dict,
+    keys: List[str],
+    origin_keywords: Optional[List[str]] = None,
+    exclude_origin_keywords: Optional[List[str]] = None,
+) -> Optional[float]:
+    """
+    從 FinMind 財報欄位取值；優先用 type，必要時用 origin_name 中文名稱 fallback。
+    """
+    for key in keys:
+        if key in quarter_values:
+            return quarter_values[key]
+
+    origin_names = quarter_values.get("_origin_names", {})
+    if not origin_keywords:
+        return None
+
+    excludes = exclude_origin_keywords or []
+    for statement_type, origin_name in origin_names.items():
+        if statement_type not in quarter_values:
+            continue
+        normalized_origin = origin_name.lower()
+        if any(keyword.lower() in normalized_origin for keyword in origin_keywords) and not any(
+            keyword.lower() in normalized_origin for keyword in excludes
+        ):
+            return quarter_values[statement_type]
+
+    return None
+
+
 def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], Dict]:
     """
     取得最近 4 季的毛利率與營業利益率，並計算季度環比變化。
@@ -141,8 +289,9 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
     對於第一季（最早的一季），drop 為 None。
     """
     # 取得過去一年的財務報表（季資料）
-    start_date = (TODAY - dt.timedelta(days=365)).isoformat()
+    start_date = (TODAY - dt.timedelta(days=500)).isoformat()
     end_date = TODAY.isoformat()
+    # 包含 Revenue, GrossProfit, OperatingIncome, NetIncome
     records = fetch_finmind_dataset(
         dataset="TaiwanStockFinancialStatements",
         data_id="2330",
@@ -172,45 +321,75 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
             value = float(r.get("value", 0))
         except (ValueError, TypeError):
             continue
-        quarterly_data[key][r.get("type")] = value
+        statement_type = r.get("type")
+        if not statement_type:
+            continue
+        quarterly_data[key][statement_type] = value
+        if r.get("origin_name"):
+            quarterly_data[key].setdefault("_origin_names", {})[statement_type] = r.get("origin_name")
 
     # 計算每季的毛利率和營業利益率，並計算與上一季的變化
     result = {}
     # 先排序季度（從遠到近）
     sorted_quarters = sorted(quarterly_data.keys())
     for idx, (year, quarter) in enumerate(sorted_quarters):
-        values = quarterly_data[(year, quarter)]
-        revenue = values.get("Revenue")
-        gross_profit = values.get("GrossProfit")
-        operating_income = values.get("OperatingIncome")
+        d = quarterly_data[(year, quarter)]
+        
+        # 營收
+        revenue = get_financial_value(d, REVENUE_KEYS)
+        # 毛利
+        gross_profit = get_financial_value(d, GROSS_PROFIT_KEYS)
+        # 營業利益
+        operating_income = get_financial_value(d, OPERATING_INCOME_KEYS)
+        # 稅後淨利：保留以稅後淨利金額 / 營收計算稅後淨利率的方式。
+        net_income = get_financial_value(
+            d,
+            NET_INCOME_KEYS,
+            origin_keywords=NET_INCOME_ORIGIN_KEYWORDS,
+            exclude_origin_keywords=NET_INCOME_ORIGIN_EXCLUDE_KEYWORDS,
+        )
+
         if revenue is None or revenue == 0:
             continue
         gross_margin = (gross_profit / revenue * 100) if gross_profit is not None else None
         operating_margin = (operating_income / revenue * 100) if operating_income is not None else None
-        if gross_margin is None or operating_margin is None:
-            # 若任一欄位缺失，則跳過該季
-            continue
+        net_margin = (net_income / revenue * 100) if net_income is not None else None
+
         # 計算與上一季的變化（上一季 - 當季）
         gross_drop = None
         op_drop = None
+        net_drop = None
         if idx > 0:
-            prev_year, prev_quarter = sorted_quarters[idx - 1]
-            prev_values = quarterly_data[(prev_year, prev_quarter)]
-            prev_revenue = prev_values.get("Revenue")
-            prev_gross_profit = prev_values.get("GrossProfit")
-            prev_operating_income = prev_values.get("OperatingIncome")
+            p_key = sorted_quarters[idx - 1]
+            p_d = quarterly_data[p_key]
+            
+            prev_revenue = get_financial_value(p_d, REVENUE_KEYS)
+            prev_gross_profit = get_financial_value(p_d, GROSS_PROFIT_KEYS)
+            prev_operating_income = get_financial_value(p_d, OPERATING_INCOME_KEYS)
+            prev_net_income = get_financial_value(
+                p_d,
+                NET_INCOME_KEYS,
+                origin_keywords=NET_INCOME_ORIGIN_KEYWORDS,
+                exclude_origin_keywords=NET_INCOME_ORIGIN_EXCLUDE_KEYWORDS,
+            )
+
             if prev_revenue is not None and prev_revenue != 0:
-                if prev_gross_profit is not None:
+                if prev_gross_profit is not None and gross_margin is not None:
                     prev_gross_margin = (prev_gross_profit / prev_revenue * 100)
                     gross_drop = prev_gross_margin - gross_margin
-                if prev_operating_income is not None:
+                if prev_operating_income is not None and operating_margin is not None:
                     prev_op_margin = (prev_operating_income / prev_revenue * 100)
                     op_drop = prev_op_margin - operating_margin
+                if prev_net_income is not None and net_margin is not None:
+                    prev_net_margin = (prev_net_income / prev_revenue * 100)
+                    net_drop = prev_net_margin - net_margin
         result[(year, quarter)] = {
             "gross_margin": gross_margin,
             "operating_margin": operating_margin,
+            "net_margin": net_margin,
             "gross_drop": gross_drop,
             "op_drop": op_drop,
+            "net_drop": net_drop,
         }
     return result
 
@@ -226,6 +405,18 @@ def parse_twse_int(value) -> Optional[int]:
         return None
     try:
         return int(float(text))
+    except ValueError:
+        return None
+
+def parse_twse_float(value) -> Optional[float]:
+    """將 TWSE 回傳的數字字串轉成 float。"""
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "")
+    if text in {"", "--", "X", "除權息"}:
+        return None
+    try:
+        return float(text)
     except ValueError:
         return None
 
@@ -253,12 +444,20 @@ def parse_twse_date(value) -> Optional[str]:
 def get_recent_month_starts(months: int = 3) -> List[dt.date]:
     """
     回傳從本月往前推的月份起始日。
+    會確保日期不早於 TWSE 限制的 2010-01-04。
     """
     month_starts = []
     year = TODAY.year
     month = TODAY.month
     for _ in range(months):
-        month_starts.append(dt.date(year, month, 1))
+        d = dt.date(year, month, 1)
+        # 檢查是否早於 TWSE 支援的最早日期
+        if d < TWSE_MIN_DATE:
+            if d.year == TWSE_MIN_DATE.year and d.month == TWSE_MIN_DATE.month:
+                month_starts.append(TWSE_MIN_DATE)
+            break
+
+        month_starts.append(d)
         month -= 1
         if month == 0:
             month = 12
@@ -273,19 +472,57 @@ def fetch_twse_report(report: str, params: Dict[str, str]) -> List[List[str]]:
     url = f"{TWSE_AFTER_TRADING_URL}/{report}"
     request_params = {"response": "json", **params}
     headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(url, params=request_params, headers=headers, timeout=30)
+    cache_key = build_cache_key(
+        "twse",
+        report,
+        params.get("date"),
+        params.get("stockNo", "market"),
+    )
+
+    try:
+        resp = requests.get(url, params=request_params, headers=headers, timeout=30)
+    except requests.RequestException as exc:
+        print(f"Error: TWSE request failed: {exc}", file=sys.stderr)
+        cached_data = get_cached_data(cache_key)
+        return cached_data if cached_data is not None else []
+
     if resp.status_code != 200:
         print(
             f"Error: TWSE request failed with status {resp.status_code}: {resp.text}",
             file=sys.stderr,
         )
-        return []
+        cached_data = get_cached_data(cache_key)
+        return cached_data if cached_data is not None else []
 
     payload = resp.json()
-    if payload.get("stat") not in {"OK", "很抱歉，沒有符合條件的資料!"}:
-        print(f"Error: TWSE returned status: {payload.get('stat')}", file=sys.stderr)
-        return []
-    return payload.get("data", [])
+    stat = payload.get("stat")
+    if stat not in {"OK", "很抱歉，沒有符合條件的資料!"}:
+        # 檢查是否為已知的邊界限制或未來日期（用於模擬數據時）
+        is_date_limit = "查詢日期小於" in stat or "查詢日期大於今日" in stat
+        cached_data = get_cached_data(cache_key)
+        
+        if is_date_limit and cached_data is not None:
+            # 若有快取且為日期限制問題，則視為模擬數據載入，不輸出 Error
+            print(f"  -> 提示: 伺服器拒絕日期 {params.get('date')} ({stat})，已切換至快取模式。")
+            return cached_data
+            
+        if stat != "很抱歉，沒有符合條件的資料!":
+            print(f"Error: TWSE returned status: {stat}", file=sys.stderr)
+            
+        return cached_data if cached_data is not None else []
+
+    rows = payload.get("data", [])
+    if rows:
+        write_circular_cache(
+            cache_key,
+            {
+                "source": "TWSE",
+                "metadata": {"report": report, **params},
+                "cached_at": dt.datetime.now().isoformat(timespec="seconds"),
+                "data": rows,
+            },
+        )
+    return rows
 
 
 def get_twse_stock_trading_values(stock_no: str, months: int = 3) -> pd.DataFrame:
@@ -299,15 +536,26 @@ def get_twse_stock_trading_values(stock_no: str, months: int = 3) -> pd.DataFram
             {"date": month_start.strftime("%Y%m%d"), "stockNo": stock_no},
         )
         for row in rows:
-            if len(row) < 3:
+            if len(row) < 7:
                 continue
             date = parse_twse_date(row[0])
             trading_value = parse_twse_int(row[2])
-            if date and trading_value is not None:
-                records.append({"日期": date, "台積電成交金額": trading_value})
+            open_price = parse_twse_float(row[3])
+            high_price = parse_twse_float(row[4])
+            low_price = parse_twse_float(row[5])
+            close_price = parse_twse_float(row[6])
+            if date and trading_value is not None and close_price is not None:
+                records.append({
+                    "日期": date, 
+                    "台積電成交金額": trading_value,
+                    "台積電開盤價": open_price,
+                    "台積電最高價": high_price,
+                    "台積電最低價": low_price,
+                    "台積電收盤價": close_price
+                })
 
     if not records:
-        return pd.DataFrame(columns=["日期", "台積電成交金額"])
+        return pd.DataFrame(columns=["日期", "台積電成交金額", "台積電開盤價", "台積電最高價", "台積電最低價", "台積電收盤價"])
     return pd.DataFrame(records).drop_duplicates(subset=["日期"]).sort_values("日期")
 
 
@@ -331,16 +579,17 @@ def get_twse_market_trading_values(months: int = 3) -> pd.DataFrame:
     return pd.DataFrame(records).drop_duplicates(subset=["日期"]).sort_values("日期")
 
 
-def get_recent_trading_value_history(days: int = 10) -> pd.DataFrame:
+def get_recent_trading_value_history(days: int = 260) -> pd.DataFrame:
     """
     從 TWSE 抓取最近 N 個交易日的成交金額。
-    回傳 DataFrame，日期由舊到新，欄位包含日期、台積電成交金額、大盤成交金額。
+    回傳 DataFrame，日期由舊到新，包含足夠天數以計算技術指標。
     """
-    stock_df = get_twse_stock_trading_values("2330")
-    market_df = get_twse_market_trading_values()
+    months = max(3, min(18, days // 18 + 2))
+    stock_df = get_twse_stock_trading_values("2330", months=months)
+    market_df = get_twse_market_trading_values(months=months)
 
     if stock_df.empty and market_df.empty:
-        return pd.DataFrame(columns=["日期", "台積電成交金額", "大盤成交金額"])
+        return pd.DataFrame(columns=["日期", "台積電成交金額", "台積電開盤價", "台積電最高價", "台積電最低價", "台積電收盤價", "大盤成交金額"])
 
     value_df = pd.merge(stock_df, market_df, on="日期", how="outer")
     value_df = value_df.sort_values("日期").tail(days).reset_index(drop=True)
@@ -377,8 +626,10 @@ def build_dataframe(
     # 對每個月，找出所在季度並取得對應的值
     gross_margin_list = []
     operating_margin_list = []
+    net_margin_list = []
     gross_drop_list = []
     op_drop_list = []
+    net_drop_list = []
     for ym in months:
         year = int(ym[:4])
         month = int(ym[5:7])
@@ -388,13 +639,17 @@ def build_dataframe(
             qm = quarterly_margins[q_key]
             gross_margin_list.append(qm["gross_margin"])
             operating_margin_list.append(qm["operating_margin"])
+            net_margin_list.append(qm["net_margin"])
             gross_drop_list.append(qm["gross_drop"])
             op_drop_list.append(qm["op_drop"])
+            net_drop_list.append(qm["net_drop"])
         else:
             gross_margin_list.append(None)
             operating_margin_list.append(None)
+            net_margin_list.append(None)
             gross_drop_list.append(None)
             op_drop_list.append(None)
+            net_drop_list.append(None)
 
     # 建立 DataFrame
     df = pd.DataFrame(
@@ -403,8 +658,10 @@ def build_dataframe(
             "營收 YoY (%)": revenue_vals,
             "毛利率 (%)": gross_margin_list,
             "營業利益率 (%)": operating_margin_list,
+            "稅後淨利率 (%)": net_margin_list,
             "_gross_drop": gross_drop_list,
             "_op_drop": op_drop_list,
+            "_net_drop": net_drop_list,
         }
     )
     return df
@@ -436,24 +693,27 @@ def apply_color_logic(df: pd.DataFrame) -> pd.DataFrame:
 
     # 毛利率 與 營業利益率 色彩：
     # 根據季度下滑 >2% 標示黃色；
-    # 如果毛利率下滑>2% 且 營業利益率下滑>2% 則標示紅色。
-    margin_colors = []  # 這個顏色將同時適用於毛利率和營業利益率兩欄
-    for gd, od in zip(styled["_gross_drop"], styled["_op_drop"]):
+    # 如果三率中任意兩項下滑>2% 則標示紅色。
+    margin_colors = []  # 這個顏色將同時適用於三率欄位
+    for gd, od, nd in zip(styled["_gross_drop"], styled["_op_drop"], styled["_net_drop"]):
         # 如果任一 drop 為 None，則無法判斷，設為無顏色
-        if gd is None or od is None:
+        if gd is None or od is None or nd is None:
             margin_colors.append("")
             continue
-        if gd > 2 and od > 2:
+        
+        drops = [gd > 2, od > 2, nd > 2]
+        if sum(drops) >= 2:
             margin_colors.append("red")
-        elif gd > 2 or od > 2:
+        elif sum(drops) >= 1:
             margin_colors.append("yellow")
         else:
             margin_colors.append("")
     styled["毛利率 色彩"] = margin_colors
     styled["營業利益率 色彩"] = margin_colors
+    styled["稅後淨利率 色彩"] = margin_colors
 
     # 移除暫存欄位
-    styled = styled.drop(columns=["_gross_drop", "_op_drop"])
+    styled = styled.drop(columns=["_gross_drop", "_op_drop", "_net_drop"])
     return styled
 
 
@@ -471,6 +731,7 @@ def print_dashboard(
     table.add_column("營收 YoY (%)", justify="right")
     table.add_column("毛利率 (%)", justify="right")
     table.add_column("營業利益率 (%)", justify="right")
+    table.add_column("稅後淨利率 (%)", justify="right")
 
     def format_number(value) -> str:
         return "-" if pd.isna(value) else f"{value:.2f}"
@@ -497,11 +758,19 @@ def print_dashboard(
         elif row["營業利益率 色彩"] == "yellow":
             op_text = f"[yellow]{op_text}[/yellow]"
 
+        # 稅後淨利率 顏色
+        net_text = format_number(row["稅後淨利率 (%)"])
+        if row["稅後淨利率 色彩"] == "red":
+            net_text = f"[red]{net_text}[/red]"
+        elif row["稅後淨利率 色彩"] == "yellow":
+            net_text = f"[yellow]{net_text}[/yellow]"
+
         table.add_row(
             str(row["月份"]),
             rev_text,
             gross_text,
             op_text,
+            net_text,
         )
 
     console.print(table)
@@ -539,12 +808,14 @@ def generate_summary(styled_df: pd.DataFrame, market_sentiment_red: bool) -> str
         (styled_df["營收 YoY 色彩"] == "red").any()
         or (styled_df["毛利率 色彩"] == "red").any()
         or (styled_df["營業利益率 色彩"] == "red").any()
+        or (styled_df["稅後淨利率 色彩"] == "red").any()
         or market_sentiment_red
     )
     has_yellow = (
         (styled_df["營收 YoY 色彩"] == "yellow").any()
         or (styled_df["毛利率 色彩"] == "yellow").any()
         or (styled_df["營業利益率 色彩"] == "yellow").any()
+        or (styled_df["稅後淨利率 色彩"] == "yellow").any()
     )
 
     if has_red:
@@ -565,7 +836,16 @@ def main():
     # 取得資料
     revenue_yoy = get_monthly_revenue_yoy(token)
     quarterly_margins = get_quarterly_margins(token)
-    value_df = get_recent_trading_value_history(days=10)
+    value_df = get_recent_trading_value_history(days=260)
+    
+    # 抓取近 10 日籌碼資料
+    chip_data = fetch_finmind_dataset(
+        dataset="TaiwanStockInstitutionalInvestorsBuySell",
+        data_id="2330",
+        start_date=(TODAY - dt.timedelta(days=15)).isoformat(),
+        end_date=TODAY.isoformat(),
+        token=token
+    )
 
     if not revenue_yoy:
         print("錯誤：未能取得月營收資料。", file=sys.stderr)
@@ -579,29 +859,22 @@ def main():
     # 加入顏色邏輯
     styled_df = apply_color_logic(df)
 
-    # 判斷市場情緒指標：個股與大盤交易量連三降
-    latest_first_values = value_df.sort_values("日期", ascending=False)
-    stock_values = (
-        latest_first_values["台積電成交金額"].dropna().tolist()
-        if "台積電成交金額" in latest_first_values
-        else []
-    )
-    index_values = (
-        latest_first_values["大盤成交金額"].dropna().tolist()
-        if "大盤成交金額" in latest_first_values
-        else []
-    )
-    market_sentiment_red = (
-        has_three_consecutive_decline(stock_values)
-        and has_three_consecutive_decline(index_values)
-    )
+    # 呼叫 AI Agent 編排器
+    orchestrator = Orchestrator()
+    # 這裡保留原有的 market_sentiment_red 邏輯，但使用 tail(10) 確保邏輯範圍一致
+    recent_v = value_df.tail(10)
+    market_sentiment_red = has_three_consecutive_decline(recent_v['台積電成交金額'].tolist()[::-1]) and \
+                           has_three_consecutive_decline(recent_v['大盤成交金額'].tolist()[::-1])
 
     # 輸出儀表板
-    print_dashboard(styled_df, value_df, market_sentiment_red)
+    print_dashboard(styled_df, value_df.tail(10), market_sentiment_red)
 
     # 產生並印出總結
     summary = generate_summary(styled_df, market_sentiment_red)
     print("\n" + summary)
+
+    # 執行 Agent 深度分析並紀錄日誌
+    orchestrator.run_full_analysis(quarterly_margins, value_df, chip_data, summary)
 
 
 if __name__ == "__main__":
