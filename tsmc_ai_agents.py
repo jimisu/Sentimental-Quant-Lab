@@ -147,17 +147,17 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         keep_latest_daily_charts(self.charts_dir, "tech_chart", datetime.now().strftime("%Y%m%d"))
         return filepath
 
-    def _format_20ma_deviation(self, df: pd.DataFrame) -> str:
+    def _format_20ma_deviation(self, df: pd.DataFrame) -> Tuple[str, bool]:
         """計算最新收盤價相對 20MA 的乖離率。"""
         if df.empty or '台積電收盤價' not in df.columns:
-            return "20MA乖離率: 無收盤價資料"
+            return "20MA乖離率: 無收盤價資料", False
 
         close_prices = pd.to_numeric(
             df.sort_values("日期")['台積電收盤價'],
             errors='coerce'
         ).dropna()
         if len(close_prices) < 20:
-            return "20MA乖離率: 資料不足（需至少20個交易日）"
+            return "20MA乖離率: 資料不足（需至少20個交易日）", False
 
         # 計算完整的 20MA 序列與乖離率序列
         ma20_series = close_prices.rolling(window=20).mean()
@@ -171,10 +171,14 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         max_pos = deviations.max()
         max_neg = deviations.min()
         
-        return (
+        # 判斷是否由正轉負 (最新 < 0 且 前一日 >= 0)
+        crossed_below = bool((deviations.iloc[-1] < 0) and (deviations.iloc[-2] >= 0))
+
+        report = (
             f"20MA乖離率: {latest_dev:+.2f}%（收盤 {latest_close:.2f} / 20MA {ma20_val:.2f}） | "
             f"區間極值: [正] {max_pos:+.2f}% / [負] {max_neg:+.2f}%"
         )
+        return report, crossed_below
 
     def _calculate_rsi(self, close_prices: pd.Series, period: int = 14) -> pd.Series:
         """計算 RSI。"""
@@ -194,11 +198,12 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         signal = macd.ewm(span=9, adjust=False).mean()
         return macd, signal
 
-    def _format_reversal_signals(self, df: pd.DataFrame) -> str:
+    def _format_reversal_signals(self, df: pd.DataFrame) -> Tuple[str, bool, int]:
         """判斷短中長期反轉向下訊號。"""
+        score_penalty = 0
         required_cols = {'日期', '台積電開盤價', '台積電最高價', '台積電最低價', '台積電收盤價', '台積電成交金額'}
         if df.empty or not required_cols.issubset(df.columns):
-            return "反轉訊號: 資料不足（需開高低收與成交金額）"
+            return "反轉訊號: 資料不足（需開高低收與成交金額）", False, 0
 
         tech_df = df.sort_values("日期").copy()
         tech_df["日期"] = pd.to_datetime(tech_df["日期"], errors="coerce")
@@ -206,7 +211,7 @@ class MarketDynamicsAgent(TSMCBaseAgent):
             tech_df[col] = pd.to_numeric(tech_df[col], errors='coerce')
         tech_df = tech_df.dropna(subset=['日期', '台積電收盤價', '台積電成交金額'])
         if len(tech_df) < 20:
-            return "反轉訊號: 資料不足（需至少20個交易日）"
+            return "反轉訊號: 資料不足（需至少20個交易日）", False, 0
 
         close = tech_df['台積電收盤價']
         volume = tech_df['台積電成交金額']
@@ -226,6 +231,7 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         # 1. 頂部K線形態判斷
         if price_range > 0 and upper_shadow / price_range >= 0.45 and upper_shadow >= max(body * 2, 1):
             kline_warnings.append("長上影線")
+            score_penalty += 10
 
         if prev is not None:
             prev_bullish = prev['台積電收盤價'] > prev['台積電開盤價']
@@ -233,34 +239,42 @@ class MarketDynamicsAgent(TSMCBaseAgent):
             engulfed = latest['台積電開盤價'] >= prev['台積電收盤價'] and latest['台積電收盤價'] <= prev['台積電開盤價']
             if prev_bullish and latest_bearish and engulfed:
                 kline_warnings.append("吞噬黑K")
+                score_penalty += 15
 
         # 連續小實體判斷 (多頭猶豫/力道衰竭)
-        if len(tech_df) >= 3:
-            is_small_bodies = []
-            for i in range(1, 4):
-                row = tech_df.iloc[-i]
-                r = row['台積電最高價'] - row['台積電最低價']
-                b = abs(row['台積電收盤價'] - row['台積電開盤價'])
-                if r > 0 and (b / r) < 0.35: # 實體佔比小於 35%
-                    is_small_bodies.append(True)
-            if len(is_small_bodies) == 3:
-                kline_warnings.append("連續小實體")
+        if len(tech_df) >= 4:
+            last_3 = tech_df.tail(3)
+            is_consecutive_small = all(
+                ((abs(r['台積電收盤價'] - r['台積電開盤價']) / (r['台積電最高價'] - r['台積電最低價'])) < 0.35) 
+                if (r['台積電最高價'] - r['台積電最低價']) > 0 else False
+                for _, r in last_3.iterrows()
+            )
+            if is_consecutive_small:
+                kline_warnings.append("連三日小實體(動能衰竭)")
+                score_penalty += 10
 
-        # 2. 量價背離判斷
-        high_window = min(60, len(tech_df))
-        if high_window >= 20:
-            latest_is_high = close.iloc[-1] >= close.tail(high_window).max()
-            volume_shrinks = volume.iloc[-1] < volume.tail(20).mean()
-            if latest_is_high and volume_shrinks:
-                vol_price_warnings.append("價格創新高但成交量萎縮")
+        # 2. 局部高點 (Swing High) 背離判斷
+        # 找過去 5-60 天內的最高收盤價作為參考點
+        lookback = tech_df.iloc[-60:-5]
+        if not lookback.empty:
+            swing_high_idx = lookback['台積電收盤價'].idxmax()
+            swing_high_price = lookback.loc[swing_high_idx, '台積電收盤價']
+            swing_high_vol = lookback.loc[swing_high_idx, '台積電成交金額']
+            swing_high_rsi = rsi14.loc[swing_high_idx]
+            
+            current_price = latest['台積電收盤價']
+            current_vol_ma5 = volume.tail(5).mean()
+            current_rsi = rsi14.iloc[-1]
+            
+            # 量價背離：價格突破或接近前高，但 5 日均量顯著低於前高點成交量
+            if current_price >= swing_high_price * 0.98 and current_vol_ma5 < swing_high_vol * 0.75:
+                vol_price_warnings.append(f"量價背離(量能僅前高{current_vol_ma5/swing_high_vol:.1%})")
+                score_penalty += 15
 
-        # 3. RSI頂背離判斷
-        if high_window >= 20:
-            latest_is_high = close.iloc[-1] >= close.tail(high_window).max()
-            prior_rsi_high = rsi14.iloc[-high_window:-1].max()
-            latest_rsi = rsi14.iloc[-1]
-            if latest_is_high and pd.notna(latest_rsi) and pd.notna(prior_rsi_high) and latest_rsi < prior_rsi_high - 3:
-                rsi_warnings.append("日線RSI頂背離(價格新高但RSI未過高)")
+            # RSI 頂背離：價格高於前高，但 RSI 低於前高
+            if current_price > swing_high_price and current_rsi < swing_high_rsi:
+                rsi_warnings.append(f"日線RSI頂背離(價格新高但RSI {current_rsi:.1f} < 前高 {swing_high_rsi:.1f})")
+                score_penalty += 20
 
         # 週線級別分析
         weekly = tech_df.set_index("日期")['台積電收盤價'].resample("W-FRI").last().dropna()
@@ -269,9 +283,12 @@ class MarketDynamicsAgent(TSMCBaseAgent):
 
         if len(weekly_rsi) >= 2:
             latest_w_price = weekly.iloc[-1]
-            # 檢查週線是否創新高但 RSI 沒跟上
-            if latest_w_price >= weekly.iloc[-10:-1].max() and weekly_rsi.iloc[-1] < weekly_rsi.iloc[-10:-1].max():
-                rsi_warnings.append("週線RSI頂背離")
+            w_lookback = weekly.iloc[-15:-1]
+            if not w_lookback.empty:
+                w_swing_idx = w_lookback.idxmax()
+                if latest_w_price > weekly.loc[w_swing_idx] and weekly_rsi.iloc[-1] < weekly_rsi.loc[w_swing_idx]:
+                    rsi_warnings.append("週線RSI頂背離(中期趨勢背離)")
+                    score_penalty += 25
 
         # 組合早期警示報告
         warning_parts = []
@@ -283,22 +300,29 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         weekly_ma12 = weekly.rolling(window=12).mean()
         if len(weekly_ma12.dropna()) >= 2 and weekly_ma12.iloc[-1] < weekly_ma12.iloc[-2]:
             mid_signals.append("週線MA12向下彎頭")
+            score_penalty += 15
         if len(weekly_rsi.dropna()) >= 2:
             recent_overbought = weekly_rsi.tail(8).max() >= 70
             if recent_overbought and weekly_rsi.iloc[-2] >= 60 and weekly_rsi.iloc[-1] < 60:
                 mid_signals.append("週線RSI由超買區轉弱並跌破60")
+                score_penalty += 10
         if len(weekly_macd.dropna()) >= 2 and len(weekly_signal.dropna()) >= 2:
             if weekly_macd.iloc[-2] >= weekly_signal.iloc[-2] and weekly_macd.iloc[-1] < weekly_signal.iloc[-1]:
                 mid_signals.append("週線MACD死亡交叉")
+                score_penalty += 15
 
         monthly = tech_df.set_index("日期")['台積電收盤價'].resample("ME").last().dropna()
         monthly_ma12 = monthly.rolling(window=12).mean()
         long_signals = []
+        monthly_break = False
         if len(monthly_ma12.dropna()) >= 2:
             if monthly_ma12.iloc[-1] < monthly_ma12.iloc[-2]:
                 long_signals.append("月線MA12向下彎頭")
+                score_penalty += 30
             if monthly.iloc[-1] < monthly_ma12.iloc[-1]:
                 long_signals.append("月線收盤跌破MA12")
+                monthly_break = bool(True)
+                score_penalty += 40
         elif len(monthly) < 13:
             long_signals.append("月線MA12資料不足")
 
@@ -306,23 +330,31 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         mid_status = "中期轉弱確認" if len(mid_signals) >= 2 else "中期觀察"
         long_status = "長期轉空確認" if len([s for s in long_signals if "資料不足" not in s]) >= 2 else "長期觀察"
 
-        return (
-            f"早期警示: {' | '.join(warning_parts) if warning_parts else '無'} / "
-            f"形態確認: {short_status} / "
-            f"{mid_status}({'; '.join(mid_signals) if mid_signals else '週線尚未確認轉弱'}) / "
-            f"{long_status}({'; '.join(long_signals) if long_signals else '月線尚未確認轉空'})"
-        )
+        report_lines = [
+            f"● 早期警示: {', '.join(warning_parts) if warning_parts else '無'}",
+            f"● 短期形態: {short_status}",
+            f"● 中期趨勢: {mid_status} ({'; '.join(mid_signals) if mid_signals else '保持強勢'})",
+            f"● 長期趨勢: {long_status} ({'; '.join(long_signals) if long_signals else '多頭格局'})"
+        ]
+        return "\n   ".join(report_lines), monthly_break, score_penalty
 
-    def analyze_sentiment(self, df: pd.DataFrame) -> str:
+    def analyze_sentiment(self, df: pd.DataFrame) -> Tuple[str, Dict, int]:
         report_prefix = f"數據來源: {self.source}\n分析邏輯: {self.logic}\n結論: "
 
         if df.empty or len(df) < 5:
-            return f"{report_prefix}資料不足，無法分析技術情緒。"
+            return f"{report_prefix}資料不足，無法分析技術情緒。", {}, 0
 
         chart_path = self._generate_technical_chart(df)
-        ma20_detail = self._format_20ma_deviation(df)
-        reversal_detail = self._format_reversal_signals(df)
-        detail_suffix = f" | {ma20_detail} | {reversal_detail}"
+        ma20_detail, crossed_below = self._format_20ma_deviation(df)
+        reversal_detail, monthly_break, penalty = self._format_reversal_signals(df)
+        
+        tech_score = max(0, 100 - penalty)
+        detail_suffix = f"\n   ● {ma20_detail}\n   {reversal_detail}\n   ● 技術總分: {tech_score}/100"
+        
+        tech_flags = {
+            "ma20_cross_below": crossed_below,
+            "monthly_break_ma12": monthly_break
+        }
 
         # 確保資料按日期升序排序
         recent = df.sort_values("日期").tail(5).copy()
@@ -351,13 +383,13 @@ class MarketDynamicsAgent(TSMCBaseAgent):
 
         image_md = f"\n![Technical Chart]({chart_path})" if chart_path else ""
         if insights:
-            return f"{report_prefix}{' | '.join(insights)}{detail_suffix}{image_md}"
+            return f"{report_prefix}{' | '.join(insights)}{detail_suffix}{image_md}", tech_flags, tech_score
         if tsmc_declining and mkt_declining:
-            return f"{report_prefix}市場極度觀望：個股與大盤呈現連鎖縮量。{detail_suffix}{image_md}"
+            return f"{report_prefix}市場極度觀望：個股與大盤呈現連鎖縮量。{detail_suffix}{image_md}", tech_flags, tech_score
         elif tsmc_declining:
-            return f"{report_prefix}警訊：台積電成交量持續萎縮，資金動能轉弱。{detail_suffix}{image_md}"
+            return f"{report_prefix}警訊：台積電成交量持續萎縮，資金動能轉弱。{detail_suffix}{image_md}", tech_flags, tech_score
         
-        return f"{report_prefix}量能結構尚屬正常。{detail_suffix}{image_md}"
+        return f"{report_prefix}量能結構尚屬正常。{detail_suffix}{image_md}", tech_flags, tech_score
 
 class InstitutionalInvestorAgent(TSMCBaseAgent):
     """
@@ -393,11 +425,11 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         keep_latest_daily_charts(self.charts_dir, "chip_chart", datetime.now().strftime("%Y%m%d"))
         return filepath
 
-    def analyze_flow(self, chip_data: List[Dict]) -> str:
+    def analyze_flow(self, chip_data: List[Dict]) -> Tuple[str, Dict]:
         report_prefix = f"數據來源: {self.source}\n分析邏輯: {self.logic}\n結論: "
 
         if not chip_data:
-            return f"{report_prefix}查無法人籌碼資料。"
+            return f"{report_prefix}查無法人籌碼資料。", {}
 
         df = pd.DataFrame(chip_data)
 
@@ -410,7 +442,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             missing = base_columns - found_cols
             if not type_col:
                 missing.add('type/name')
-            return f"{report_prefix}籌碼資料格式不符，缺少欄位: {missing}。"
+            return f"{report_prefix}籌碼資料格式不符，缺少欄位: {missing}。", {}
 
         # 篩選外資資料用於繪圖與分析
         foreign_all = df[df[type_col] == 'Foreign_Investor'].sort_values('date', ascending=True)
@@ -419,22 +451,23 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         foreign = foreign_all.sort_values('date', ascending=False)
 
         if len(foreign) < 3:
-            return f"{report_prefix}籌碼資料不足，無法判斷趨勢。"
+            return f"{report_prefix}籌碼資料不足，無法判斷趨勢。", {}
 
         # 計算每日買賣超 (buy - sell)，使用 pd.to_numeric 確保轉換安全
         net_buy = pd.to_numeric(foreign['buy']) - pd.to_numeric(foreign['sell'])
         recent_net = net_buy.head(3).tolist()
+        total_sell_bn = abs(sum(recent_net)) / 10**8
 
         image_md = f"\n![Chip Chart]({chart_path})" if chart_path else ""
 
         # 檢查是否連續賣超
         is_selling = all(x < 0 for x in recent_net)
+        big_foreign_sell = bool(is_selling and (total_sell_bn >= 1.0)) # 達億元規模
         
         if is_selling:
-            total_sell_bn = abs(sum(recent_net)) / 10**8 # 換算為億元
-            return f"{report_prefix}趨勢警告：外資出現連續賣超！近三日累計賣超約 {total_sell_bn:.2f} 億元。{image_md}"
+            return f"{report_prefix}趨勢警告：外資出現連續賣超！近三日累計賣超約 {total_sell_bn:.2f} 億元。{image_md}", {"big_foreign_sell": big_foreign_sell}
         
-        return f"{report_prefix}籌碼動向平穩或呈現買盤支撐。{image_md}"
+        return f"{report_prefix}籌碼動向平穩或呈現買盤支撐。{image_md}", {"big_foreign_sell": False}
 
 class Orchestrator:
     """
