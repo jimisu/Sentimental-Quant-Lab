@@ -287,8 +287,10 @@ class MarketDynamicsAgent(TSMCBaseAgent):
             w_lookback = weekly.iloc[-15:-1]
             if not w_lookback.empty:
                 w_swing_idx = w_lookback.idxmax()
-                if latest_w_price > weekly.loc[w_swing_idx] and weekly_rsi.iloc[-1] < weekly_rsi.loc[w_swing_idx]:
-                    rsi_warnings.append("週線RSI頂背離(中期趨勢背離)")
+                swing_w_rsi = weekly_rsi.loc[w_swing_idx]
+                current_w_rsi = weekly_rsi.iloc[-1]
+                if latest_w_price > weekly.loc[w_swing_idx] and current_w_rsi < swing_w_rsi:
+                    rsi_warnings.append(f"週線RSI頂背離(週收盤新高但RSI {current_w_rsi:.1f} < 前高 {swing_w_rsi:.1f})")
                     penalties["early"] += 30
 
         # 組合早期警示報告
@@ -559,6 +561,23 @@ class Orchestrator:
             macro_score * 0.25
         )
 
+        # 檢查轉折訊號 (Trend Reversal Recognition)
+        reversal_active = (
+            tech_flags.get("ma20_cross_below", False) and 
+            tech_flags.get("monthly_break_ma12", False) and 
+            chip_flags.get("big_foreign_sell", False)
+        )
+        reversal_msg = ""
+        if reversal_active:
+            reversal_msg = "\n[！！！轉折訊號提醒！！！] 偵測到 20MA 轉負、月線破 MA12 且外資大額賣超，趨勢可能已出現反轉點！"
+            dashboard_summary += f" | {reversal_msg.strip()}"
+
+        # 檢查雙重黃燈警示 (Double Yellow Warning Recognition)
+        double_yellow = ("目前處於黃燈預警" in dashboard_summary) and (comprehensive_score < 60)
+        severe_msg = ""
+        if double_yellow:
+            severe_msg = "\n\033[1;37;41m【！嚴重警示！】儀表板與 AI 專家同時發出黃燈預警，基本面與技術面出現轉弱共振，請極度小心！\033[0m"
+
         # 控制台輸出
         print("\n=== [AI Agent 聯手分析報告] ===")
         print(f"[財務專家] > {fin_report}")
@@ -573,10 +592,23 @@ class Orchestrator:
             f"● 綜合健康得分: {comprehensive_score:.1f}/100"
         )
 
-        print(f"\n--- 綜合評分總結 ---\n{score_summary}\n------------------")
+        if reversal_msg:
+            print(f"\033[1;31;40m{reversal_msg}\033[0m")
+
+        # 控制台輸出評分總結，高於 80 分以綠色顯示，低於 60 分以黃色顯示
+        console_summary = score_summary
+        if comprehensive_score > 80:
+            console_summary = score_summary.replace(f"{comprehensive_score:.1f}/100", f"\033[1;32m🟢 {comprehensive_score:.1f}/100\033[0m")
+        elif comprehensive_score < 60:
+            console_summary = score_summary.replace(f"{comprehensive_score:.1f}/100", f"\033[1;33m🟡 {comprehensive_score:.1f}/100\033[0m")
+
+        print(f"\n--- 綜合評分總結 ---\n{console_summary}\n------------------")
+        if severe_msg:
+            print(severe_msg)
 
         # 寫入日誌
-        self._append_to_log(dashboard_summary, fin_report, tech_report, chip_report, macro_report, score_summary)
+        log_summary = dashboard_summary + (" | 嚴重警示：雙重黃燈共振" if double_yellow else "")
+        self._append_to_log(log_summary, fin_report, tech_report, chip_report, macro_report, score_summary)
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
     def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str, chip_report: str, macro_report: str, score_summary: str) -> None:

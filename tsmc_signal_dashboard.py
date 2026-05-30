@@ -10,7 +10,9 @@ import datetime as dt
 import json
 import os
 import re
+import random
 import sys
+import time
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -24,6 +26,15 @@ API_URL = "https://api.finmindtrade.com/api/v4/data"
 TWSE_AFTER_TRADING_URL = "https://www.twse.com.tw/rwd/zh/afterTrading"
 CACHE_DIR = "local_cache"
 CACHE_KEEP = 3
+
+# 初始化 Session 以維持 Cookies，並定義多組 User-Agent 以模擬真實瀏覽器
+session = requests.Session()
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
+]
 
 REVENUE_KEYS = ["Revenue", "TotalRevenue"]
 GROSS_PROFIT_KEYS = ["GrossProfit", "Gross_Profit"]
@@ -471,7 +482,23 @@ def fetch_twse_report(report: str, params: Dict[str, str]) -> List[List[str]]:
     """
     url = f"{TWSE_AFTER_TRADING_URL}/{report}"
     request_params = {"response": "json", **params}
-    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # 建立更完整的瀏覽器標頭，偽裝成從官網查詢頁面發出的請求
+    selected_ua = random.choice(USER_AGENTS)
+    headers = {
+        "User-Agent": selected_ua,
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.twse.com.tw/zh/trading/historical/stock-day.html",
+        "X-Requested-With": "XMLHttpRequest",
+        "Connection": "keep-alive",
+        "Host": "www.twse.com.tw"
+    }
+    
+    # 為不同的報表類型設定不同的 Referer
+    if "FMTQIK" in report:
+        headers["Referer"] = "https://www.twse.com.tw/zh/trading/historical/fmtqik.html"
+
     cache_key = build_cache_key(
         "twse",
         report,
@@ -479,12 +506,37 @@ def fetch_twse_report(report: str, params: Dict[str, str]) -> List[List[str]]:
         params.get("stockNo", "market"),
     )
 
-    try:
-        resp = requests.get(url, params=request_params, headers=headers, timeout=30)
-    except requests.RequestException as exc:
-        print(f"Error: TWSE request failed: {exc}", file=sys.stderr)
-        cached_data = get_cached_data(cache_key)
-        return cached_data if cached_data is not None else []
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # 移除固定的長延遲，改為微小的隨機抖動 (0.1s - 0.5s)，幾乎不影響速度
+            time.sleep(0.1 + random.random() * 0.4)
+            
+            resp = session.get(url, params=request_params, headers=headers, timeout=30, allow_redirects=False)
+            
+            # 檢查是否為 307 重新導向或回傳了 HTML 安全性頁面
+            content_type = resp.headers.get("Content-Type", "")
+            if resp.status_code == 307 or "text/html" in content_type:
+                if attempt < max_retries - 1:
+                    # 只有被攔截時才進行較長的等待並重試
+                    wait_time = (attempt + 1) * 2
+                    print(f"  -> 遭遇安全性防護，嘗試第 {attempt + 1} 次重試 (等待 {wait_time}s)...", file=sys.stderr)
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"  -> 提示: TWSE 安全性防護持續攔截，切換至快取模式。", file=sys.stderr)
+                    cached_data = get_cached_data(cache_key)
+                    return cached_data if cached_data is not None else []
+
+            if resp.status_code == 200:
+                break # 成功取得資料
+
+        except requests.RequestException as exc:
+            if attempt == max_retries - 1:
+                print(f"Error: TWSE request failed after {max_retries} attempts: {exc}", file=sys.stderr)
+                cached_data = get_cached_data(cache_key)
+                return cached_data if cached_data is not None else []
+            time.sleep(1)
 
     if resp.status_code != 200:
         print(
@@ -819,11 +871,11 @@ def generate_summary(styled_df: pd.DataFrame, market_sentiment_red: bool) -> str
     )
 
     if has_red:
-        return "目前處於紅燈預警，建議減碼並密切監控。"
+        return "🔴 目前處於紅燈預警，建議減碼並密切監控。"
     elif has_yellow:
-        return "目前處於黃燈預警，建議啟動階梯式觀察，暫不加碼。"
+        return "🟡 目前處於黃燈預警，建議啟動階梯式觀察，暫不加碼。"
     else:
-        return "目前皆為綠燈，可正常觀察並考慮適度加碼。"
+        return "🟢 目前皆為綠燈，可正常觀察並考慮適度加碼。"
 
 
 def main():
@@ -871,7 +923,16 @@ def main():
 
     # 產生並印出總結
     summary = generate_summary(styled_df, market_sentiment_red)
-    print("\n" + summary)
+    
+    # 控制台彩色輸出
+    display_summary = summary
+    if "紅燈" in summary:
+        display_summary = f"\033[1;31m{summary}\033[0m"
+    elif "黃燈" in summary:
+        display_summary = f"\033[1;33m{summary}\033[0m"
+    elif "綠燈" in summary:
+        display_summary = f"\033[1;32m{summary}\033[0m"
+    print("\n" + display_summary)
 
     # 執行 Agent 深度分析並紀錄日誌
     orchestrator.run_full_analysis(quarterly_margins, value_df, chip_data, summary)
