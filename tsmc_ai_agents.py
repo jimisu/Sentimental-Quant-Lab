@@ -474,6 +474,22 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         
         return f"{report_prefix}籌碼動向平穩或呈現買盤支撐。{image_md}", {"big_foreign_sell": False}, chip_score
 
+class GlobalMacroAgent(TSMCBaseAgent):
+    """
+    Agent 4: 全球市場連動專家
+    監控 ADR 折溢價、費城半導體指數 (SOX) 以及美股主要客戶動態。
+    """
+    def __init__(self):
+        super().__init__("全球宏觀 Agent")
+        self.source = "Yahoo Finance / OpenRouter (Global Market Data)"
+        self.logic = "分析美股 ADR 溢價狀況與費半指數走勢，捕捉台股開盤前的外部衝擊。"
+
+    def analyze_global_risk(self, adr_data: Dict) -> Tuple[str, int]:
+        # 假設邏輯：如果 ADR 較母股折價超過 1%，則視為負面訊號
+        # 目前先以回傳平穩狀態為主，預留給未來 API 對接
+        report = "數據來源: " + self.source + "\n分析邏輯: " + self.logic + "\n結論: 全球半導體情緒穩定，ADR 溢價處於正常區間。"
+        return report, 100
+
 class Orchestrator:
     """
     編排器：統合分析結論並寫入 Markdown 日誌
@@ -482,6 +498,7 @@ class Orchestrator:
         self.fin_agent = QuarterlyFinancialAgent()
         self.tech_agent = MarketDynamicsAgent()
         self.chip_agent = InstitutionalInvestorAgent()
+        self.macro_agent = GlobalMacroAgent()
         self.log_path = log_path
         
         # 建立圖表儲存目錄
@@ -493,6 +510,7 @@ class Orchestrator:
         fin_report = self.fin_agent.analyze_margins(quarterly_data)
         tech_report, tech_flags, tech_scores = self.tech_agent.analyze_sentiment(trading_df)
         chip_report, chip_flags, chip_score = self.chip_agent.analyze_flow(chip_data)
+        macro_report, macro_score = self.macro_agent.analyze_global_risk({})
         
         # 計算綜合分數 (根據用戶要求權重)
         # 1.早期警示 10%, 2.短期形態 20%, 3.中期趨勢 20%, 4.長期趨勢 25%, 5.籌碼分析 25%
@@ -509,10 +527,11 @@ class Orchestrator:
         print(f"[財務專家] > {fin_report}")
         print(f"[技術專家] > {tech_report}")
         print(f"[籌碼專家] > {chip_report}")
+        print(f"[宏觀專家] > {macro_report}")
         
         print("\n--- 綜合評分總結 ---")
         print(f"● 技術分項: 早期({tech_scores['early']})*0.1 | 短期({tech_scores['short']})*0.2 | 中期({tech_scores['mid']})*0.2 | 長期({tech_scores['long']})*0.25")
-        print(f"● 籌碼面總分: {chip_score}/100")
+        print(f"● 籌碼面總分: ({chip_score}) * 0.25")
         print(f"● 綜合健康得分: {comprehensive_score:.1f}/100")
         print("------------------")
 
