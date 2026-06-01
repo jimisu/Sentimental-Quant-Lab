@@ -29,6 +29,8 @@ python test.py                                          # latest TSMC price via 
 python finmind_tsmc.py [--token TOKEN] [--output-dir DIR]  # 1-year TSMC data via FinMind API
 python sentiment_engine.py                              # run sentiment analysis example
 python test_openrouter_models.py                        # test OpenRouter free models (needs OPENROUTER_API_KEY)
+python tsmc_financial_agent.py                          # run financial analysis agent standalone
+python tsmc_macro_agent.py [--tw-price PRICE]           # run macro analysis agent standalone
 ```
 
 ### Testing & Linting
@@ -41,7 +43,7 @@ python test_openrouter_models.py                        # test OpenRouter free m
 
 The repository is a quantitative analysis lab focused on TSMC (2330.TW) that combines:
 1. **Data Acquisition** - Fetching fundamental and market data from FinMind and TWSE
-2. **Analysis Engine** - Multi-agent AI system for financial, technical, and institutional analysis
+2. **Analysis Engine** - Multi-agent AI system for financial, technical, institutional, and macro analysis
 3. **Signal Dashboard** - Terminal-based visualization using rich library
 
 ### Core Components
@@ -58,7 +60,7 @@ The repository is a quantitative analysis lab focused on TSMC (2330.TW) that com
   - Last 10 trading days displayed in dashboard
 
 #### 2. Analysis Engine (`tsmc_ai_agents.py`)
-Implements three specialized AI agents that collaborate via an Orchestrator:
+Implements four specialized AI agents that collaborate via an Orchestrator:
 - **QuarterlyFinancialAgent (財務分析專家)**:
   - Analyzes quarterly gross margin, operating margin, and net profit margin
   - Triggers alerts when QoQ decline exceeds 2% for key metrics
@@ -71,6 +73,10 @@ Implements three specialized AI agents that collaborate via an Orchestrator:
   - Tracks foreign investment, trust, and dealer買賣超 dynamics
   - Flags Trend-killer signals (continuous foreign selling)
   - Confirms downtrends when large foreign selling combines with technical breakdown
+- **GlobalMacroAgent (全球宏觀專家)**:
+  - Monitors ADR premium/discount and external market data
+  - Tracks big tech CAPEX trends as demand indicators
+  - Analyzes currency effects on TSMC ADR pricing
 
 #### 3. Signal Dashboard (`tsmc_signal_dashboard.py`)
 - **Primary Interface**: Combines all data sources and agent analyses into a color-coded terminal dashboard
@@ -84,7 +90,11 @@ Implements three specialized AI agents that collaborate via an Orchestrator:
   - Green: All indicators healthy
 - **Output**: Rich-formatted tables with summary recommendation (減碼/觀察/加碼)
 
-#### 4. Caching System
+#### 4. Standalone Agent Scripts
+- **`tsmc_financial_agent.py`** - Independent execution of financial analysis
+- **`tsmc_macro_agent.py`** - Independent execution of macro analysis with optional TWSE price input for ADR analysis
+
+#### 5. Caching System
 - **`local_cache/` directory**: Stores API responses to minimize redundant calls
 - **Cache Policy**: Keeps only the 3 most recent copies per cache key (CACHE_KEEP=3)
 - **Cache Keys**: Generated from request parameters to ensure uniqueness
@@ -92,11 +102,13 @@ Implements three specialized AI agents that collaborate via an Orchestrator:
 ## Repository Layout
 
 - **`tsmc_signal_dashboard.py`** - Main execution script for the dashboard
-- **`tsmc_ai_agents.py`** - Contains the three AI agents and Orchestrator
+- **`tsmc_ai_agents.py`** - Contains the four AI agents and Orchestrator
 - **`finmind_tsmc.py`** - FinMind API client for fundamental data
 - **`test.py`** - Yahoo Finance client for real-time price
 - **`sentiment_engine.py`** - VaderSentiment-based sentiment analysis utility
 - **`test_openrouter_models.py`** - OpenRouter model benchmarking tool
+- **`tsmc_financial_agent.py`** - Standalone financial analysis agent
+- **`tsmc_macro_agent.py`** - Standalone global macro analysis agent
 - **`local_cache/`** - Automatic cache of API responses (gitignored)
 - **`test_data/`** - Pre-fetched datasets for offline analysis (gitignored)
 - **`requirements.txt`** - Project dependencies: requests, httpx, rich, pandas, matplotlib
@@ -117,3 +129,4 @@ Implements three specialized AI agents that collaborate via an Orchestrator:
 3. Agent analyses are deterministic based on input data - no external ML models
 4. Output is terminal-only by design; no files written unless caching or explicit save
 5. For deeper analysis, import functions from component scripts rather than modifying dashboard
+6. Charts directory stores technical and chip analysis visualizations (auto-cleaned to latest 3 per day)

@@ -5,7 +5,6 @@ TSMC AI Agents 模組
 """
 
 import pandas as pd
-import requests
 try:
     import matplotlib.pyplot as plt
     HAS_MATPLOTLIB = True
@@ -15,6 +14,9 @@ import os
 import re
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+
+from tsmc_financial_agent import QuarterlyFinancialAgent
+from tsmc_macro_agent import GlobalMacroAgent
 
 
 def prepare_daily_chart_path(charts_dir: str, prefix: str) -> str:
@@ -55,55 +57,6 @@ class TSMCBaseAgent:
 
     def summarize(self, analysis: str) -> str:
         return f"[{self.name}] 報告摘要: {analysis}"
-
-class QuarterlyFinancialAgent(TSMCBaseAgent):
-    """
-    Agent 1: 財務預測與三率分析專家
-    """
-    def __init__(self):
-        super().__init__("財務分析 Agent")
-        self.source = "FinMind 財務報表資料集 (TaiwanStockFinancialStatements)"
-        self.logic = "監控毛利率、營業利益率與稅後淨利率之季度趨勢。檢查最新季度是否達成『三率持續上升』之強勢基本面訊號。"
-
-    def analyze_margins(self, quarterly_data: Dict) -> str:
-        if not quarterly_data:
-            return "查無季度財務資料。"
-        
-        insights = []
-        # 由新到舊排序
-        sorted_keys = sorted(quarterly_data.keys(), reverse=True)
-        if len(sorted_keys) < 3:
-            return f"[數據來源: {self.source}] 資料不足三季，無法判斷持續趨勢。"
-
-        q0 = quarterly_data[sorted_keys[0]]
-        q1 = quarterly_data[sorted_keys[1]]
-        q2 = quarterly_data[sorted_keys[2]]
-
-        def safe_val(q, key):
-            val = q.get(key)
-            return val if val is not None else 0
-
-        # 檢查三率是否持續上升 (Q0 > Q1 > Q2)
-        metrics = {
-            '毛利率': ('gross_margin', safe_val(q0, 'gross_margin'), safe_val(q1, 'gross_margin'), safe_val(q2, 'gross_margin')),
-            '營業利益率': ('operating_margin', safe_val(q0, 'operating_margin'), safe_val(q1, 'operating_margin'), safe_val(q2, 'operating_margin')),
-            '稅後淨利率': ('net_margin', safe_val(q0, 'net_margin'), safe_val(q1, 'net_margin'), safe_val(q2, 'net_margin'))
-        }
-
-        uptrend_count = 0
-        for name, (key, v0, v1, v2) in metrics.items():
-            if v0 > v1 > v2:
-                insights.append(f"✅ {name}持續上升 (連兩季成長: {v2:.1f}% -> {v1:.1f}% -> {v0:.1f}%)")
-                uptrend_count += 1
-            elif v0 > v1:
-                insights.append(f"📈 {name}單季回升 ({v1:.1f}% -> {v0:.1f}%)，但未達連兩季成長")
-            elif v0 < v1:
-                insights.append(f"⚠️ {name}最新一季出現下滑 ({v1:.1f}% -> {v0:.1f}%)")
-
-        status = "【多頭：三率持續同步上升】" if uptrend_count == 3 else "【警告：成長趨勢出現分歧】"
-        summary = " | ".join(insights)
-        
-        return f"數據來源: {self.source}\n分析邏輯: {self.logic}\n結論: {status}\n細節: {summary}"
 
 class MarketDynamicsAgent(TSMCBaseAgent):
     """
@@ -405,8 +358,22 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
     def __init__(self):
         super().__init__("籌碼分析 Agent")
         self.source = "FinMind 三大法人買賣超資料集 (TaiwanStockInstitutionalInvestorsBuySell)"
-        self.logic = "追蹤三大法人（特別是外資）之連續買賣超行為。連續賣超被視為 Trend-killer 訊號，代表大資金撤離。"
+        self.logic = "追蹤三大法人（外資、投信、自營商）買賣超行為。連續外資賣超被視為 Trend-killer 訊號；三大法人同步買超則視為籌碼共振。"
         self.charts_dir = "charts"
+        self.institution_type_labels = {
+            "Foreign_Investor": "外資",
+            "Foreign_Dealer_Self": "外資",
+            "Investment_Trust": "投信",
+            "Dealer": "自營商",
+            "Dealer_self": "自營商",
+            "Dealer_Hedging": "自營商",
+            "外資": "外資",
+            "外陸資": "外資",
+            "投信": "投信",
+            "自營商": "自營商",
+            "自營商(自行買賣)": "自營商",
+            "自營商(避險)": "自營商",
+        }
 
     def _generate_chip_chart(self, df: pd.DataFrame) -> str:
         """產生籌碼流向圖"""
@@ -431,6 +398,70 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         keep_latest_daily_charts(self.charts_dir, "chip_chart", datetime.now().strftime("%Y%m%d"))
         return filepath
 
+    def _normalize_institution_label(self, raw_label) -> Optional[str]:
+        label = str(raw_label).strip()
+        return self.institution_type_labels.get(label)
+
+    def _format_amount_100m(self, amount: float) -> str:
+        direction = "買超" if amount > 0 else "賣超" if amount < 0 else "持平"
+        return f"{direction} {abs(amount) / 10**8:.2f} 億元"
+
+    def _analyze_three_institution_resonance(self, df: pd.DataFrame, type_col: str) -> Tuple[str, Dict]:
+        normalized = df.copy()
+        normalized["institution_label"] = normalized[type_col].apply(self._normalize_institution_label)
+        normalized = normalized[normalized["institution_label"].notna()].copy()
+
+        if normalized.empty:
+            return "三大法人資料不足，無法判斷是否共振買入。", {
+                "institutional_resonance_buy": False,
+                "three_institution_net_buy": 0,
+            }
+
+        normalized["buy"] = pd.to_numeric(normalized["buy"], errors="coerce").fillna(0)
+        normalized["sell"] = pd.to_numeric(normalized["sell"], errors="coerce").fillna(0)
+        normalized["net_buy"] = normalized["buy"] - normalized["sell"]
+
+        daily_net = (
+            normalized
+            .groupby(["date", "institution_label"], as_index=False)["net_buy"]
+            .sum()
+        )
+        complete_dates = (
+            daily_net.groupby("date")["institution_label"]
+            .nunique()
+            .loc[lambda series: series >= 3]
+        )
+
+        if complete_dates.empty:
+            return "三大法人資料不足，無法判斷是否共振買入。", {
+                "institutional_resonance_buy": False,
+                "three_institution_net_buy": 0,
+            }
+
+        latest_date = sorted(complete_dates.index)[-1]
+        latest = daily_net[daily_net["date"] == latest_date]
+        net_by_label = {
+            row["institution_label"]: float(row["net_buy"])
+            for _, row in latest.iterrows()
+        }
+
+        required_labels = ["外資", "投信", "自營商"]
+        is_sync_buy = all(net_by_label.get(label, 0) > 0 for label in required_labels)
+        total_net = sum(net_by_label.get(label, 0) for label in required_labels)
+        detail = "，".join(
+            f"{label}{self._format_amount_100m(net_by_label.get(label, 0))}"
+            for label in required_labels
+        )
+        resonance_text = "是共振買入" if is_sync_buy else "不是共振買入"
+        report = (
+            f"三大法人同步檢查 ({latest_date}): {detail}；"
+            f"合計{self._format_amount_100m(total_net)}，判定：{resonance_text}。"
+        )
+        return report, {
+            "institutional_resonance_buy": is_sync_buy,
+            "three_institution_net_buy": total_net,
+        }
+
     def analyze_flow(self, chip_data: List[Dict]) -> Tuple[str, Dict, int]:
         report_prefix = f"數據來源: {self.source}\n分析邏輯: {self.logic}\n結論: "
 
@@ -450,14 +481,17 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
                 missing.add('type/name')
             return f"{report_prefix}籌碼資料格式不符，缺少欄位: {missing}。", {}, 0
 
+        df["institution_label"] = df[type_col].apply(self._normalize_institution_label)
+
         # 篩選外資資料用於繪圖與分析
-        foreign_all = df[df[type_col] == 'Foreign_Investor'].sort_values('date', ascending=True)
+        foreign_all = df[df["institution_label"] == '外資'].sort_values('date', ascending=True)
         chart_path = self._generate_chip_chart(foreign_all)
+        resonance_report, resonance_flags = self._analyze_three_institution_resonance(df, type_col)
         
         foreign = foreign_all.sort_values('date', ascending=False)
 
         if len(foreign) < 3:
-            return f"{report_prefix}籌碼資料不足，無法判斷趨勢。", {}, 0
+            return f"{report_prefix}籌碼資料不足，無法判斷趨勢。{resonance_report}", resonance_flags, 0
 
         # 計算每日買賣超 (buy - sell)，使用 pd.to_numeric 確保轉換安全
         net_buy = pd.to_numeric(foreign['buy']) - pd.to_numeric(foreign['sell'])
@@ -472,60 +506,15 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         
         chip_score = 80 if big_foreign_sell else 100  # 用戶指定權重: 20 (100-20=80)
         
+        chip_flags = {
+            "big_foreign_sell": big_foreign_sell,
+            **resonance_flags,
+        }
+
         if is_selling:
-            return f"{report_prefix}趨勢警告：外資出現連續賣超！近三日累計賣超約 {total_sell_bn:.2f} 億元。{image_md}", {"big_foreign_sell": big_foreign_sell}, chip_score
+            return f"{report_prefix}趨勢警告：外資出現連續賣超！近三日累計賣超約 {total_sell_bn:.2f} 億元。{resonance_report}{image_md}", chip_flags, chip_score
         
-        return f"{report_prefix}籌碼動向平穩或呈現買盤支撐。{image_md}", {"big_foreign_sell": False}, chip_score
-
-class GlobalMacroAgent(TSMCBaseAgent):
-    """
-    Agent 4: 全球市場連動專家
-    監控 ADR 折溢價、費城半導體指數 (SOX) 以及美股主要客戶動態。
-    """
-    def __init__(self):
-        super().__init__("全球宏觀 Agent")
-        self.source = "Yahoo Finance (TSM ADR & TWD=X)"
-        self.logic = "分析美股 ADR 溢價狀況與費半指數走勢，捕捉台股開盤前的外部衝擊。"
-
-    def analyze_global_risk(self, tw_price: float) -> Tuple[str, int]:
-        if tw_price <= 0:
-            return "宏觀專家: 無法取得台股收盤價，跳過 ADR 分析。", 100
-
-        try:
-            # 取得 TSM (ADR) 與 TWD=X (匯率)
-            tsm_price = self._fetch_yahoo_price("TSM")
-            usdtwd = self._fetch_yahoo_price("TWD=X")
-            
-            # 1 TSM ADR = 5 2330 Ordinary Shares
-            adr_tw_equiv = (tsm_price * usdtwd) / 5
-            premium = (adr_tw_equiv - tw_price) / tw_price * 100
-            
-            score = 100
-            if premium < -1:
-                score -= 40
-            elif premium < 0:
-                score -= 20
-            
-            status = "溢價" if premium >= 0 else "折價"
-            conclusion = f"{status} {abs(premium):.2f}% (ADR折算價: {adr_tw_equiv:.2f} / 台股現價: {tw_price:.2f})"
-            
-            report = (
-                f"數據來源: {self.source}\n"
-                f"分析邏輯: {self.logic}\n"
-                f"結論: {conclusion}\n"
-                f"匯率參考: {usdtwd:.2f}"
-            )
-            return report, score
-        except Exception as e:
-            return f"⚠️ 宏觀專家: 外部數據抓取失敗 ({e})，請檢查網路連線或 API 狀態。", 100
-
-    def _fetch_yahoo_price(self, ticker: str) -> float:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        return float(data['chart']['result'][0]['meta']['regularMarketPrice'])
+        return f"{report_prefix}籌碼動向平穩或呈現買盤支撐。{resonance_report}{image_md}", chip_flags, chip_score
 
 class Orchestrator:
     """

@@ -26,6 +26,7 @@ API_URL = "https://api.finmindtrade.com/api/v4/data"
 TWSE_AFTER_TRADING_URL = "https://www.twse.com.tw/rwd/zh/afterTrading"
 CACHE_DIR = "local_cache"
 CACHE_KEEP = 3
+FINANCIAL_CACHE_MAX_AGE_DAYS = 7
 
 # 初始化 Session 以維持 Cookies，並定義多組 User-Agent 以模擬真實瀏覽器
 session = requests.Session()
@@ -126,6 +127,54 @@ def get_cached_data(cache_key: str):
         return None
     print(f"  -> 使用本機快取: {cache_key}")
     return cached.get("data")
+
+
+def read_fresh_cached_payload(cache_key: str, max_age_days: int) -> Optional[Dict]:
+    """
+    讀取未過期的快取 payload。
+    """
+    cached = read_latest_cache(cache_key)
+    if cached is None:
+        return None
+
+    cached_at = cached.get("cached_at")
+    if not cached_at:
+        return None
+
+    try:
+        cached_dt = dt.datetime.fromisoformat(cached_at)
+    except ValueError:
+        return None
+
+    age = dt.datetime.now() - cached_dt
+    if age > dt.timedelta(days=max_age_days):
+        return None
+
+    print(f"  -> 使用一週內財務快取: {cache_key} (cached_at={cached_at})")
+    return cached
+
+
+def serialize_quarterly_margins(quarterly_margins: Dict[Tuple[int, int], Dict]) -> Dict[str, Dict]:
+    """
+    將 tuple key 轉成 JSON 可存的字串 key。
+    """
+    return {
+        f"{year}Q{quarter}": values
+        for (year, quarter), values in quarterly_margins.items()
+    }
+
+
+def deserialize_quarterly_margins(payload: Dict) -> Dict[Tuple[int, int], Dict]:
+    """
+    將 JSON 快取中的季度字串 key 還原成 tuple key。
+    """
+    result = {}
+    for key, values in payload.items():
+        match = re.fullmatch(r"(\d{4})Q([1-4])", key)
+        if not match:
+            continue
+        result[(int(match.group(1)), int(match.group(2)))] = values
+    return result
 
 
 def fetch_finmind_dataset(
@@ -299,6 +348,11 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
         - op_drop: 與上一季的營業利益率變化百分點 (上一季 - 當季)，正數代表下滑
     對於第一季（最早的一季），drop 為 None。
     """
+    cache_key = build_cache_key("financial_agent", "quarterly_margins", "2330")
+    cached = read_fresh_cached_payload(cache_key, FINANCIAL_CACHE_MAX_AGE_DAYS)
+    if cached is not None:
+        return deserialize_quarterly_margins(cached.get("data", {}))
+
     # 取得過去一年的財務報表（季資料）
     start_date = (TODAY - dt.timedelta(days=500)).isoformat()
     end_date = TODAY.isoformat()
@@ -402,6 +456,21 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
             "op_drop": op_drop,
             "net_drop": net_drop,
         }
+
+    write_circular_cache(
+        cache_key,
+        {
+            "source": "processed_financial_agent",
+            "metadata": {
+                "stock_id": "2330",
+                "max_age_days": FINANCIAL_CACHE_MAX_AGE_DAYS,
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            "cached_at": dt.datetime.now().isoformat(timespec="seconds"),
+            "data": serialize_quarterly_margins(result),
+        },
+    )
     return result
 
 
