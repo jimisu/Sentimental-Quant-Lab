@@ -22,7 +22,6 @@ BIG_TECH_COMPANIES = {
     "NVIDIA": {
         "ticker": "NVDA",
         "cik": "0001045810",
-        "capex_tags": ["PaymentsToAcquirePropertyPlantAndEquipment"],
     },
     "Apple": {"ticker": "AAPL", "cik": "0000320193"},
     "Tesla": {"ticker": "TSLA", "cik": "0001318605"},
