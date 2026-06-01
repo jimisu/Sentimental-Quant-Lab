@@ -569,10 +569,14 @@ class Orchestrator:
 
         # 控制台輸出
         print("\n=== [AI Agent 聯手分析報告] ===")
-        print(f"[財務專家] > {fin_report}")
-        print(f"[技術專家] > {tech_report}")
-        print(f"[籌碼專家] > {chip_report}")
         print(f"[宏觀專家] > {macro_report}")
+        print()
+        print(f"[財務專家] > {fin_report}")
+        print()
+        print(f"[技術專家] > {tech_report}")
+        print()
+        print(f"[籌碼專家] > {chip_report}")
+        print()
         
         # 整合評分總結字串
         score_summary = (
@@ -608,10 +612,10 @@ class Orchestrator:
             f"## 分析日期: {timestamp}",
             f"**儀表板總結**: {dashboard_summary}",
             f"### 綜合評分\n{score_summary}",
-            f"- **財務 Agent 分析**: {fin_report}",
-            f"- **技術 Agent 分析**: {tech_report}",
-            f"- **籌碼 Agent 分析**: {chip_report}",
-            f"- **宏觀 Agent 分析**: {macro_report}",
+            f"- **宏觀 Agent 分析**: {macro_report}\n",
+            f"- **財務 Agent 分析**: {fin_report}\n",
+            f"- **技術 Agent 分析**: {tech_report}\n",
+            f"- **籌碼 Agent 分析**: {chip_report}\n",
             "\n---\n"
         ]
         
