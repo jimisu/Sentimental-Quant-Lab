@@ -8,6 +8,8 @@ import pandas as pd
 try:
     import matplotlib.pyplot as plt
     import matplotlib as mpl
+    import matplotlib.dates as mdates
+    from matplotlib.ticker import MaxNLocator
     HAS_MATPLOTLIB = True
     mpl.rcParams["font.family"] = "sans-serif"
     mpl.rcParams["font.sans-serif"] = [
@@ -42,9 +44,9 @@ def prepare_daily_chart_path(charts_dir: str, prefix: str) -> str:
     return os.path.join(charts_dir, filename)
 
 
-def keep_latest_daily_charts(charts_dir: str, prefix: str, date_part: str, keep: int = 3) -> None:
+def keep_latest_daily_charts(charts_dir: str, prefix: str, date_part: str, keep: int = 1) -> None:
     """
-    每天每種圖只保留最新 N 張，避免 charts 目錄持續膨脹。
+    每天每種圖只保留最新一張，避免 charts 目錄同日期圖表重複。
     """
     if keep <= 0 or not os.path.exists(charts_dir):
         return
@@ -88,7 +90,10 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         df['5MA'] = df['台積電收盤價'].rolling(window=5).mean()
         df['20MA'] = df['台積電收盤價'].rolling(window=20).mean()
         
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [3, 1]})
+        close_prices = pd.to_numeric(df['台積電收盤價'], errors='coerce').dropna()
+        rsi14 = self._calculate_rsi(close_prices, period=14).reindex(df.index)
+
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10), gridspec_kw={'height_ratios': [3, 1, 1]})
         
         # 價格與均線
         ax1.plot(df['日期'], df['台積電收盤價'], label='Close Price', color='black', linewidth=1.5)
@@ -100,17 +105,65 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         ax1.grid(True, alpha=0.3)
 
         # 成交量
-        colors = ['red' if c >= 0 else 'green' for c in df['台積電收盤價'].diff()]
         ax2.bar(df['日期'], df['台積電成交金額'] / 10**8, color='gray', alpha=0.5, label='Volume (100M)')
         ax2.set_ylabel("Volume (100M)")
         ax2.set_xlabel("Date")
-        plt.xticks(rotation=45)
+        ax2.grid(True, alpha=0.2)
+
+        # RSI
+        ax3.plot(df['日期'], rsi14, label='RSI14', color='purple', linewidth=1.5)
+        ax3.axhline(70, color='red', linestyle='--', linewidth=0.8)
+        ax3.axhline(30, color='green', linestyle='--', linewidth=0.8)
+        ax3.set_ylabel('RSI')
+        ax3.set_xlabel('Date')
+        ax3.set_ylim(0, 100)
+        ax3.legend(loc='upper left')
+        ax3.grid(True, alpha=0.2)
+
+        # 標註 RSI 頂背離
+        if len(df) >= 20 and rsi14.notna().sum() >= 20:
+            lookback = df.iloc[-60:-5]
+            if not lookback.empty:
+                swing_idx = lookback['台積電收盤價'].idxmax()
+                swing_rsi = rsi14.loc[swing_idx]
+                current_price = df['台積電收盤價'].iloc[-1]
+                current_rsi = rsi14.iloc[-1]
+                swing_price = df.loc[swing_idx, '台積電收盤價']
+                if pd.notna(swing_rsi) and current_price >= swing_price and current_rsi < swing_rsi:
+                    latest_date = df['日期'].iloc[-1]
+                    ax1.annotate(
+                        'RSI 頂背離',
+                        xy=(latest_date, current_price),
+                        xytext=(latest_date, current_price * 1.03),
+                        arrowprops=dict(arrowstyle='->', color='purple', lw=1),
+                        color='purple',
+                        fontsize=10,
+                        va='bottom',
+                        ha='right'
+                    )
+                    ax3.annotate(
+                        'RSI 頂背離',
+                        xy=(latest_date, current_rsi),
+                        xytext=(latest_date, min(current_rsi + 12, 98)),
+                        arrowprops=dict(arrowstyle='->', color='purple', lw=1),
+                        color='purple',
+                        fontsize=10,
+                        va='bottom',
+                        ha='right'
+                    )
+
+        # 優化 x 軸日期標籤顯示：減少刻度數量避免重疊
+        date_count = len(df)
+        max_ticks = min(8, max(4, date_count // 20))  # 根據資料量調整刻度數
+        for ax in [ax1, ax2, ax3]:
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=max_ticks, integer=False))
+            ax.tick_params(axis='x', rotation=45)
         
         plt.tight_layout()
         filepath = prepare_daily_chart_path(self.charts_dir, "tech_chart")
-        plt.savefig(filepath)
+        plt.savefig(filepath, dpi=100, bbox_inches='tight')
         plt.close()
-        keep_latest_daily_charts(self.charts_dir, "tech_chart", datetime.now().strftime("%Y%m%d"))
+        keep_latest_daily_charts(self.charts_dir, "tech_chart", datetime.now().strftime("%Y%m%d"), keep=1)
         return filepath
 
     def _format_20ma_deviation(self, df: pd.DataFrame) -> Tuple[str, bool]:
@@ -397,17 +450,34 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         
         plt.figure(figsize=(10, 4))
         colors = ['red' if x >= 0 else 'green' for x in df['net_buy']]
-        plt.bar(df['date'], df['net_buy'] / 1000, color=colors, alpha=0.7)
+        bars = plt.bar(df['date'], df['net_buy'] / 1000, color=colors, alpha=0.7)
         plt.title("Foreign Investor Net Buy/Sell (TSMC)")
         plt.ylabel("Net Quantity (Lots/張)")
         plt.axhline(0, color='black', linewidth=0.8)
+
+        if not df.empty:
+            summary_idx = (df['net_buy'].abs() / 1000).idxmax()
+            summary_date = df.loc[summary_idx, 'date']
+            summary_value = df.loc[summary_idx, 'net_buy'] / 1000
+            summary_label = f"最大{'買超' if summary_value >= 0 else '賣超'} {abs(summary_value):.0f} 張"
+            plt.text(
+                summary_date,
+                summary_value,
+                summary_label,
+                ha='center',
+                va='bottom' if summary_value >= 0 else 'top',
+                color='black',
+                fontsize=9,
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.2')
+            )
+
         plt.xticks(rotation=45)
         plt.tight_layout()
         
         filepath = prepare_daily_chart_path(self.charts_dir, "chip_chart")
         plt.savefig(filepath)
         plt.close()
-        keep_latest_daily_charts(self.charts_dir, "chip_chart", datetime.now().strftime("%Y%m%d"))
+        keep_latest_daily_charts(self.charts_dir, "chip_chart", datetime.now().strftime("%Y%m%d"), keep=1)
         return filepath
 
     def _normalize_institution_label(self, raw_label) -> Optional[str]:
