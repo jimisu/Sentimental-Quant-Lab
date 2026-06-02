@@ -14,6 +14,8 @@
 - **Changed**: 在 `config.py` 新增 `capex_ttl_days` 設定，預設為 14 天。
 - **Changed**: 重新編排分析報告與日誌的輸出順序，調整為：宏觀、財務、技術、籌碼。
 - **Improved**: 優化 `Orchestrator` 以支援過期判定，若快取在兩週內，將直接使用本機 Capex 分析結果，減少外部 API 依賴。
+- **Fixed**: 修正 `GlobalMacroAgent` 在 `tsmc_macro_agent.py` 的外部資料抓取邏輯，新增 `requests.Session` 重試策略與 SEC 資料快取回退機制。
+- **Fixed**: 處理 `tsmc_ai_agents.py` 圖表中文字型缺失問題，為 matplotlib 設定中文常用字型清單並關閉 `unicode_minus`，避免 `DejaVu Sans` 警告。
 
 ## [2026-05-31 05:45]
 - **Fixed**: 強化 Yahoo Finance 抓取魯棒性。實作過期快取回退（Stale Fallback）機制，確保在 API 攔截時仍能顯示分析結果。

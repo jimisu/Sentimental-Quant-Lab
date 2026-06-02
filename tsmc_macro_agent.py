@@ -5,16 +5,78 @@ TSMC 全球宏觀 Agent
 """
 
 import argparse
-from datetime import date
+import functools
+import json
+import os
+import re
+import time
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
+CACHE_DIR = os.path.join("local_cache", "macro_agent")
+CACHE_MAX_AGE_DAYS = 3
 
 SEC_HEADERS = {
     "User-Agent": "Sentimental-Quant-Lab/1.0 contact@example.com",
     "Accept-Encoding": "gzip, deflate",
 }
+
+
+def _ensure_cache_dir() -> None:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def _safe_cache_key(key: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", key).strip("_")
+
+
+def _cache_path(cache_key: str) -> str:
+    _ensure_cache_dir()
+    return os.path.join(CACHE_DIR, f"{_safe_cache_key(cache_key)}.json")
+
+
+def _read_cached_payload(cache_key: str, max_age_days: int = CACHE_MAX_AGE_DAYS) -> Optional[Dict]:
+    path = _cache_path(cache_key)
+    if not os.path.exists(path):
+        return None
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    cached_at = payload.get("cached_at")
+    if not cached_at:
+        return payload.get("data")
+
+    try:
+        cached_dt = datetime.fromisoformat(cached_at)
+    except ValueError:
+        return payload.get("data")
+
+    if datetime.now() - cached_dt > timedelta(days=max_age_days):
+        return None
+
+    return payload.get("data")
+
+
+def _write_cached_payload(cache_key: str, data: Dict) -> None:
+    path = _cache_path(cache_key)
+    payload = {
+        "cached_at": datetime.now().isoformat(timespec="seconds"),
+        "data": data,
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
 
 BIG_TECH_COMPANIES = {
     "Amazon": {"ticker": "AMZN", "cik": "0001018724"},
@@ -45,9 +107,53 @@ class GlobalMacroAgent:
         self.name = "全球宏觀 Agent"
         self.source = "Yahoo Finance (TSM ADR & TWD=X) / SEC 官方 10-Q/10-K filings"
         self.logic = "分析美股 ADR 溢價狀況，以及 AI 與雲端大廠資本支出趨勢，捕捉台積電外部需求變化。"
+        self.session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+        self.session.headers.update({
+            "User-Agent": "Sentimental-Quant-Lab/1.0 (+https://github.com/jimisu)",
+        })
 
     def summarize(self, analysis: str) -> str:
         return f"[{self.name}] 報告摘要: {analysis}"
+
+    def _http_get_json(self, url: str, headers: Optional[Dict[str, str]] = None, params: Optional[Dict[str, str]] = None, timeout: int = 20) -> Dict:
+        try:
+            resp = self.session.get(url, headers=headers, params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"HTTP request failed: {exc}")
+        except ValueError as exc:
+            raise RuntimeError(f"無效 JSON 回傳: {exc}")
+
+    def _fetch_json_with_cache(self, cache_key: str, url: str, headers: Optional[Dict[str, str]] = None, params: Optional[Dict[str, str]] = None, timeout: int = 20) -> Dict:
+        cached = _read_cached_payload(cache_key, max_age_days=CACHE_MAX_AGE_DAYS)
+        if cached is not None:
+            return cached
+
+        try:
+            data = self._http_get_json(url, headers=headers, params=params, timeout=timeout)
+            _write_cached_payload(cache_key, data)
+            return data
+        except Exception as exc:
+            # 若快取過期但仍可用，則以舊快取為備援
+            cache_path = _cache_path(cache_key)
+            if os.path.exists(cache_path):
+                try:
+                    with open(cache_path, encoding="utf-8") as f:
+                        payload = json.load(f)
+                        return payload.get("data", {})
+                except (OSError, json.JSONDecodeError):
+                    pass
+            raise
 
     def analyze_global_risk(self, tw_price: float) -> Tuple[str, int]:
         if tw_price <= 0:
@@ -144,20 +250,31 @@ class GlobalMacroAgent:
         lines.append(conclusion)
         return "\n".join(lines), score
 
+    @functools.lru_cache(maxsize=8)
     def _fetch_yahoo_price(self, ticker: str) -> float:
-        headers = {'User-Agent': 'Mozilla/5.0'}
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        return float(data['chart']['result'][0]['meta']['regularMarketPrice'])
+        data = self._http_get_json(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+
+        result = data.get("chart", {}).get("result")
+        if not result or not isinstance(result, list):
+            raise RuntimeError("Yahoo Finance 回傳格式異常，無法解析價格。")
+
+        meta = result[0].get("meta", {})
+        price = meta.get("regularMarketPrice")
+        if price is None:
+            raise RuntimeError("Yahoo Finance 無法取得 regularMarketPrice。")
+
+        return float(price)
 
     def _fetch_recent_capex_quarters(self, company_meta: Dict) -> List[Dict]:
         cik = company_meta["cik"]
         url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-        resp = requests.get(url, headers=SEC_HEADERS, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
+        cache_key = f"sec_companyfacts_{cik}"
+
+        try:
+            data = self._fetch_json_with_cache(cache_key, url, headers=SEC_HEADERS, timeout=20)
+        except Exception as exc:
+            raise RuntimeError(f"SEC 資料抓取失敗: {exc}")
 
         facts = data.get("facts", {}).get("us-gaap", {})
         best_quarters = []

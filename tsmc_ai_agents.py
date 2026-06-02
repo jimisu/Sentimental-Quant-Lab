@@ -7,7 +7,19 @@ TSMC AI Agents 模組
 import pandas as pd
 try:
     import matplotlib.pyplot as plt
+    import matplotlib as mpl
     HAS_MATPLOTLIB = True
+    mpl.rcParams["font.family"] = "sans-serif"
+    mpl.rcParams["font.sans-serif"] = [
+        "AppleGothic",
+        "Heiti TC",
+        "PingFang TC",
+        "Arial Unicode MS",
+        "Noto Sans CJK TC",
+        "Microsoft JhengHei",
+        "SimHei",
+    ]
+    mpl.rcParams["axes.unicode_minus"] = False
 except ImportError:
     HAS_MATPLOTLIB = False
 import os
