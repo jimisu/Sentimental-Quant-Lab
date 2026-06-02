@@ -385,9 +385,9 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         
         plt.figure(figsize=(10, 4))
         colors = ['red' if x >= 0 else 'green' for x in df['net_buy']]
-        plt.bar(df['date'], df['net_buy'] / 10**8, color=colors, alpha=0.7)
+        plt.bar(df['date'], df['net_buy'] / 1000, color=colors, alpha=0.7)
         plt.title("Foreign Investor Net Buy/Sell (TSMC)")
-        plt.ylabel("Net Amount (100M TWD)")
+        plt.ylabel("Net Quantity (Lots/張)")
         plt.axhline(0, color='black', linewidth=0.8)
         plt.xticks(rotation=45)
         plt.tight_layout()
@@ -402,9 +402,9 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         label = str(raw_label).strip()
         return self.institution_type_labels.get(label)
 
-    def _format_amount_100m(self, amount: float) -> str:
-        direction = "買超" if amount > 0 else "賣超" if amount < 0 else "持平"
-        return f"{direction} {abs(amount) / 10**8:.2f} 億元"
+    def _format_lots(self, shares: float) -> str:
+        direction = "買超" if shares > 0 else "賣超" if shares < 0 else "持平"
+        return f"{direction} {abs(shares) / 1000:.0f} 張"
 
     def _analyze_three_institution_resonance(self, df: pd.DataFrame, type_col: str) -> Tuple[str, Dict]:
         normalized = df.copy()
@@ -419,11 +419,12 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
 
         normalized["buy"] = pd.to_numeric(normalized["buy"], errors="coerce").fillna(0)
         normalized["sell"] = pd.to_numeric(normalized["sell"], errors="coerce").fillna(0)
-        normalized["net_buy"] = normalized["buy"] - normalized["sell"]
+        # 直接計算淨買賣股數
+        normalized["net_buy_shares"] = normalized["buy"] - normalized["sell"]
 
         daily_net = (
             normalized
-            .groupby(["date", "institution_label"], as_index=False)["net_buy"]
+            .groupby(["date", "institution_label"], as_index=False)["net_buy_shares"]
             .sum()
         )
         complete_dates = (
@@ -438,31 +439,36 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
                 "three_institution_net_buy": 0,
             }
 
-        latest_date = sorted(complete_dates.index)[-1]
-        latest = daily_net[daily_net["date"] == latest_date]
-        net_by_label = {
-            row["institution_label"]: float(row["net_buy"])
-            for _, row in latest.iterrows()
-        }
+        # 取最近 5 個交易日累計
+        recent_dates = sorted(complete_dates.index)[-5:]
+        start_date = recent_dates[0]
+        end_date = recent_dates[-1]
+
+        recent_data = daily_net[daily_net["date"].isin(recent_dates)]
+        net_by_shares = (
+            recent_data.groupby("institution_label")["net_buy_shares"]
+            .sum()
+            .to_dict()
+        )
 
         required_labels = ["外資", "投信", "自營商"]
-        is_sync_buy = all(net_by_label.get(label, 0) > 0 for label in required_labels)
-        total_net = sum(net_by_label.get(label, 0) for label in required_labels)
+        is_sync_buy = all(net_by_shares.get(label, 0) > 0 for label in required_labels)
+        total_net_shares = sum(net_by_shares.get(label, 0) for label in required_labels)
         detail = "，".join(
-            f"{label}{self._format_amount_100m(net_by_label.get(label, 0))}"
+            f"{label}{self._format_lots(net_by_shares.get(label, 0))}"
             for label in required_labels
         )
         resonance_text = "是共振買入" if is_sync_buy else "不是共振買入"
         report = (
-            f"三大法人同步檢查 ({latest_date}): {detail}；"
-            f"合計{self._format_amount_100m(total_net)}，判定：{resonance_text}。"
+            f"三大法人近 5 日累計 ({start_date} ~ {end_date}): {detail}；"
+            f"合計{self._format_lots(total_net_shares)}，判定：{resonance_text}。"
         )
         return report, {
             "institutional_resonance_buy": is_sync_buy,
-            "three_institution_net_buy": total_net,
+            "three_institution_net_buy": total_net_shares,
         }
 
-    def analyze_flow(self, chip_data: List[Dict]) -> Tuple[str, Dict, int]:
+    def analyze_flow(self, chip_data: List[Dict], price_df: pd.DataFrame) -> Tuple[str, Dict, int]:
         report_prefix = f"數據來源: {self.source}\n分析邏輯: {self.logic}\n結論: "
 
         if not chip_data:
@@ -488,21 +494,27 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         chart_path = self._generate_chip_chart(foreign_all)
         resonance_report, resonance_flags = self._analyze_three_institution_resonance(df, type_col)
         
-        foreign = foreign_all.sort_values('date', ascending=False)
+        # 依日期加總外資淨買賣股數
+        foreign_daily = (
+            foreign_all.copy()
+            .assign(net_buy_shares=lambda x: pd.to_numeric(x['buy']) - pd.to_numeric(x['sell']))
+            .groupby('date')['net_buy_shares']
+            .sum()
+            .sort_index(ascending=False)
+        )
 
-        if len(foreign) < 3:
-            return f"{report_prefix}籌碼資料不足，無法判斷趨勢。{resonance_report}", resonance_flags, 0
+        if len(foreign_daily) < 5:
+            return f"{report_prefix}籌碼資料不足(需5日)，無法判斷趨勢。{resonance_report}", resonance_flags, 0
 
-        # 計算每日買賣超 (buy - sell)，使用 pd.to_numeric 確保轉換安全
-        net_buy = pd.to_numeric(foreign['buy']) - pd.to_numeric(foreign['sell'])
-        recent_net = net_buy.head(3).tolist()
-        total_sell_bn = abs(sum(recent_net)) / 10**8
+        # 過去 5 天累計
+        recent_5d_net_shares = foreign_daily.head(5).sum()
+        total_sell_lots = abs(recent_5d_net_shares) / 1000
 
         image_md = f"\n![Chip Chart]({chart_path})" if chart_path else ""
 
-        # 檢查是否連續賣超
-        is_selling = all(x < 0 for x in recent_net)
-        big_foreign_sell = bool(is_selling and (total_sell_bn >= 1.0)) # 達億元規模
+        # 檢查 5 日累計是否為賣超
+        is_net_selling = recent_5d_net_shares < 0
+        big_foreign_sell = bool(is_net_selling and (total_sell_lots >= 1000)) # 5日累計賣超達 1000 張
         
         chip_score = 80 if big_foreign_sell else 100  # 用戶指定權重: 20 (100-20=80)
         
@@ -511,10 +523,10 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             **resonance_flags,
         }
 
-        if is_selling:
-            return f"{report_prefix}趨勢警告：外資出現連續賣超！近三日累計賣超約 {total_sell_bn:.2f} 億元。{resonance_report}{image_md}", chip_flags, chip_score
+        if is_net_selling:
+            return f"{report_prefix}趨勢警告：外資近 5 日呈累計賣超！累計賣超約 {total_sell_lots:.0f} 張。{resonance_report}{image_md}", chip_flags, chip_score
         
-        return f"{report_prefix}籌碼動向平穩或呈現買盤支撐。{resonance_report}{image_md}", chip_flags, chip_score
+        return f"{report_prefix}籌碼動向平穩或呈現累計買盤支撐。{resonance_report}{image_md}", chip_flags, chip_score
 
 class Orchestrator:
     """
@@ -535,7 +547,7 @@ class Orchestrator:
         # 執行分析
         fin_report = self.fin_agent.analyze_margins(quarterly_data)
         tech_report, tech_flags, tech_scores = self.tech_agent.analyze_sentiment(trading_df)
-        chip_report, chip_flags, chip_score = self.chip_agent.analyze_flow(chip_data)
+        chip_report, chip_flags, chip_score = self.chip_agent.analyze_flow(chip_data, trading_df)
         tw_price = trading_df['台積電收盤價'].iloc[-1] if not trading_df.empty else 0
         macro_report, macro_score = self.macro_agent.analyze_global_risk(tw_price)
         
