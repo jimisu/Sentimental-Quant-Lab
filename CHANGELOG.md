@@ -4,6 +4,15 @@
 
 ---
 
+## [2026-06-02 16:30]
+- **Changed**: 優化 `analysis_log.md` 報告結構，使用標題層級與引用區塊提升可讀性。
+- **Changed**: 調整 `config.py` 保留策略，將每日日誌與圖表保留數 (`keep_count`) 統一設定為 1。
+- **Improved**: 強化 Markdown 圖片嵌入顯示，確保技術線圖與籌碼圖緊隨專家判讀內容。
+
+## [2026-06-02]
+- **Added**: 新增 `DEVELOPMENT_FLOW.md` 開發協作規範，定義多 AI 協作下的架構防禦、Git 策略與交接流程。
+- **Docs**: 正式確立「原子化提交」與「AI 輪班交接」作為專案開發標準。
+
 ## [2026-06-02 Rollback]
 - **Fixed**: 回滾上一次不穩定的架構改動。
 - **Changed**: 將 Agent 類別重新整合至 `tsmc_ai_agents.py` 檔案中，解決模組導入錯誤。

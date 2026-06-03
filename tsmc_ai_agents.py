@@ -703,20 +703,21 @@ class Orchestrator:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         log_content = [
-            f"## 分析日期: {timestamp}",
-            f"**儀表板總結**: {dashboard_summary}",
-            f"### 綜合評分\n{score_summary}",
-            f"- **宏觀 Agent 分析**: {macro_report}\n",
-            f"- **財務 Agent 分析**: {fin_report}\n",
-            f"- **技術 Agent 分析**: {tech_report}\n",
-            f"- **籌碼 Agent 分析**: {chip_report}\n",
-            "\n---\n"
+            f"# 🚀 TSMC 量化分析報告 - {timestamp}",
+            f"### 📊 儀表板總結\n\n> {dashboard_summary}\n",
+            f"### 🎯 綜合健康得分\n\n```text\n{score_summary}\n```\n",
+            f"---",
+            f"### 🌏 宏觀專家判讀\n\n{macro_report}\n",
+            f"### 💰 財務專家判讀\n\n{fin_report}\n",
+            f"### 📈 技術專家判讀\n\n{tech_report}\n",
+            f"### 👥 籌碼專家判讀\n\n{chip_report}\n",
+            "---"
         ]
         
         try:
             with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write("\n".join(log_content))
-            self._keep_latest_daily_logs(timestamp[:10], keep=3)
+                f.write("\n\n".join(log_content))
+            self._keep_latest_daily_logs(timestamp[:10])
         except Exception as e:
             print(f"寫入日誌失敗: {e}")
 

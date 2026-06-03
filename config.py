@@ -111,9 +111,9 @@ class AnalysisConfig:
 
     # 日誌設定
     log_path:          str = "analysis_log.md"
-    log_keep_per_day:  int = 3
+    log_keep_per_day:  int = 1
     charts_dir:        str = "charts"
-    charts_keep:       int = 3
+    charts_keep:       int = 1
 
 
 # 全域單例，所有模組直接 import
