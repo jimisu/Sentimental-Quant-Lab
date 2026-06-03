@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '=== Session Start: Reading DEVELOPMENT_FLOW.md, AI_HANDOFF.md, and HANDOFF_PROMPT.md ===' && echo '--- DEVELOPMENT_FLOW.md ---' && cat DEVELOPMENT_FLOW.md && echo '--- AI_HANDOFF.md ---' && cat AI_HANDOFF.md && echo '--- HANDOFF_PROMPT.md ---' && cat .claude/HANDOFF_PROMPT.md"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "edit|write|bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); if [ \"$BRANCH\" = \"main\" ] || [ \"$BRANCH\" = \"develop\" ]; then echo \"Error: Refusing to make changes to branch '$BRANCH'. Please switch to a feature branch.\"; exit 1; fi"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '=== Session End: Please update AI_HANDOFF.md with your handoff for the next AI ===' && echo 'Current AI_HANDOFF.md:' && cat AI_HANDOFF.md"
+          }
+        ]
+      }
+    ]
+  }
+}
