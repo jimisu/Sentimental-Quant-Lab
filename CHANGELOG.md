@@ -4,6 +4,9 @@
 
 ---
 
+## [2026-06-03 23:55]
+- **Added**: 在 `tsmc_signal_dashboard.py` 加入 `--test` 參數與自測模式，支援目錄權限、Token 狀態與 API 連線診斷。
+
 ## [2026-06-02 16:30]
 - **Changed**: 優化 `analysis_log.md` 報告結構，使用標題層級與引用區塊提升可讀性。
 - **Changed**: 調整 `config.py` 保留策略，將每日日誌與圖表保留數 (`keep_count`) 統一設定為 1。

@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import os
 import re
+import argparse
 import random
 import sys
 import time
@@ -947,10 +948,65 @@ def generate_summary(styled_df: pd.DataFrame, market_sentiment_red: bool) -> str
         return "🟢 目前皆為綠燈，可正常觀察並考慮適度加碼。"
 
 
+def run_self_test():
+    """
+    執行系統診斷測試，驗證環境、目錄權限與外部 API 連線。
+    """
+    console = Console()
+    console.print("\n[bold cyan]🚀 開始執行 Sentimental-Quant-Lab 系統自測...[/bold cyan]\n")
+
+    # 1. 檢查必要的本機目錄
+    folders = [CACHE_DIR, "charts"]
+    for folder in folders:
+        if not os.path.exists(folder):
+            try:
+                os.makedirs(folder)
+                console.print(f"📂 目錄檢查 - {folder}: [yellow]已成功建立[/yellow]")
+            except Exception as e:
+                console.print(f"📂 目錄檢查 - {folder}: [red]建立失敗 ({e})[/red]")
+                continue
+        
+        if os.access(folder, os.W_OK):
+            console.print(f"📂 目錄權限 - {folder}: [green]寫入權限 OK[/green]")
+        else:
+            console.print(f"📂 目錄權限 - {folder}: [red]無寫入權限[/red]")
+
+    # 2. 檢查關鍵環境變數
+    token = os.getenv("FINMIND_TOKEN")
+    token_status = "[green]已設定[/green]" if token else "[yellow]未設定 (將以限制頻率模式運行)[/yellow]"
+    console.print(f"🔑 環境變數 - FINMIND_TOKEN: {token_status}")
+
+    # 3. 測試網路連線與 API 狀態
+    targets = [
+        ("FinMind API", API_URL),
+        ("TWSE API", f"{TWSE_AFTER_TRADING_URL}/STOCK_DAY"),
+        ("Yahoo Finance", "https://query1.finance.yahoo.com/v8/finance/chart/TSM")
+    ]
+    
+    for name, url in targets:
+        try:
+            resp = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=10)
+            # 200 代表完全成功，400/401 代表服務有反應但未帶正確參數，皆視為連線成功
+            status_color = "green" if resp.status_code in [200, 400, 401] else "yellow"
+            console.print(f"🌐 網路連線 - {name}: [{status_color}]回傳狀態 {resp.status_code}[/{status_color}]")
+        except Exception as e:
+            console.print(f"🌐 網路連線 - {name}: [red]連線失敗 ({str(e)})[/red]")
+
+    console.print("\n[bold cyan]✨ 自測完成。[/bold cyan]\n")
+
+
 def main():
     """
     主程式流程。
     """
+    parser = argparse.ArgumentParser(description="TSMC 信號儀表板")
+    parser.add_argument("--test", action="store_true", help="執行系統診斷自測")
+    args = parser.parse_args()
+
+    if args.test:
+        run_self_test()
+        return
+
     # 可選的 FinMind token，從環境變數讀取
     token = os.getenv("FINMIND_TOKEN")
 
