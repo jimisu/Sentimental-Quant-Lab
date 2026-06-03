@@ -625,7 +625,35 @@ class Orchestrator:
         if not os.path.exists("charts"):
             os.makedirs("charts")
 
-    def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict], dashboard_summary: str) -> None:
+    def _df_to_md_table(self, df: pd.DataFrame) -> str:
+        """將 DataFrame 轉換為 Markdown 表格字串，自動過濾色彩欄位並格式化數值。"""
+        if df is None or df.empty:
+            return ""
+        # 排除用於 UI 顯示的色彩欄位
+        display_cols = [c for c in df.columns if "色彩" not in c]
+        display_df = df[display_cols].copy()
+        
+        headers = display_df.columns.tolist()
+        md_table = "| " + " | ".join(headers) + " |\n"
+        md_table += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+        
+        rows = []
+        for _, row in display_df.iterrows():
+            formatted_row = []
+            for col in headers:
+                val = row[col]
+                if pd.isna(val) or val is None:
+                    formatted_row.append("-")
+                elif isinstance(val, (int, float)):
+                    # 成交金額使用整數千分位，其餘百分比保留兩位小數
+                    formatted_row.append(f"{int(val):,}" if "金額" in col else f"{val:.2f}")
+                else:
+                    formatted_row.append(str(val))
+            rows.append("| " + " | ".join(formatted_row) + " |")
+        
+        return md_table + "\n".join(rows)
+
+    def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict], dashboard_summary: str, styled_df: pd.DataFrame) -> None:
         # 執行分析
         fin_report = self.fin_agent.analyze_margins(quarterly_data)
         tech_report, tech_flags, tech_scores = self.tech_agent.analyze_sentiment(trading_df)
@@ -693,30 +721,35 @@ class Orchestrator:
         if severe_msg:
             print(severe_msg)
 
+        # 建立 Markdown 表格
+        fin_table_md = self._df_to_md_table(styled_df)
+        vol_table_md = self._df_to_md_table(trading_df.tail(10)[["日期", "台積電成交金額", "大盤成交金額"]])
+
         # 寫入日誌
         log_summary = dashboard_summary + (" | 嚴重警示：雙重黃燈共振" if double_yellow else "")
-        self._append_to_log(log_summary, fin_report, tech_report, chip_report, macro_report, score_summary)
+        self._append_to_log(log_summary, fin_report, tech_report, chip_report, macro_report, score_summary, fin_table_md, vol_table_md)
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
-    def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str, chip_report: str, macro_report: str, score_summary: str) -> None:
+    def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str, chip_report: str, macro_report: str, score_summary: str, fin_table: str, vol_table: str) -> None:
         """將分析結果以 Markdown 格式附加到檔案"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         log_content = [
-            f"## 分析日期: {timestamp}",
-            f"**儀表板總結**: {dashboard_summary}",
-            f"### 綜合評分\n{score_summary}",
-            f"- **宏觀 Agent 分析**: {macro_report}\n",
-            f"- **財務 Agent 分析**: {fin_report}\n",
-            f"- **技術 Agent 分析**: {tech_report}\n",
-            f"- **籌碼 Agent 分析**: {chip_report}\n",
-            "\n---\n"
+            f"# 🚀 TSMC 量化分析報告 - {timestamp}",
+            f"### 📊 儀表板總結\n\n> {dashboard_summary}\n",
+            f"### 🎯 綜合健康得分\n\n```text\n{score_summary}\n```\n",
+            f"---",
+            f"### 🌏 宏觀專家判讀\n\n{macro_report}\n",
+            f"### 💰 財務專家判讀\n\n{fin_table}\n\n{fin_report}\n",
+            f"### 📈 技術專家判讀\n\n#### 近 10 個交易日成交金額\n\n{vol_table}\n\n{tech_report}\n",
+            f"### 👥 籌碼專家判讀\n\n{chip_report}\n",
+            "---"
         ]
         
         try:
             with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write("\n".join(log_content))
-            self._keep_latest_daily_logs(timestamp[:10], keep=3)
+                f.write("\n\n".join(log_content))
+            self._keep_latest_daily_logs(timestamp[:10])
         except Exception as e:
             print(f"寫入日誌失敗: {e}")
 
@@ -728,15 +761,16 @@ class Orchestrator:
         with open(self.log_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        blocks = re.split(r"(?=^## 分析日期: )", content, flags=re.MULTILINE)
+        # 修正：正則表達式必須與 _append_to_log 寫入的標題 (# 🚀 TSMC) 一致
+        blocks = re.split(r"(?=^# 🚀 TSMC 量化分析報告 - )", content, flags=re.MULTILINE)
         kept_blocks = []
         daily_blocks = []
 
         for block in blocks:
             if not block.strip():
                 continue
-            match = re.match(r"## 分析日期: (\d{4}-\d{2}-\d{2})", block)
-            if match and match.group(1) == date_str:
+            m = re.match(r"# 🚀 TSMC 量化分析報告 - (\d{4}-\d{2}-\d{2})", block)
+            if m and m.group(1) == date_str:
                 daily_blocks.append(block)
             else:
                 kept_blocks.append(block)
