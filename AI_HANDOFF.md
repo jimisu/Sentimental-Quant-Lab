@@ -7,8 +7,8 @@
 
 ## 📌 基本資訊
 - **目前所在分支 (Current Branch)**: `feat/report-readability-optimization`
-- **本次交接時間 (Timestamp)**: 2026-06-03 22:45 (UTC+8)
-- **目前負責人/AI (Handler)**: Claude Code (OWL)
+- **本次交接時間 (Timestamp)**: 2026-06-04 00:15 (UTC+8)
+- **目前負責人/AI (Handler)**: Gemini Code Assist
 
 ---
 
@@ -20,10 +20,14 @@
 - [x] **修正清理邏輯**: 更新 `_keep_latest_daily_logs` 中的正則表達式，使其能正確刪除新標題格式下的舊紀錄。
 - [x] **Hook 設定修正**: 修正 `.claude/settings.json` 中的 hook event 命名（`SessionStart`/`PreToolUse`/`SessionEnd`），並補上正確的 `matcher` + `hooks` 巢狀結構。
 - [x] **交接規範建立**: 新增 `.claude/HANDOFF_PROMPT.md` 交接提示模板，更新 `DEVELOPMENT_FLOW.md` 加入交接關鍵字觸發規範。
-- [x] **調查 `reversal_analysis.py`**: 確認該檔案不存在於 repo 及 git history 中，先前的交接任務已過時，從待辦清單移除。
+- [x] **自測功能實作**: 在 `tsmc_signal_dashboard.py` 加入 `--test` 參數，支援環境目錄權限與 API 連線診斷。
+- [x] **修正檔案狀態**: 確認 `reversal_analysis.py` 實體檔案存在，修正先前 Claude Code 的誤判紀錄。
+- [x] **圖表中文化修正**: 為 Matplotlib 設定多重中文字型回退機制，解決 `DejaVu Sans` 缺失警告並確保圖片正確顯示中文。
+- [x] **宏觀數據抓取強化**: 實作 Yahoo Finance 429 錯誤偵測、指數退避重試及過期快取回退（Stale Fallback）機制，顯著提升 API 請求成功率。
 
 ## ⏳ 未完成 / 待辦事項 (Pending Tasks)
-1. **[優先級：低] 驗證 Markdown 圖片渲染**: 確保 `charts/` 目錄下的圖片路徑在 Markdown 檢視器中能正確顯示（目前路徑格式為相對路徑 `charts/tech_chart_*.png`）。
+1. **[優先級：中] 分支合併**: `feat/report-readability-optimization` 分支開發已完成，建議合併回 `main`。
+2. **[優先級：低] 驗證渲染**: 確認 `analysis_log.md` 圖片顯示效果。
 
 ---
 
