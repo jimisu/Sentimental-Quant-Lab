@@ -1004,7 +1004,7 @@ def main():
     print("\n" + display_summary)
 
     # 執行 Agent 深度分析並紀錄日誌
-    orchestrator.run_full_analysis(quarterly_margins, value_df, chip_data, summary)
+    orchestrator.run_full_analysis(quarterly_margins, value_df, chip_data, summary, styled_df)
 
 
 if __name__ == "__main__":
