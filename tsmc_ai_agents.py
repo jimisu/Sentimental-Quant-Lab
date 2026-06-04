@@ -626,34 +626,53 @@ class Orchestrator:
             os.makedirs("charts")
 
     def _df_to_md_table(self, df: pd.DataFrame) -> str:
-        """將 DataFrame 轉換為 Markdown 表格字串，自動過濾色彩欄位並格式化數值。"""
+        """
+        將 DataFrame 轉換為 Markdown 表格字串。
+        - 自動過濾色彩欄位
+        - 營收 YoY 低於 20% 的數字加上 🟡 標記
+        - 成交金額使用整數千分位，其餘百分比保留兩位小數
+        """
         if df is None or df.empty:
             return ""
         # 排除用於 UI 顯示的色彩欄位
         display_cols = [c for c in df.columns if "色彩" not in c]
         display_df = df[display_cols].copy()
-        
+
+        # 找出營收 YoY 欄位的 index，以便從色彩欄位取得對應顏色
+        rev_yoy_col = "營收 YoY (%)"
+        rev_color_col = "營收 YoY 色彩"
+        has_rev_color = rev_color_col in df.columns
+        # 建立欄位名稱到 display_cols 索引的對應
+        col_index = {c: i for i, c in enumerate(display_cols)}
+
         headers = display_df.columns.tolist()
         md_table = "| " + " | ".join(headers) + " |\n"
         md_table += "| " + " | ".join(["---"] * len(headers)) + " |\n"
-        
+
         rows = []
-        for _, row in display_df.iterrows():
+        for idx, row in display_df.iterrows():
             formatted_row = []
             for col in headers:
                 val = row[col]
                 if pd.isna(val) or val is None:
                     formatted_row.append("-")
                 elif isinstance(val, (int, float)):
-                    # 成交金額使用整數千分位，其餘百分比保留兩位小數
-                    formatted_row.append(f"{int(val):,}" if "金額" in col else f"{val:.2f}")
+                    formatted_val = f"{int(val):,}" if "金額" in col else f"{val:.2f}"
+                    # 營收 YoY 低於 20% 時加上 🟡 標記
+                    if col == rev_yoy_col and has_rev_color:
+                        color = df.loc[idx, rev_color_col] if idx in df.index else ""
+                        if color in ("yellow", "red"):
+                            formatted_val = f"🟡 {formatted_val}"
+                    formatted_row.append(formatted_val)
                 else:
                     formatted_row.append(str(val))
             rows.append("| " + " | ".join(formatted_row) + " |")
-        
+
         return md_table + "\n".join(rows)
 
-    def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict], dashboard_summary: str, styled_df: pd.DataFrame) -> None:
+    def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict],
+                          dashboard_summary: str, styled_df: pd.DataFrame,
+                          market_sentiment_red: bool = False) -> None:
         # 執行分析
         fin_report = self.fin_agent.analyze_margins(quarterly_data)
         tech_report, tech_flags, tech_scores = self.tech_agent.analyze_sentiment(trading_df)
@@ -727,16 +746,28 @@ class Orchestrator:
 
         # 寫入日誌
         log_summary = dashboard_summary + (" | 嚴重警示：雙重黃燈共振" if double_yellow else "")
-        self._append_to_log(log_summary, fin_report, tech_report, chip_report, macro_report, score_summary, fin_table_md, vol_table_md)
+        self._append_to_log(log_summary, fin_report, tech_report, chip_report, macro_report,
+                            score_summary, fin_table_md, vol_table_md, market_sentiment_red)
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
-    def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str, chip_report: str, macro_report: str, score_summary: str, fin_table: str, vol_table: str) -> None:
+    def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str,
+                       chip_report: str, macro_report: str, score_summary: str,
+                       fin_table: str, vol_table: str,
+                       market_sentiment_red: bool = False) -> None:
         """將分析結果以 Markdown 格式附加到檔案"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
+        # 市場情緒指標：個股與大盤交易量連三降
+        sentiment_section = ""
+        if market_sentiment_red:
+            sentiment_section = (
+                f"\n\n### ⚠️ 市場情緒指標\n\n"
+                f"> 🔴 **個股與大盤交易量連三降** — 短期資金動能同步轉弱，建議提高警覺。\n"
+            )
+
         log_content = [
             f"# 🚀 TSMC 量化分析報告 - {timestamp}",
-            f"### 📊 儀表板總結\n\n> {dashboard_summary}\n",
+            f"### 📊 儀表板總結\n\n> {dashboard_summary}{sentiment_section}\n",
             f"### 🎯 綜合健康得分\n\n```text\n{score_summary}\n```\n",
             f"---",
             f"### 🌏 宏觀專家判讀\n\n{macro_report}\n",
