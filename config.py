@@ -9,10 +9,18 @@ from typing import Dict
 
 @dataclass
 class CacheConfig:
-    """快取相關設定"""
-    ttl_hours: float = 4.0          # 快取有效期（小時）
-    keep_count: int = 3             # 同一 key 保留最新幾份
-    directory: str = "local_cache"  # 快取目錄
+    """快取相關設定 — 依資料變化頻率定義 TTL"""
+    # 每日變化 → 永遠抓取
+    ttl_twse_daily_hours: float = 0.0        # TWSE 每日盤後數據
+    ttl_institutional_hours: float = 0.0     # 三大法人每日買賣超
+    # 低頻變化 → TTL 快取
+    ttl_monthly_revenue_hours: float = 24.0  # 月營收每月公布一次
+    ttl_quarterly_margins_hours: float = 168.0  # 季報每季公布（7 天）
+    ttl_macro_adr_hours: float = 1.0         # ADR 盤中價格
+    ttl_macro_capex_hours: float = 168.0     # SEC 財報每季更新（7 天）
+    # 通用設定
+    keep_count: int = 3
+    directory: str = "local_cache"
 
 
 @dataclass
