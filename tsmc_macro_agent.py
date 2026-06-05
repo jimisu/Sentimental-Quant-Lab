@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time
+import sys
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -17,65 +18,17 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-CACHE_DIR = os.path.join("local_cache", "macro_agent")
-CACHE_MAX_AGE_DAYS = 3
+# 引入統一快取層，取代私有快取函式
+from data_cache import fetch_with_cache
 
 SEC_HEADERS = {
     "User-Agent": "Sentimental-Quant-Lab/1.0 contact@example.com",
     "Accept-Encoding": "gzip, deflate",
 }
 
-
-def _ensure_cache_dir() -> None:
-    os.makedirs(CACHE_DIR, exist_ok=True)
-
-
-def _safe_cache_key(key: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", key).strip("_")
-
-
-def _cache_path(cache_key: str) -> str:
-    _ensure_cache_dir()
-    return os.path.join(CACHE_DIR, f"{_safe_cache_key(cache_key)}.json")
-
-
-def _read_cached_payload(cache_key: str, max_age_days: int = CACHE_MAX_AGE_DAYS) -> Optional[Dict]:
-    path = _cache_path(cache_key)
-    if not os.path.exists(path):
-        return None
-
-    try:
-        with open(path, encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-
-    cached_at = payload.get("cached_at")
-    if not cached_at:
-        return payload.get("data")
-
-    try:
-        cached_dt = datetime.fromisoformat(cached_at)
-    except ValueError:
-        return payload.get("data")
-
-    if datetime.now() - cached_dt > timedelta(days=max_age_days):
-        return None
-
-    return payload.get("data")
-
-
-def _write_cached_payload(cache_key: str, data: Dict) -> None:
-    path = _cache_path(cache_key)
-    payload = {
-        "cached_at": datetime.now().isoformat(timespec="seconds"),
-        "data": data,
-    }
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
+# 不再使用私有快取目錄，統一由 data_cache 管理（local_cache/）
+# 保留常數供參考，但不再寫入 local_cache/macro_agent/
+CACHE_MAX_AGE_DAYS = 7  # 與 data_cache.DATA_POLICIES["macro_capex"] 一致
 
 
 BIG_TECH_COMPANIES = {
@@ -134,26 +87,16 @@ class GlobalMacroAgent:
         except ValueError as exc:
             raise RuntimeError(f"無效 JSON 回傳: {exc}")
 
-    def _fetch_json_with_cache(self, cache_key: str, url: str, headers: Optional[Dict[str, str]] = None, params: Optional[Dict[str, str]] = None, timeout: int = 20) -> Dict:
-        cached = _read_cached_payload(cache_key, max_age_days=CACHE_MAX_AGE_DAYS)
-        if cached is not None:
-            return cached
-
-        try:
-            data = self._http_get_json(url, headers=headers, params=params, timeout=timeout)
-            _write_cached_payload(cache_key, data)
-            return data
-        except Exception as exc:
-            # 若快取過期但仍可用，則以舊快取為備援
-            cache_path = _cache_path(cache_key)
-            if os.path.exists(cache_path):
-                try:
-                    with open(cache_path, encoding="utf-8") as f:
-                        payload = json.load(f)
-                        return payload.get("data", {})
-                except (OSError, json.JSONDecodeError):
-                    pass
-            raise
+    def _fetch_json_with_cache(self, cache_key: str, url: str, policy_name: str = "macro_capex",
+                              headers: Optional[Dict[str, str]] = None,
+                              params: Optional[Dict[str, str]] = None,
+                              timeout: int = 20) -> Dict:
+        # 使用統一快取層（data_cache）取代私有函式
+        return fetch_with_cache(
+            policy_name=policy_name,
+            cache_key=cache_key,
+            fetch_fn=lambda: self._http_get_json(url, headers=headers, params=params, timeout=timeout),
+        )
 
     def analyze_global_risk(self, tw_price: float) -> Tuple[str, int]:
         if tw_price <= 0:
@@ -250,10 +193,14 @@ class GlobalMacroAgent:
         lines.append(conclusion)
         return "\n".join(lines), score
 
-    @functools.lru_cache(maxsize=8)
     def _fetch_yahoo_price(self, ticker: str) -> float:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
-        data = self._http_get_json(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        # 使用統一快取層，1 小時 TTL（macro_adr policy）
+        data = fetch_with_cache(
+            policy_name="macro_adr",
+            cache_key=f"yahoo_price_{ticker}",
+            fetch_fn=lambda: self._http_get_json(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10),
+        )
 
         result = data.get("chart", {}).get("result")
         if not result or not isinstance(result, list):

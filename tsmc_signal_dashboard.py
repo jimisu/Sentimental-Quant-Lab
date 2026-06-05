@@ -21,6 +21,7 @@ import requests
 from rich import box
 from rich.console import Console
 from rich.table import Table
+from data_cache import fetch_with_cache
 from tsmc_ai_agents import Orchestrator
 
 API_URL = "https://api.finmindtrade.com/api/v4/data"
@@ -245,20 +246,30 @@ def fetch_finmind_dataset(
     return records
 
 
-def get_monthly_revenue_yoy(token: Optional[str] = None) -> List[Dict]:
-    """
-    取得最近 12 個月的月營收年增率（YoY）。
-    回傳 list of dict，每筆包含 date (YYYY-MM) 和 revenue_yoy (百分比)。
-    """
-    # 取得過去 24 個月的月營收，以便計算 YoY（當前月與去年同月比較）
+def _fetch_monthly_revenue_records(token: Optional[str] = None) -> List[Dict]:
+    """實際呼叫 FinMind API 取得月營收原始記錄"""
     start_date = TWO_YEARS_AGO.isoformat()
     end_date = TODAY.isoformat()
-    records = fetch_finmind_dataset(
+    return fetch_finmind_dataset(
         dataset="TaiwanStockMonthRevenue",
         data_id="2330",
         start_date=start_date,
         end_date=end_date,
         token=token,
+    )
+
+
+def get_monthly_revenue_yoy(token: Optional[str] = None) -> List[Dict]:
+    """
+    取得最近 12 個月的月營收年增率（YoY）。
+    回傳 list of dict，每筆包含 date (YYYY-MM) 和 revenue_yoy (百分比)。
+    使用 24 小時快取，避免每日重複抓取。
+    """
+    # 透過統一快取層取得月營收原始記錄（24 小時 TTL）
+    records = fetch_with_cache(
+        policy_name="monthly_revenue",
+        cache_key="tsmc_monthly_revenue_24m",
+        fetch_fn=lambda: _fetch_monthly_revenue_records(token),
     )
     # 將 records 轉換為以日期為 key 的字典，值為 revenue
     revenue_by_date = {}
@@ -1010,19 +1021,23 @@ def main():
     # 可選的 FinMind token，從環境變數讀取
     token = os.getenv("FINMIND_TOKEN")
 
-    # 取得資料
-    revenue_yoy = get_monthly_revenue_yoy(token)
-    quarterly_margins = get_quarterly_margins(token)
+    # ══════════════════════════════════════════════════════════════
+    # 資料抓取：依變化頻率分為兩個層級
+    # ══════════════════════════════════════════════════════════════
+
+    # Tier 1: 每日變化資料 — 每次執行皆重新抓取
     value_df = get_recent_trading_value_history(days=260)
-    
-    # 抓取近 10 日籌碼資料
     chip_data = fetch_finmind_dataset(
         dataset="TaiwanStockInstitutionalInvestorsBuySell",
         data_id="2330",
         start_date=(TODAY - dt.timedelta(days=15)).isoformat(),
         end_date=TODAY.isoformat(),
-        token=token
+        token=token,
     )
+
+    # Tier 2: 低頻變化資料 — 使用 TTL 快取（月營收 24h、季報 7d）
+    revenue_yoy = get_monthly_revenue_yoy(token)
+    quarterly_margins = get_quarterly_margins(token)
 
     if not revenue_yoy:
         print("錯誤：未能取得月營收資料。", file=sys.stderr)
@@ -1060,7 +1075,8 @@ def main():
     print("\n" + display_summary)
 
     # 執行 Agent 深度分析並紀錄日誌
-    orchestrator.run_full_analysis(quarterly_margins, value_df, chip_data, summary, styled_df)
+    orchestrator.run_full_analysis(quarterly_margins, value_df, chip_data, summary, styled_df,
+                                   market_sentiment_red=market_sentiment_red)
 
 
 if __name__ == "__main__":
