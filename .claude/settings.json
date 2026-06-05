@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '=== Session Start: Reading DEVELOPMENT_FLOW.md, AI_HANDOFF.md, and HANDOFF_PROMPT.md ===' && echo '--- DEVELOPMENT_FLOW.md ---' && cat DEVELOPMENT_FLOW.md && echo '--- AI_HANDOFF.md ---' && cat AI_HANDOFF.md && echo '--- HANDOFF_PROMPT.md ---' && cat .claude/HANDOFF_PROMPT.md"
+            "command": "echo '=== Session Start: Reading CLAUDE.md, AI_HANDOFF.md, CHANGELOG.md, DEVELOPMENT_FLOW.md, PROJECT_ARCHITECTURE.md, and HANDOFF_PROMPT.md ===' && echo '--- CLAUDE.md ---' && cat CLAUDE.md && echo '--- AI_HANDOFF.md ---' && cat AI_HANDOFF.md && echo '--- CHANGELOG.md ---' && cat CHANGELOG.md && echo '--- DEVELOPMENT_FLOW.md ---' && cat DEVELOPMENT_FLOW.md && echo '--- PROJECT_ARCHITECTURE.md ---' && cat PROJECT_ARCHITECTURE.md && echo '--- HANDOFF_PROMPT.md ---' && cat .claude/HANDOFF_PROMPT.md"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '=== Session End: Please update AI_HANDOFF.md with your handoff for the next AI ===' && echo 'Current AI_HANDOFF.md:' && cat AI_HANDOFF.md"
+            "command": "echo '=== Session End: Reading CLAUDE.md, AI_HANDOFF.md, CHANGELOG.md, DEVELOPMENT_FLOW.md, PROJECT_ARCHITECTURE.md, and HANDOFF_PROMPT.md ===' && echo '--- CLAUDE.md ---' && cat CLAUDE.md && echo '--- AI_HANDOFF.md ---' && cat AI_HANDOFF.md && echo '--- CHANGELOG.md ---' && cat CHANGELOG.md && echo '--- DEVELOPMENT_FLOW.md ---' && cat DEVELOPMENT_FLOW.md && echo '--- PROJECT_ARCHITECTURE.md ---' && cat PROJECT_ARCHITECTURE.md && echo '--- HANDOFF_PROMPT.md ---' && cat .claude/HANDOFF_PROMPT.md && echo '=== Session End: Please update AI_HANDOFF.md with your handoff for the next AI ===' && echo 'Current AI_HANDOFF.md:' && cat AI_HANDOFF.md"
           }
         ]
       }
