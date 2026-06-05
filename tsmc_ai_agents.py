@@ -13,13 +13,14 @@ try:
     HAS_MATPLOTLIB = True
     mpl.rcParams["font.family"] = "sans-serif"
     mpl.rcParams["font.sans-serif"] = [
-        "AppleGothic",
-        "Heiti TC",
-        "PingFang TC",
-        "Arial Unicode MS",
         "Noto Sans CJK TC",
-        "Microsoft JhengHei",
-        "SimHei",
+        "Noto Sans CJK SC",
+        "Noto Sans CJK JP",
+        "Noto Sans CJK KR",
+        "AR PL UMing TW",
+        "AR PL UKai TW",
+        "DejaVu Sans",
+        "sans-serif",
     ]
     mpl.rcParams["axes.unicode_minus"] = False
 except ImportError:
