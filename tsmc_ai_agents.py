@@ -36,6 +36,7 @@ from tsmc_macro_agent import GlobalMacroAgent
 from signal_engine import (
     SignalEngine,
     FinancialSignals,
+    BigTechSignals,
     TechnicalSignals,
     ChipSignals,
     MacroSignals,
@@ -1457,16 +1458,22 @@ class Orchestrator:
         chip_report, chip_flags, chip_score = self.chip_agent.analyze_flow(chip_data, trading_df)
         tw_price = trading_df['台積電收盤價'].iloc[-1] if not trading_df.empty else 0
         macro_report, macro_score = self.macro_agent.analyze_global_risk(tw_price)
+        bigtech_data, bigtech_report = self.macro_agent.analyze_bigtech_fundamentals()
 
         # ── Step 2: 建構信號 ──
         financial_signals = self._build_financial_signals(quarterly_data, styled_df)
+        bigtech_signals = BigTechSignals(
+            capex_growing_count=bigtech_data.get("capex_growing_count", 0),
+            capex_valid_count=bigtech_data.get("capex_valid_count", 0),
+            nvda_revenue_yoy=bigtech_data.get("nvda_revenue_yoy"),
+        )
         tech_signals = TechnicalSignals(scores=tech_scores, flags=tech_flags)
         chip_signals = ChipSignals(score=chip_score, flags=chip_flags)
         macro_signals = MacroSignals(score=macro_score)
 
         # ── Step 3: Signal Engine 整合計算 ──
         result = self.signal_engine.analyze(
-            financial_signals, tech_signals, chip_signals, macro_signals
+            financial_signals, bigtech_signals, tech_signals, chip_signals, macro_signals
         )
 
         # ── Step 4: 組合報告 ──
@@ -1481,6 +1488,7 @@ class Orchestrator:
         breakdown = result.details["breakdown"]
         score_summary = (
             f"● 財務面({result.financial_score:.0f})*{w.financial:.0f}% = {breakdown['financial']:.1f}/{w.financial*100:.0f}\n"
+            f"● 大廠基本面({result.bigtech_score:.0f})*{w.bigtech:.0f}% = {breakdown['bigtech']:.1f}/{w.bigtech*100:.0f}\n"
             f"● 技術分項:\n"
             f"   早期警示({tech_scores['early']})*{w.early:.0f}% + 短期形態({tech_scores['short']})*{w.short:.0f}% +\n"
             f"   中期趨勢({tech_scores['mid']})*{w.mid:.0f}% + 長期趨勢({tech_scores['long']})*{w.long:.0f}%\n"
@@ -1500,6 +1508,7 @@ class Orchestrator:
         print()
         print(f"[籌碼專家] > {chip_report}")
         print()
+        print(f"[大廠基本面] > {bigtech_report}")
         print()
         print(f"{'='*50}")
         print(f"{alert_emoji} 燈號：{alert_label}")
@@ -1526,6 +1535,13 @@ class Orchestrator:
             print(f"\n⚠️ 財務面警示:")
             for fw in fin_warnings:
                 print(f"   · {fw}")
+
+        # 大廠基本面警告（如果有的話）
+        bigtech_warnings = result.details.get("bigtech_warnings", [])
+        if bigtech_warnings:
+            print(f"\n⚠️ 大廠基本面警示:")
+            for bw in bigtech_warnings:
+                print(f"   · {bw}")
 
         # 燈號顏色顯示綜合分數
         console_summary = score_summary

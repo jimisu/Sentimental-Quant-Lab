@@ -27,11 +27,14 @@ class CacheConfig:
 class ScoreWeightsConfig:
     """
     綜合健康得分權重。
-    五面向加總 = 1.0：財務 15% + 技術 35% + 籌碼 25% + 宏觀 25%
+    六面向加總 = 1.0：
+      純財務 10% + 大廠基本面 10% + 技術 35% + 籌碼 25% + 宏觀 20%
     技術面 35% 內部分配：早期 7% + 短期 7% + 中期 10% + 長期 11%
     """
-    # 財務面
-    financial: float = 0.15
+    # 純財務面（營收 YoY、毛利率/營益率/淨利率季度變化）
+    financial: float = 0.10
+    # 大廠基本面（CAPEX 趨勢 + NVDA 營收 YoY）
+    bigtech:  float = 0.10
     # 技術面（合計 0.35）
     early:  float = 0.07   # 早期警示（RSI 頂背離、量價背離）
     short:  float = 0.07   # 短期形態（K線、MA20 破位）
@@ -39,12 +42,12 @@ class ScoreWeightsConfig:
     long:   float = 0.11   # 長期趨勢（月線）
     # 籌碼面
     chip:   float = 0.25   # 籌碼分析（三大法人）
-    # 宏觀面
-    macro:  float = 0.25   # 全球宏觀（ADR、匯率、CAPEX）
+    # 宏觀面（ADR 折溢價 + 匯率，不含 CAPEX）
+    macro:  float = 0.20
 
     def as_dict(self) -> Dict[str, float]:
         return {
-            "financial": self.financial,
+            "financial": self.financial, "bigtech": self.bigtech,
             "early": self.early, "short": self.short, "mid": self.mid,
             "long": self.long,   "chip": self.chip,   "macro": self.macro,
         }
@@ -93,6 +96,19 @@ class DashboardAlertConfig:
 
 
 @dataclass
+class BigTechConfig:
+    """大廠基本面設定（CAPEX + NVDA 營收 YoY）"""
+    # CAPEX 公司名單（只留這 4 家）
+    capex_companies: tuple = ("MSFT", "META", "GOOGL", "AMZN")
+    # NVDA 營收 YoY
+    nvda_ticker: str = "NVDA"
+    # CAPEX 快取 TTL（與季報同步，7 天）
+    capex_ttl_hours: float = 168.0
+    # NVDA 營收快取 TTL（月營收級別，24 小時）
+    nvda_revenue_ttl_hours: float = 24.0
+
+
+@dataclass
 class ChipAlertConfig:
     """籌碼分析警示設定"""
     consecutive_days:       int   = 5      # 連續賣超天數
@@ -124,6 +140,7 @@ class AnalysisConfig:
     penalty:   TechnicalPenaltyConfig = field(default_factory=TechnicalPenaltyConfig)
     bollinger: BollingerConfig        = field(default_factory=BollingerConfig)
     alert:     DashboardAlertConfig   = field(default_factory=DashboardAlertConfig)
+    bigtech:   BigTechConfig          = field(default_factory=BigTechConfig)
     chip:      ChipAlertConfig        = field(default_factory=ChipAlertConfig)
     api:       ApiConfig              = field(default_factory=ApiConfig)
 

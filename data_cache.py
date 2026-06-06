@@ -39,6 +39,8 @@ DATA_POLICIES: Dict[str, CachePolicy] = {
     "macro_adr":         CachePolicy(ttl_hours=1,    keep_count=3),
     # SEC 財報每季更新 → 7 天快取
     "macro_capex":       CachePolicy(ttl_hours=168,  keep_count=3),
+    # NVDA 營收（季報級別）→ 7 天快取
+    "nvda_revenue":      CachePolicy(ttl_hours=168,  keep_count=3),
 }
 
 

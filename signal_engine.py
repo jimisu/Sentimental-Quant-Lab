@@ -6,8 +6,9 @@ TSMC 信號引擎 (Signal Engine)
 將原本散落在 tsmc_signal_dashboard.py 與 tsmc_ai_agents.py 的邏輯集中於此。
 
 架構：
-  FinancialSignalCalculator  — 基本面（營收 YoY、三率）→ 財務分數 0~100
-  ComprehensiveScoreCalculator — 五面向加權 → 綜合健康得分 0~100
+  FinancialSignalCalculator  — 純財務（營收 YoY、三率）→ 財務分數 0~100
+  BigTechSignalCalculator    — 大廠基本面（CAPEX + NVDA 營收 YoY）→ 分數 0~100
+  ComprehensiveScoreCalculator — 六面向加權 → 綜合健康得分 0~100
   AlertLevelDetector          — 綜合分數 + 特殊條件 → 紅/黃/綠燈
 """
 
@@ -55,8 +56,26 @@ class ChipSignals:
 
 
 @dataclass
+class BigTechSignals:
+    """大廠基本面信號（由 GlobalMacroAgent.analyze_bigtech_fundamentals 提供）"""
+    # CAPEX 趨勢 (0~100)
+    capex_score: int = 100
+    capex_growing_count: int = 0
+    capex_valid_count: int = 0
+    # NVDA 營收 YoY%
+    nvda_revenue_yoy: Optional[float] = None
+    # NVDA 營收趨勢分數 (0~100)
+    nvda_revenue_score: int = 100
+    # 綜合大廠分數（由 BigTechSignalCalculator 計算後寫入）
+    score: int = 100
+    # 細節
+    capex_details: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+@dataclass
 class MacroSignals:
-    """宏觀面向信號（由 GlobalMacroAgent 提供）"""
+    """宏觀面向信號（由 GlobalMacroAgent 提供，不含 CAPEX）"""
     score: int = 100
 
 
@@ -65,6 +84,7 @@ class ComprehensiveResult:
     """綜合分析結果"""
     # 各面向分數
     financial_score: float = 100.0
+    bigtech_score: float = 100.0
     tech_early_score: float = 100.0
     tech_short_score: float = 100.0
     tech_mid_score: float = 100.0
@@ -172,21 +192,96 @@ class FinancialSignalCalculator:
 
 
 # ══════════════════════════════════════════════════════════════
+# 大廠基本面計算器
+# ══════════════════════════════════════════════════════════════
+
+class BigTechSignalCalculator:
+    """
+    計算大廠基本面分數（CAPEX + NVDA 營收 YoY）。
+
+    CAPEX 分數邏輯：
+    - 4 家公司（MSFT/META/GOOGL/AMZN）的近三季 CAPEX 趨勢
+    - ≥3/4 持續成長 → 100
+    - 2/4 → 75
+    - 1/4 → 50
+    - 0/4 → 25
+
+    NVDA 營收 YoY 分數：
+    - YoY ≥ 50% → 100（AI 需求爆發）
+    - YoY ≥ 20% → 80
+    - YoY ≥ 0%  → 60
+    - YoY < 0%  → 40
+    - 資料不足 → 不影響分數
+
+   綜合大廠分數 = CAPEX 分數 * 0.5 + NVDA 營收分數 * 0.5
+    """
+
+    def calculate(
+        self,
+        capex_growing_count: int = 0,
+        capex_valid_count: int = 0,
+        nvda_revenue_yoy: Optional[float] = None,
+    ) -> Tuple[int, List[str]]:
+        warnings = []
+
+        # ── CAPEX 分數 ──
+        if capex_valid_count == 0:
+            capex_score = 100  # 資料不足時不扣分
+        else:
+            capex_ratio = capex_growing_count / capex_valid_count
+            if capex_ratio >= 0.75:
+                capex_score = 100
+            elif capex_ratio >= 0.5:
+                capex_score = 75
+                warnings.append(f"CAPEX 成長趨緩：{capex_growing_count}/{capex_valid_count} 家持續成長")
+            elif capex_ratio >= 0.25:
+                capex_score = 50
+                warnings.append(f"CAPEX 成長分歧：僅 {capex_growing_count}/{capex_valid_count} 家持續成長")
+            else:
+                capex_score = 25
+                warnings.append(f"CAPEX 全面放緩：僅 {capex_growing_count}/{capex_valid_count} 家持續成長")
+
+        # ── NVDA 營收 YoY 分數 ──
+        if nvda_revenue_yoy is None:
+            nvda_score = 100  # 資料不足時不扣分
+        elif nvda_revenue_yoy >= 50:
+            nvda_score = 100
+        elif nvda_revenue_yoy >= 20:
+            nvda_score = 80
+        elif nvda_revenue_yoy >= 0:
+            nvda_score = 60
+            warnings.append(f"NVDA 營收 YoY 趨緩 ({nvda_revenue_yoy:.1f}%)")
+        else:
+            nvda_score = 40
+            warnings.append(f"NVDA 營收 YoY 負成長 ({nvda_revenue_yoy:.1f}%)")
+
+        # ── 綜合（CAPEX 50% + NVDA 50%）──
+        if nvda_revenue_yoy is None:
+            # NVDA 資料不足時，CAPEX 權重拉滿
+            combined = capex_score
+        else:
+            combined = int(capex_score * 0.5 + nvda_score * 0.5)
+
+        return combined, warnings
+
+
+# ══════════════════════════════════════════════════════════════
 # 綜合得分計算器
 # ══════════════════════════════════════════════════════════════
 
 class ComprehensiveScoreCalculator:
     """
-    整合五面向計算綜合健康得分。
+    整合六面向計算綜合健康得分。
 
     權重（config.py ScoreWeightsConfig 可調整）：
-    - 財務面   15%
-    - 技術-早期  7%
-    - 技術-短期  7%
-    - 技術-中期 10%
-    - 技術-長期 11%
-    - 籌碼面   25%
-    - 宏觀面   25%
+    - 純財務面   10%
+    - 大廠基本面 10%
+    - 技術-早期    7%
+    - 技術-短期    7%
+    - 技術-中期   10%
+    - 技術-長期   11%
+    - 籌碼面     25%
+    - 宏觀面     20%
     """
 
     def __init__(self, weights: Optional[Dict[str, float]] = None):
@@ -194,6 +289,7 @@ class ComprehensiveScoreCalculator:
             w = CONFIG.weights
             self.weights = {
                 "financial": w.financial,
+                "bigtech":   w.bigtech,
                 "tech_early": w.early,
                 "tech_short": w.short,
                 "tech_mid":   w.mid,
@@ -207,6 +303,7 @@ class ComprehensiveScoreCalculator:
     def calculate(
         self,
         financial_score: float,
+        bigtech_signals: BigTechSignals,
         tech_signals: TechnicalSignals,
         chip_signals: ChipSignals,
         macro_signals: MacroSignals,
@@ -218,6 +315,7 @@ class ComprehensiveScoreCalculator:
         tech = tech_signals.scores
         breakdown = {
             "financial": financial_score * self.weights["financial"],
+            "bigtech":   bigtech_signals.score * self.weights["bigtech"],
             "tech_early": tech["early"] * self.weights["tech_early"],
             "tech_short": tech["short"] * self.weights["tech_short"],
             "tech_mid":   tech["mid"]   * self.weights["tech_mid"],
@@ -312,12 +410,14 @@ class SignalEngine:
 
     def __init__(self):
         self.fin_calc = FinancialSignalCalculator()
+        self.bigtech_calc = BigTechSignalCalculator()
         self.score_calc = ComprehensiveScoreCalculator()
         self.alert_detector = AlertLevelDetector()
 
     def analyze(
         self,
         financial_signals: FinancialSignals,
+        bigtech_signals: BigTechSignals,
         tech_signals: TechnicalSignals,
         chip_signals: ChipSignals,
         macro_signals: MacroSignals,
@@ -325,9 +425,10 @@ class SignalEngine:
         """
         完整分析流程：
         1. 計算財務分數
-        2. 計算綜合得分
-        3. 偵測特殊訊號
-        4. 判定燈號
+        2. 計算大廠基本面分數
+        3. 計算綜合得分
+        4. 偵測特殊訊號
+        5. 判定燈號
         """
         result = ComprehensiveResult()
 
@@ -335,9 +436,19 @@ class SignalEngine:
         fin_score, fin_warnings = self.fin_calc.calculate(financial_signals)
         result.financial_score = fin_score
 
-        # Step 2: 綜合得分
+        # Step 2: 大廠基本面分數
+        bigtech_score, bigtech_warnings = self.bigtech_calc.calculate(
+            capex_growing_count=bigtech_signals.capex_growing_count,
+            capex_valid_count=bigtech_signals.capex_valid_count,
+            nvda_revenue_yoy=bigtech_signals.nvda_revenue_yoy,
+        )
+        bigtech_signals.score = bigtech_score
+        bigtech_signals.warnings = bigtech_warnings
+        result.bigtech_score = bigtech_score
+
+        # Step 3: 綜合得分
         comp_score, breakdown = self.score_calc.calculate(
-            fin_score, tech_signals, chip_signals, macro_signals
+            fin_score, bigtech_signals, tech_signals, chip_signals, macro_signals
         )
         result.comprehensive_score = comp_score
         result.tech_early_score = tech_signals.scores["early"]
@@ -347,7 +458,7 @@ class SignalEngine:
         result.chip_score = chip_signals.score
         result.macro_score = macro_signals.score
 
-        # Step 3: 特殊訊號偵測
+        # Step 4: 特殊訊號偵測
         reversal_basic = (
             tech_signals.flags.get("ma20_cross_below", False) and
             tech_signals.flags.get("monthly_break_ma12", False) and
@@ -381,6 +492,8 @@ class SignalEngine:
             "breakdown": breakdown,
             "financial_warnings": fin_warnings,
             "financial_score": fin_score,
+            "bigtech_score": bigtech_score,
+            "bigtech_warnings": bigtech_warnings,
             "reversal_basic": reversal_basic,
             "reversal_advanced": reversal_advanced,
             "double_warning": result.double_warning,
