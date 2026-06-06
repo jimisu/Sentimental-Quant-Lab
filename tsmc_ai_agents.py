@@ -394,6 +394,195 @@ class MarketDynamicsAgent(TSMCBaseAgent):
             return -1.0
         return (upper - lower) / mid * 100
 
+    def _detect_position_zone(self, df: pd.DataFrame) -> Tuple[str, float, Dict]:
+        """
+        判斷目前股價處於高檔還是低檔。
+
+        評分邏輯（綜合百分位 + 布林通道位置 + 20MA 乖離率 + RSI）：
+        - 近 60 日收盤價百分位（price percentile）: 40%
+        - 布林通道位置（(close - lower) / (upper - lower)）: 25%
+        - 20MA 乖離率（normalized to 0-100）: 20%
+        - RSI 14（normalized）: 15%
+
+        回傳：
+        - zone_label: "高檔" / "中檔" / "低檔"
+        - zone_score: 0~100（越高代表越高檔）
+        - details: dict 包含各項子分數
+        """
+        if df.empty or '台積電收盤價' not in df.columns:
+            return "未知", 50.0, {}
+
+        df_sorted = df.sort_values("日期").copy()
+        close = pd.to_numeric(df_sorted['台積電收盤價'], errors='coerce').dropna()
+        if len(close) < 20:
+            return "未知", 50.0, {}
+
+        current = close.iloc[-1]
+
+        # 1. 近 60 日收盤價百分位
+        lookback = min(60, len(close))
+        recent_closes = close.tail(lookback)
+        percentile = (recent_closes < current).sum() / lookback * 100
+        # 處理最新即為最高的情況
+        if current >= recent_closes.max():
+            percentile = 100.0
+
+        # 2. 布林通道位置
+        bb_position = 50.0
+        if 'BB_upper' in df_sorted.columns and 'BB_lower' in df_sorted.columns:
+            latest = df_sorted.iloc[-1]
+            bb_upper = latest.get('BB_upper')
+            bb_lower = latest.get('BB_lower')
+            if pd.notna(bb_upper) and pd.notna(bb_lower) and bb_upper != bb_lower:
+                bb_position = (current - bb_lower) / (bb_upper - bb_lower) * 100
+                bb_position = max(0, min(100, bb_position))
+
+        # 3. 20MA 乖離率（normalised）
+        ma20_dev_score = 50.0
+        if len(close) >= 20:
+            ma20 = close.rolling(20).mean().iloc[-1]
+            if pd.notna(ma20) and ma20 > 0:
+                deviation = (current - ma20) / ma20 * 100
+                # 乖離率通常在 -10%~+10%，normalize 到 0~100，50 = 0 乖離
+                ma20_dev_score = max(0, min(100, 50 + deviation * 5))
+
+        # 4. RSI
+        rsi_score = 50.0
+        rsi14 = self._calculate_rsi(close, period=14)
+        rsi_val = rsi14.iloc[-1] if len(rsi14.dropna()) > 0 else 50
+        if pd.notna(rsi_val):
+            rsi_score = rsi_val  # RSI 本身就是 0~100
+
+        zone_score = (
+            percentile * 0.40 +
+            bb_position * 0.25 +
+            ma20_dev_score * 0.20 +
+            rsi_score * 0.15
+        )
+
+        if zone_score >= 75:
+            zone_label = "高檔"
+        elif zone_score <= 25:
+            zone_label = "低檔"
+        else:
+            zone_label = "中檔"
+
+        details = {
+            "price_percentile": round(percentile, 1),
+            "bb_position": round(bb_position, 1),
+            "ma20_dev_score": round(ma20_dev_score, 1),
+            "rsi_score": round(rsi_score, 1),
+            "zone_score": round(zone_score, 1),
+        }
+        return zone_label, zone_score, details
+
+    def _check_high_zone_volume_health(self, df: pd.DataFrame) -> Tuple[bool, List[str], List[str]]:
+        """
+        高檔量價健康度檢查。
+
+        在高檔區，若以下條件成立則為安全：
+        1. 下跌日量縮（當日收盤 < 前日收盤 → 當日量 < 前日量）
+        2. 上漲日量增（當日收盤 > 前日收盤 → 當日量 > 前日量）
+        3. 每次突破近 20 日高點時，量能均大於 5 日均量
+
+        回傳：
+        - is_healthy: bool
+        - safe_signals: list of safe signals 描述
+        - warnings: list of warning 描述
+        """
+        warnings = []
+        safe_signals = []
+
+        df_sorted = df.sort_values("日期").copy()
+        if len(df_sorted) < 20:
+            return True, ["資料不足，預設安全"], []
+
+        close = pd.to_numeric(df_sorted['台積電收盤價'], errors='coerce')
+        vol = pd.to_numeric(df_sorted['台積電成交金額'], errors='coerce')
+        vol_ma5 = vol.rolling(5).mean()
+
+        # 檢查近 10 個交易日的量價關係
+        check_days = min(10, len(df_sorted) - 1)
+        down_days = 0
+        down_on_low_vol = 0
+        up_days = 0
+        up_on_high_vol = 0
+
+        for i in range(-check_days, 0):
+            c_today = close.iloc[i]
+            c_prev = close.iloc[i - 1]
+            v_today = vol.iloc[i]
+            v_prev = vol.iloc[i - 1]
+
+            if pd.isna(c_today) or pd.isna(c_prev) or pd.isna(v_today) or pd.isna(v_prev):
+                continue
+
+            if c_today < c_prev:
+                down_days += 1
+                if v_today < v_prev:
+                    down_on_low_vol += 1
+            elif c_today > c_prev:
+                up_days += 1
+                if v_today > v_prev:
+                    up_on_high_vol += 1
+
+        # 下跌量縮
+        if down_days > 0:
+            ratio = down_on_low_vol / down_days
+            if ratio >= 0.6:
+                safe_signals.append(f"下跌量縮（{down_on_low_vol}/{down_days} 個下跌日量縮）")
+            else:
+                warnings.append(f"下跌未量縮（僅 {down_on_low_vol}/{down_days} 個下跌日量縮，可能出貨）")
+
+        # 上漲量增
+        if up_days > 0:
+            ratio = up_on_high_vol / up_days
+            if ratio >= 0.6:
+                safe_signals.append(f"上漲量增（{up_on_high_vol}/{up_days} 個上漲日量增）")
+            else:
+                warnings.append(f"上漲未量增（僅 {up_on_high_vol}/{up_days} 個上漲日量增，動能不足）")
+
+        # 突破前高量能檢查（近 20 日）
+        lookback = 20
+        recent = df_sorted.tail(lookback).copy()
+        if len(recent) >= 10:
+            recent_close = pd.to_numeric(recent['台積電收盤價'], errors='coerce')
+            recent_vol = pd.to_numeric(recent['台積電成交金額'], errors='coerce')
+            recent_vol_ma5 = recent_vol.rolling(5).mean()
+
+            breakout_with_vol = 0
+            breakout_without_vol = 0
+
+            for i in range(5, len(recent)):
+                c = recent_close.iloc[i]
+                max_prev = recent_close.iloc[max(0, i - 10):i].max()
+                v = recent_vol.iloc[i]
+                v_ma5 = recent_vol_ma5.iloc[i]
+
+                if pd.isna(c) or pd.isna(v) or pd.isna(v_ma5):
+                    continue
+
+                if c >= max_prev * 0.995:  # 突破或觸及前 10 日高點（允許 0.5% 誤差）
+                    if v > v_ma5:
+                        breakout_with_vol += 1
+                    else:
+                        breakout_without_vol += 1
+
+            total_breakouts = breakout_with_vol + breakout_without_vol
+            if total_breakouts > 0:
+                ratio = breakout_with_vol / total_breakouts
+                if ratio >= 0.6:
+                    safe_signals.append(
+                        f"突破前高帶量（{breakout_with_vol}/{total_breakouts} 次突破時量 > 5 日均量）"
+                    )
+                else:
+                    warnings.append(
+                        f"突破前高未帶量（僅 {breakout_with_vol}/{total_breakouts} 次突破時量 > 5 日均量，假突破風險）"
+                    )
+
+        is_healthy = len(warnings) == 0
+        return is_healthy, safe_signals, warnings
+
     def _format_20ma_deviation(self, df: pd.DataFrame) -> Tuple[str, bool]:
         """計算最新收盤價相對 20MA 的乖離率。"""
         if df.empty or '台積電收盤價' not in df.columns:
@@ -661,7 +850,33 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         if crossed_below:
             penalties["short"] += 20
 
+        # ── 高低檔判斷 ──────────────────────────────────────────────
+        zone_label, zone_score, zone_details = self._detect_position_zone(df)
+        zone_report_lines = [
+            f"**目前處於 {zone_label}**（綜合分數: {zone_score:.1f}/100）",
+            f"  價格百分位: {zone_details.get('price_percentile', '-')}% | "
+            f"布林通道位置: {zone_details.get('bb_position', '-')}% | "
+            f"20MA 偏離: {zone_details.get('ma20_dev_score', '-')} | "
+            f"RSI: {zone_details.get('rsi_score', '-')}",
+        ]
+
+        # 高檔量價健康度檢查
+        high_zone_health = None
+        if zone_label == "高檔":
+            is_healthy, safe_signals, warnings = self._check_high_zone_volume_health(df)
+            high_zone_health = {"is_healthy": is_healthy, "safe_signals": safe_signals, "warnings": warnings}
+            zone_report_lines.append(f"  高檔量價狀態: {'✅ 安全' if is_healthy else '⚠️ 警告'}")
+            if safe_signals:
+                zone_report_lines.append(f"    安全訊號: {'; '.join(safe_signals)}")
+            if warnings:
+                zone_report_lines.append(f"    ⚠️ 警告: {'; '.join(warnings)}")
+            # 高檔且量價不健康 → 扣分
+            if not is_healthy:
+                penalties["short"] += 15
+                penalties["mid"] += 10
+
         scores = {k: max(0, 100 - v) for k, v in penalties.items()}
+        zone_section = "\n   ".join(zone_report_lines)
         detail_suffix = (
             f"\n   ● {ma20_detail}"
             f"\n   ● {ma_status}"
@@ -720,24 +935,44 @@ class MarketDynamicsAgent(TSMCBaseAgent):
                 insights.append("強勢：大戶進場跡象。成交量異常放大且股價收紅。")
 
         image_md = f"\n![Technical Chart]({chart_path})" if chart_path else ""
-        if insights:
-            return f"{report_prefix}{' | '.join(insights)}{detail_suffix}{image_md}", tech_flags, scores
-        if tsmc_declining and mkt_declining:
-            return f"{report_prefix}市場極度觀望：個股與大盤呈現連鎖縮量。{detail_suffix}{image_md}", tech_flags, scores
-        elif tsmc_declining:
-            return f"{report_prefix}警訊：台積電成交量持續萎縮，資金動能轉弱。{detail_suffix}{image_md}", tech_flags, scores
 
-        return f"{report_prefix}量能結構尚屬正常。{detail_suffix}{image_md}", tech_flags, scores
+        # 將高低檔資訊附加到 tech_flags
+        tech_flags["position_zone"] = zone_label
+        tech_flags["position_zone_score"] = zone_score
+        if high_zone_health is not None:
+            tech_flags["high_zone_healthy"] = high_zone_health["is_healthy"]
+            tech_flags["high_zone_warnings"] = high_zone_health["warnings"]
+
+        if insights:
+            return f"{report_prefix}{' | '.join(insights)}{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores
+        if tsmc_declining and mkt_declining:
+            return f"{report_prefix}市場極度觀望：個股與大盤呈現連鎖縮量。{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores
+        elif tsmc_declining:
+            return f"{report_prefix}警訊：台積電成交量持續萎縮，資金動能轉弱。{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores
+
+        return f"{report_prefix}量能結構尚屬正常。{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores
 
 class InstitutionalInvestorAgent(TSMCBaseAgent):
     """
     Agent 3: 籌碼分析專家
     監控三大法人（特別是外資）的買賣超動態。
+    優化重點：
+    1. 外資動向多維度分析（賣超天數比例、連續賣超、買賣超分級）
+    2. 三大法人個別趨勢摘要
+    3. 法人動向分歧偵測
     """
+    # 買賣超分級閾值（張）
+    SELL_GRADE_THRESHOLDS = {
+        "minor": 500,      # 輕微賣超：< 500 張
+        "moderate": 3000,  # 中度賣超：500 ~ 3000 張
+        "heavy": 10000,    # 大幅賣超：3000 ~ 10000 張
+        "extreme": 100000, # 極端賣超：> 10000 張
+    }
+
     def __init__(self):
         super().__init__("籌碼分析 Agent")
         self.source = "FinMind 三大法人買賣超資料集 (TaiwanStockInstitutionalInvestorsBuySell)"
-        self.logic = "追蹤三大法人（外資、投信、自營商）買賣超行為。連續外資賣超被視為 Trend-killer 訊號；三大法人同步買超則視為籌碼共振。"
+        self.logic = "追蹤三大法人（外資、投信、自營商）買賣超行為。連續外資賣超被視為 Trend-killer 訊號；三大法人同步買超則視為籌碼共振。新增：賣超分級、動向分歧偵測、個別法人趨勢摘要。"
         self.charts_dir = "charts"
         self.institution_type_labels = {
             "Foreign_Investor": "外資",
@@ -753,6 +988,114 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             "自營商(自行買賣)": "自營商",
             "自營商(避險)": "自營商",
         }
+
+    def _grade_sell_magnitude(self, total_sell_lots: float, days: int) -> str:
+        """
+        根據 5 日累計賣超張數分級買賣超嚴重程度。
+        """
+        daily_avg = total_sell_lots / max(days, 1)
+        if total_sell_lots < self.SELL_GRADE_THRESHOLDS["minor"]:
+            return f"輕微（日均賣超 {daily_avg:.0f} 張）"
+        elif total_sell_lots < self.SELL_GRADE_THRESHOLDS["moderate"]:
+            return f"中度（日均賣超 {daily_avg:.0f} 張）"
+        elif total_sell_lots < self.SELL_GRADE_THRESHOLDS["heavy"]:
+            return f"大幅（日均賣超 {daily_avg:.0f} 張）"
+        elif total_sell_lots < self.SELL_GRADE_THRESHOLDS["extreme"]:
+            return f"嚴重（日均賣超 {daily_avg:.0f} 張）"
+        else:
+            return f"極端（日均賣超 {daily_avg:.0f} 張）"
+
+    def _analyze_single_institution(self, foreign_daily: pd.Series) -> Dict:
+        """
+        深入分析外資單日買賣超趨勢。
+        回傳包含賣超天數比例、最長連續賣超、買賣超分級等資訊。
+        """
+        if foreign_daily.empty:
+            return {"sell_ratio": 0, "max_consecutive_sell": 0, "grade": "資料不足", "daily_details": []}
+
+        daily_values = foreign_daily.values
+        dates = foreign_daily.index.tolist()
+        total_days = len(daily_values)
+        sell_days = int((daily_values < 0).sum())
+        buy_days = int((daily_values > 0).sum())
+        sell_ratio = sell_days / max(total_days, 1) * 100
+
+        # 計算最長連續賣超
+        max_consecutive = 0
+        current_streak = 0
+        for v in daily_values:
+            if v < 0:
+                current_streak += 1
+                max_consecutive = max(max_consecutive, current_streak)
+            else:
+                current_streak = 0
+
+        total_net = float(foreign_daily.sum())
+        total_sell_lots = abs(min(total_net, 0)) / 1000  # 只取賣超部分
+        grade = self._grade_sell_magnitude(total_sell_lots, sell_days if sell_days > 0 else total_days)
+
+        return {
+            "total_days": total_days,
+            "sell_days": sell_days,
+            "buy_days": buy_days,
+            "sell_ratio": sell_ratio,
+            "max_consecutive_sell": max_consecutive,
+            "grade": grade,
+            "total_net_shares": total_net,
+        }
+
+    def _analyze_individual_trends(self, df: pd.DataFrame, type_col: str) -> Dict[str, Dict]:
+        """
+        分析三大法人各自的買賣超趨勢摘要。
+        回傳每個法人的累計淨買賣、買賣天數等摘要。
+        """
+        normalized = df.copy()
+        normalized["institution_label"] = normalized[type_col].apply(self._normalize_institution_label)
+        normalized = normalized[normalized["institution_label"].notna()].copy()
+        normalized["buy"] = pd.to_numeric(normalized["buy"], errors="coerce").fillna(0)
+        normalized["sell"] = pd.to_numeric(normalized["sell"], errors="coerce").fillna(0)
+        normalized["net_buy_shares"] = normalized["buy"] - normalized["sell"]
+
+        daily_net = (
+            normalized
+            .groupby(["date", "institution_label"], as_index=False)["net_buy_shares"]
+            .sum()
+        )
+
+        trends = {}
+        for label in ["外資", "投信", "自營商"]:
+            inst_data = daily_net[daily_net["institution_label"] == label].sort_values("date")
+            if inst_data.empty:
+                trends[label] = {"net_shares": 0, "sell_days": 0, "total_days": 0, "summary": "無資料"}
+                continue
+            total = float(inst_data["net_buy_shares"].sum())
+            sell_days = int((inst_data["net_buy_shares"] < 0).sum())
+            total_days = len(inst_data)
+            direction = "買超" if total > 0 else "賣超" if total < 0 else "持平"
+            trends[label] = {
+                "net_shares": total,
+                "sell_days": sell_days,
+                "total_days": total_days,
+                "summary": f"{direction} {abs(total) / 1000:.0f} 張 / {total_days} 日中賣超 {sell_days} 日",
+            }
+        return trends
+
+    def _detect_institution_divergence(self, trends: Dict[str, Dict]) -> str:
+        """
+        偵測三大法人動向是否分歧。
+        例如：外資大賣但投信大買 → 法人分歧，需留意。
+        """
+        significant_labels = []
+        for label, info in trends.items():
+            net = info.get("net_shares", 0)
+            if abs(net) < 10000:  # 忽略小額（< 10000 股）
+                continue
+            direction = "買" if net > 0 else "賣"
+            significant_labels.append(f"{label}{direction}超 {abs(net) / 1000:.0f} 張")
+
+        if len(significant_labels) >= 2:
+            return f"法人動向分歧：{'、'.join(significant_labels)}"
+        return ""
 
     def _generate_chip_chart(self, df: pd.DataFrame) -> str:
         """產生籌碼流向圖"""
@@ -875,7 +1218,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         # 防禦性檢查：確保必要欄位存在 (FinMind API v4 常用 'name' 或 'type')
         type_col = 'type' if 'type' in df.columns else 'name' if 'name' in df.columns else None
         base_columns = {'date', 'buy', 'sell'}
-        
+
         if not type_col or not base_columns.issubset(df.columns):
             found_cols = set(df.columns)
             missing = base_columns - found_cols
@@ -889,7 +1232,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         foreign_all = df[df["institution_label"] == '外資'].sort_values('date', ascending=True)
         chart_path = self._generate_chip_chart(foreign_all)
         resonance_report, resonance_flags = self._analyze_three_institution_resonance(df, type_col)
-        
+
         # 依日期加總外資淨買賣股數
         foreign_daily = (
             foreign_all.copy()
@@ -902,27 +1245,89 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         if len(foreign_daily) < 5:
             return f"{report_prefix}籌碼資料不足(需5日)，無法判斷趨勢。{resonance_report}", resonance_flags, 0
 
+        # ── 外資多維度分析 ──────────────────────────────────────────
+        foreign_analysis = self._analyze_single_institution(foreign_daily)
+
         # 過去 5 天累計
-        recent_5d_net_shares = foreign_daily.head(5).sum()
+        recent_5d_net_shares = float(foreign_daily.head(5).sum())
         total_sell_lots = abs(recent_5d_net_shares) / 1000
 
         image_md = f"\n![Chip Chart]({chart_path})" if chart_path else ""
 
-        # 檢查 5 日累計是否為賣超
+        # ── 三大法人個別趨勢 ────────────────────────────────────────
+        individual_trends = self._analyze_individual_trends(df, type_col)
+        trend_lines = []
+        for label in ["外資", "投信", "自營商"]:
+            t = individual_trends.get(label, {})
+            trend_lines.append(f"  · {label}: {t.get('summary', '無資料')}")
+
+        # ── 法人動向分歧偵測 ────────────────────────────────────────
+        divergence = self._detect_institution_divergence(individual_trends)
+
+        # ── 籌碼評分（多層級） ──────────────────────────────────────
+        # 基礎分 100，根據多項訊號扣分
+        chip_penalties = 0
+
+        # 5 日累計賣超
         is_net_selling = recent_5d_net_shares < 0
-        big_foreign_sell = bool(is_net_selling and (total_sell_lots >= 1000)) # 5日累計賣超達 1000 張
-        
-        chip_score = 80 if big_foreign_sell else 100  # 用戶指定權重: 20 (100-20=80)
-        
+        if is_net_selling:
+            if total_sell_lots >= 10000:
+                chip_penalties += 30
+            elif total_sell_lots >= 3000:
+                chip_penalties += 20
+            elif total_sell_lots >= 1000:
+                chip_penalties += 15
+            else:
+                chip_penalties += 10
+
+        # 賣超天數比例 > 60%
+        if foreign_analysis["sell_ratio"] > 60:
+            chip_penalties += 10
+
+        # 連續賣超 >= 3 日
+        if foreign_analysis["max_consecutive_sell"] >= 3:
+            chip_penalties += 10
+
+        chip_score = max(0, 100 - chip_penalties)
+
+        big_foreign_sell = is_net_selling and (total_sell_lots >= 1000)
+        extreme_sell = is_net_selling and (total_sell_lots >= 5000)
+
         chip_flags = {
             "big_foreign_sell": big_foreign_sell,
+            "extreme_sell": extreme_sell,
+            "sell_ratio": foreign_analysis["sell_ratio"],
+            "max_consecutive_sell": foreign_analysis["max_consecutive_sell"],
             **resonance_flags,
         }
 
-        if is_net_selling:
-            return f"{report_prefix}趨勢警告：外資近 5 日呈累計賣超！累計賣超約 {total_sell_lots:.0f} 張。{resonance_report}{image_md}", chip_flags, chip_score
-        
-        return f"{report_prefix}籌碼動向平穩或呈現累計買盤支撐。{resonance_report}{image_md}", chip_flags, chip_score
+        # ── 組合報告 ────────────────────────────────────────────────
+        detail_parts = [
+            f"外資 5 日累計: {'賣超' if is_net_selling else '買超'} {abs(recent_5d_net_shares) / 1000:.0f} 張",
+            f"外資動向: 佔 {foreign_analysis['total_days']} 日中的 "
+            f"買超 {foreign_analysis['buy_days']} 日 / 賣超 {foreign_analysis['sell_days']} 日 "
+            f"（賣超比例 {foreign_analysis['sell_ratio']:.0f}%）",
+            f"最長連續賣超: {foreign_analysis['max_consecutive_sell']} 日",
+            f"賣超分級: {foreign_analysis['grade']}",
+        ]
+        if divergence:
+            detail_parts.append(f"⚠️ {divergence}")
+
+        detail_section = "\n".join(detail_parts)
+        trend_section = "三大法人個別趨勢:\n" + "\n".join(trend_lines)
+
+        if extreme_sell:
+            verdict = (f"🚨 外資強力賣出警告：5 日累計賣超 {total_sell_lots:.0f} 張，"
+                       f"賣超比例 {foreign_analysis['sell_ratio']:.0f}%，最長連續賣超 {foreign_analysis['max_consecutive_sell']} 日！"
+                       f"\n{detail_section}\n{trend_section}\n{resonance_report}")
+        elif is_net_selling:
+            verdict = (f"趨勢警告：外資近 5 日呈累計賣超 {total_sell_lots:.0f} 張。"
+                       f"\n{detail_section}\n{trend_section}\n{resonance_report}")
+        else:
+            verdict = (f"籌碼動向平穩或呈現累計買盤支撐。"
+                       f"\n{detail_section}\n{trend_section}\n{resonance_report}")
+
+        return f"{report_prefix}{verdict}{image_md}", chip_flags, chip_score
 
 class Orchestrator:
     """
