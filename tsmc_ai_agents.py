@@ -85,88 +85,314 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         self.charts_dir = "charts"
 
     def _generate_technical_chart(self, df: pd.DataFrame) -> str:
-        """產生技術線圖與成交量圖"""
-        if df.empty or not HAS_MATPLOTLIB: return ""
-        
+        """
+        產生技術線圖（4 子圖）：
+        1. 價格 + 均線 + 布林通道 + 支撐/壓力位
+        2. 成交量 + 5 日均量
+        3. RSI14 + KD 指標
+        4. MACD + 訊號線 + 柱狀圖
+        """
+        if df.empty or not HAS_MATPLOTLIB:
+            return ""
+
         df = df.sort_values("日期").copy()
         df['5MA'] = df['台積電收盤價'].rolling(window=5).mean()
         df['20MA'] = df['台積電收盤價'].rolling(window=20).mean()
-        
-        close_prices = pd.to_numeric(df['台積電收盤價'], errors='coerce').dropna()
-        rsi14 = self._calculate_rsi(close_prices, period=14).reindex(df.index)
+        df['60MA'] = df['台積電收盤價'].rolling(window=60).mean()
 
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10), gridspec_kw={'height_ratios': [3, 1, 1]})
-        
-        # 價格與均線
-        ax1.plot(df['日期'], df['台積電收盤價'], label='Close Price', color='black', linewidth=1.5)
-        ax1.plot(df['日期'], df['5MA'], label='5MA', color='blue', linestyle='--')
-        ax1.plot(df['日期'], df['20MA'], label='20MA', color='red', linestyle='--')
-        ax1.set_title("TSMC (2330) Technical Analysis")
-        ax1.set_ylabel("Price (TWD)")
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
+        # 布林通道 (20, 2)
+        df['BB_mid'] = df['20MA']
+        df['BB_std'] = df['台積電收盤價'].rolling(window=20).std()
+        df['BB_upper'] = df['BB_mid'] + 2 * df['BB_std']
+        df['BB_lower'] = df['BB_mid'] - 2 * df['BB_std']
 
-        # 成交量
-        ax2.bar(df['日期'], df['台積電成交金額'] / 10**8, color='gray', alpha=0.5, label='Volume (100M)')
-        ax2.set_ylabel("Volume (100M)")
-        ax2.set_xlabel("Date")
-        ax2.grid(True, alpha=0.2)
+        close = pd.to_numeric(df['台積電收盤價'], errors='coerce')
+        high = pd.to_numeric(df['台積電最高價'], errors='coerce')
+        low = pd.to_numeric(df['台積電最低價'], errors='coerce')
 
-        # RSI
-        ax3.plot(df['日期'], rsi14, label='RSI14', color='purple', linewidth=1.5)
-        ax3.axhline(70, color='red', linestyle='--', linewidth=0.8)
-        ax3.axhline(30, color='green', linestyle='--', linewidth=0.8)
-        ax3.set_ylabel('RSI')
-        ax3.set_xlabel('Date')
-        ax3.set_ylim(0, 100)
-        ax3.legend(loc='upper left')
-        ax3.grid(True, alpha=0.2)
+        rsi14 = self._calculate_rsi(close, period=14).reindex(df.index)
+        k, d = self._calculate_kd(high, low, close)
+        k = k.reindex(df.index)
+        d = d.reindex(df.index)
+
+        macd, signal = self._calculate_macd(close)
+        macd = macd.reindex(df.index)
+        signal = signal.reindex(df.index)
+        histogram = macd - signal
+
+        vol_ma5 = df['台積電成交金額'].rolling(window=5).mean()
+
+        # ── 繪圖 ──────────────────────────────────────────────
+        fig, axes = plt.subplots(4, 1, figsize=(12, 14),
+                                 gridspec_kw={'height_ratios': [3, 1, 1.2, 1.2]})
+        ax1, ax2, ax3, ax4 = axes
+
+        # 子圖 1: 價格 + 均線 + 通道 + 支撐/壓力
+        self._plot_price_chart(ax1, df, close, k, d)
+
+        # 子圖 2: 成交量
+        self._plot_volume_chart(ax2, df)
+
+        # 子圖 3: RSI + KD
+        self._plot_oscillator_chart(ax3, df, rsi14, k, d)
+
+        # 子圖 4: MACD
+        self._plot_macd_chart(ax4, df, macd, signal, histogram)
+
+        # 日期刻度
+        date_count = len(df)
+        max_ticks = min(10, max(5, date_count // 25))
+        for ax in axes:
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=max_ticks, integer=False))
+            ax.tick_params(axis='x', rotation=45)
+
+        plt.tight_layout()
+        filepath = prepare_daily_chart_path(self.charts_dir, "tech_chart")
+        plt.savefig(filepath, dpi=100, bbox_inches='tight')
+        plt.close()
+        keep_latest_daily_charts(self.charts_dir, "tech_chart",
+                                datetime.now().strftime("%Y%m%d"), keep=1)
+        return filepath
+
+    def _plot_price_chart(self, ax, df, close, k, d):
+        """繪製價格子圖：K 線 + 均線 + 布林通道 + 支撐/壓力"""
+        ax.plot(df['日期'], close, label='收盤價', color='black', linewidth=1.2, zorder=5)
+        ax.plot(df['日期'], df['5MA'], label='5MA', color='#1f77b4', linewidth=0.9, linestyle='--')
+        ax.plot(df['日期'], df['20MA'], label='20MA', color='#d62728', linewidth=0.9, linestyle='--')
+
+        # 布林通道
+        ax.plot(df['日期'], df['BB_upper'], label='布林上軌', color='#ff7f0e',
+                linewidth=0.7, linestyle=':', alpha=0.7)
+        ax.plot(df['日期'], df['BB_lower'], label='布林下軌', color='#ff7f0e',
+                linewidth=0.7, linestyle=':', alpha=0.7)
+        ax.fill_between(df['日期'], df['BB_upper'], df['BB_lower'],
+                        alpha=0.06, color='#ff7f0e', label='布林通道')
+
+        # 支撐/壓力位（近 60 日高低點）
+        support, resistance = self._detect_support_resistance(df)
+        if support:
+            ax.axhline(y=support, color='green', linewidth=0.6, linestyle='-.',
+                       alpha=0.7, label=f'支撐 {support:.0f}')
+        if resistance:
+            ax.axhline(y=resistance, color='red', linewidth=0.6, linestyle='-.',
+                       alpha=0.7, label=f'壓力 {resistance:.0f}')
+
+        ax.set_title('TSMC (2330) 技術分析')
+        ax.set_ylabel('價格 (TWD)')
+        ax.legend(loc='upper left', fontsize=8, ncol=5)
+        ax.grid(True, alpha=0.3)
 
         # 標註 RSI 頂背離
+        rsi14 = self._calculate_rsi(close, period=14).reindex(df.index)
         if len(df) >= 20 and rsi14.notna().sum() >= 20:
             lookback = df.iloc[-60:-5]
             if not lookback.empty:
                 swing_idx = lookback['台積電收盤價'].idxmax()
                 swing_rsi = rsi14.loc[swing_idx]
-                current_price = df['台積電收盤價'].iloc[-1]
+                current_price = close.iloc[-1]
                 current_rsi = rsi14.iloc[-1]
                 swing_price = df.loc[swing_idx, '台積電收盤價']
                 if pd.notna(swing_rsi) and current_price >= swing_price and current_rsi < swing_rsi:
                     latest_date = df['日期'].iloc[-1]
-                    ax1.annotate(
-                        'RSI 頂背離',
-                        xy=(latest_date, current_price),
-                        xytext=(latest_date, current_price * 1.03),
-                        arrowprops=dict(arrowstyle='->', color='purple', lw=1),
-                        color='purple',
-                        fontsize=10,
-                        va='bottom',
-                        ha='right'
-                    )
-                    ax3.annotate(
-                        'RSI 頂背離',
-                        xy=(latest_date, current_rsi),
-                        xytext=(latest_date, min(current_rsi + 12, 98)),
-                        arrowprops=dict(arrowstyle='->', color='purple', lw=1),
-                        color='purple',
-                        fontsize=10,
-                        va='bottom',
-                        ha='right'
-                    )
+                    ax.annotate('RSI 頂背離',
+                                xy=(latest_date, current_price),
+                                xytext=(latest_date, current_price * 1.03),
+                                arrowprops=dict(arrowstyle='->', color='purple', lw=1),
+                                color='purple', fontsize=9, va='bottom', ha='right')
 
-        # 優化 x 軸日期標籤顯示：減少刻度數量避免重疊
-        date_count = len(df)
-        max_ticks = min(8, max(4, date_count // 20))  # 根據資料量調整刻度數
-        for ax in [ax1, ax2, ax3]:
-            ax.xaxis.set_major_locator(MaxNLocator(nbins=max_ticks, integer=False))
-            ax.tick_params(axis='x', rotation=45)
-        
-        plt.tight_layout()
-        filepath = prepare_daily_chart_path(self.charts_dir, "tech_chart")
-        plt.savefig(filepath, dpi=100, bbox_inches='tight')
-        plt.close()
-        keep_latest_daily_charts(self.charts_dir, "tech_chart", datetime.now().strftime("%Y%m%d"), keep=1)
-        return filepath
+    def _plot_volume_chart(self, ax, df):
+        """繪製成交量子圖"""
+        vol = pd.to_numeric(df['台積電成交金額'], errors='coerce')
+        colors = ['#d62728' if c >= o else '#2ca02c'
+                  for c, o in zip(pd.to_numeric(df['台積電收盤價'], errors='coerce'),
+                                  pd.to_numeric(df['台積電開盤價'], errors='coerce'))]
+        ax.bar(df['日期'], vol / 1e8, color=colors, alpha=0.6, width=0.8)
+        ax.plot(df['日期'], df['台積電成交金額'].rolling(5).mean() / 1e8,
+                label='5 日均量', color='blue', linewidth=0.8)
+        ax.set_ylabel('成交量 (億)')
+        ax.legend(loc='upper left', fontsize=8)
+        ax.grid(True, alpha=0.2)
+
+    def _plot_oscillator_chart(self, ax, df, rsi14, k, d):
+        """繪製 RSI + KD 震盪指標子圖"""
+        ax.plot(df['日期'], rsi14, label='RSI14', color='purple', linewidth=1.2)
+        ax.plot(df['日期'], k, label='%K', color='#1f77b4', linewidth=0.9)
+        ax.plot(df['日期'], d, label='%D', color='#d62728', linewidth=0.9)
+        ax.axhline(70, color='red', linewidth=0.6, linestyle='--', alpha=0.7)
+        ax.axhline(30, color='green', linewidth=0.6, linestyle='--', alpha=0.7)
+        ax.axhline(80, color='red', linewidth=0.4, linestyle=':', alpha=0.5)
+        ax.axhline(20, color='green', linewidth=0.4, linestyle=':', alpha=0.5)
+        ax.fill_between(df['日期'], 70, 100, alpha=0.05, color='red')
+        ax.fill_between(df['日期'], 0, 30, alpha=0.05, color='green')
+        ax.set_ylabel('RSI / KD')
+        ax.set_ylim(0, 100)
+        ax.legend(loc='upper left', fontsize=8, ncol=3)
+        ax.grid(True, alpha=0.2)
+
+    def _plot_macd_chart(self, ax, df, macd, signal, histogram):
+        """繪製 MACD 子圖"""
+        ax.plot(df['日期'], macd, label='MACD', color='#1f77b4', linewidth=1.0)
+        ax.plot(df['日期'], signal, label='訊號線', color='#d62728', linewidth=1.0)
+        colors = ['#d62728' if v >= 0 else '#2ca02c' for v in histogram]
+        ax.bar(df['日期'], histogram, color=colors, alpha=0.4, width=0.8, label='柱狀圖')
+        ax.axhline(0, color='gray', linewidth=0.5)
+        ax.set_ylabel('MACD')
+        ax.set_xlabel('日期')
+        ax.legend(loc='upper left', fontsize=8, ncol=3)
+        ax.grid(True, alpha=0.2)
+
+    # ── 支撐/壓力位偵測 ──────────────────────────────────────────
+
+    def _detect_support_resistance(self, df: pd.DataFrame, lookback: int = 60) -> Tuple[Optional[float], Optional[float]]:
+        """
+        以近 N 日的高低點當作支撐/壓力位。
+        支撐 = 近 N 日最低價，壓力 = 近 N 日最高價。
+        """
+        recent = df.tail(lookback)
+        if recent.empty:
+            return None, None
+        low = pd.to_numeric(recent['台積電最低價'], errors='coerce').dropna()
+        high = pd.to_numeric(recent['台積電最高價'], errors='coerce').dropna()
+        if low.empty or high.empty:
+            return None, None
+        support = low.min()
+        resistance = high.max()
+        return support, resistance
+
+    # ── KD 指標 ──────────────────────────────────────────────────
+
+    def _calculate_kd(self, high: pd.Series, low: pd.Series, close: pd.Series,
+                      k_period: int = 9, d_period: int = 3) -> Tuple[pd.Series, pd.Series]:
+        """
+        計算隨機指標 (Stochastic Oscillator) %K 與 %D。
+        %K = (C - L9) / (H9 - L9) * 100
+        %D = %K 的 3 日 SMA
+        """
+        lowest_low = low.rolling(window=k_period).min()
+        highest_high = high.rolling(window=k_period).max()
+        denom = highest_high - lowest_low
+        k = (close - lowest_low) / denom.replace(0, float('nan')) * 100
+        d = k.rolling(window=d_period).mean()
+        return k, d
+
+    # ── 均線糾結/發散判斷 ─────────────────────────────────────────
+
+    def _check_ma_convergence(self, df: pd.DataFrame) -> str:
+        """
+        判斷 5MA、20MA、60MA 是否糾結（差距 < 2%）或發散。
+        從 df 的 *MA 欄位讀取（需先呼叫 _enrich_indicators）。
+        """
+        if df.empty:
+            return "均線狀態: 資料不足"
+        latest = df.iloc[-1]
+        ma5 = latest.get('5MA')
+        ma20 = latest.get('20MA')
+        ma60 = latest.get('60MA')
+        if pd.isna(ma5) or pd.isna(ma60):
+            return "均線狀態: 尚在計算中"
+        if ma60 == 0:
+            return "均線狀態: 尚在計算中"
+
+        spread = abs(ma5 - ma60) / ma60 * 100
+        if spread < 2:
+            return f"均線糾結 (5MA={ma5:.0f}, 20MA={ma20:.0f}, 60MA={ma60:.0f}, 差距={spread:.1f}%)"
+        elif ma5 > ma20 > ma60:
+            return f"多頭排列，均線發散 (5MA={ma5:.0f} > 20MA={ma20:.0f} > 60MA={ma60:.0f})"
+        elif ma5 < ma20 < ma60:
+            return f"空頭排列，均線發散 (5MA={ma5:.0f} < 20MA={ma20:.0f} < 60MA={ma60:.0f})"
+        else:
+            return f"均線糾結過渡期 (5MA={ma5:.0f}, 20MA={ma20:.0f}, 60MA={ma60:.0f}, 差距={spread:.1f}%)"
+
+    # ── 布林通道寬度 (BW) ─────────────────────────────────────────
+
+    def _bollinger_bandwidth(self, df: pd.DataFrame) -> str:
+        """
+        計算布林通道寬度 = (上軌 - 下軌) / 中軌 * 100。
+        寬度 < 5% 代表壓縮（可能即將大波動）。
+        從 df 的 BB_* 欄位讀取（需先呼叫 _enrich_indicators）。
+        """
+        if df.empty or 'BB_upper' not in df.columns:
+            return "布林通道: 資料不足"
+        latest = df.iloc[-1]
+        upper = latest.get('BB_upper')
+        lower = latest.get('BB_lower')
+        mid = latest.get('BB_mid')
+        if pd.isna(upper) or pd.isna(lower) or pd.isna(mid) or mid == 0:
+            return "布林通道: 尚在計算中"
+        bw = (upper - lower) / mid * 100
+        note = "（壓縮，留意變盤）" if bw < 5 else ""
+        return f"布林通道寬度: {bw:.2f}%{note}"
+
+    # ── KD 狀態報告 ──────────────────────────────────────────────
+
+    def _format_kd_status(self, df: pd.DataFrame) -> str:
+        """
+        報告目前 KD 狀態：超買、超賣、黃金交叉、死亡交叉。
+        從 df 的 %K / %D 欄位讀取（需先呼叫 _enrich_indicators）。
+        """
+        if df.empty or '%K' not in df.columns or '%D' not in df.columns:
+            return "KD: 資料不足"
+        k = df['%K'].dropna()
+        d = df['%D'].dropna()
+        if len(k) < 2 or len(d) < 2:
+            return "KD: 尚在計算中"
+
+        k_val = k.iloc[-1]
+        d_val = d.iloc[-1]
+        k_prev = k.iloc[-2]
+        d_prev = d.iloc[-2]
+
+        if k_val >= 80 and d_val >= 80:
+            status = "超買區"
+        elif k_val <= 20 and d_val <= 20:
+            status = "超賣區"
+        else:
+            status = "中性區"
+
+        cross = ""
+        if k_prev < d_prev and k_val >= d_val:
+            cross = "（黃金交叉）"
+        elif k_prev > d_prev and k_val <= d_val:
+            cross = "（死亡交叉）"
+
+        return f"KD: %K={k_val:.1f}, %D={d_val:.1f} | {status}{cross}"
+
+    def _add_kd_penalties(self, df: pd.DataFrame, penalties: Dict[str, int]) -> Dict[str, int]:
+        """
+        KD 訊號計分：超買區 + 死亡交叉 → 短期扣分。
+        從 df 的 %K / %D 欄位讀取（需先呼叫 _enrich_indicators）。
+        """
+        if df.empty or '%K' not in df.columns or '%D' not in df.columns:
+            return penalties
+        k = df['%K'].dropna()
+        d = df['%D'].dropna()
+        if len(k) < 2 or len(d) < 2:
+            return penalties
+
+        k_val = k.iloc[-1]
+        d_val = d.iloc[-1]
+        k_prev = k.iloc[-2]
+        d_prev = d.iloc[-2]
+
+        if k_val >= 75 and k_prev > d_prev and k_val <= d_val:
+            penalties["short"] += 15
+        # 超賣區黃金交叉 → 正面訊號（不額外加分，但不扣分）
+        elif k_val <= 25 and k_prev < d_prev and k_val >= d_val:
+            penalties["short"] = max(0, penalties["short"] - 10)
+
+        return penalties
+
+    def _bollinger_bandwidth_raw(self, df: pd.DataFrame) -> float:
+        """回傳最新一期的布林通道寬度百分比（純數值，用於程式判斷）。"""
+        if df.empty or 'BB_upper' not in df.columns:
+            return -1.0  # 資料不足標記
+        latest = df.iloc[-1]
+        upper = latest.get('BB_upper')
+        lower = latest.get('BB_lower')
+        mid = latest.get('BB_mid')
+        if pd.isna(upper) or pd.isna(lower) or pd.isna(mid) or mid == 0:
+            return -1.0
+        return (upper - lower) / mid * 100
 
     def _format_20ma_deviation(self, df: pd.DataFrame) -> Tuple[str, bool]:
         """計算最新收盤價相對 20MA 的乖離率。"""
@@ -344,22 +570,71 @@ class MarketDynamicsAgent(TSMCBaseAgent):
                 penalties["long"] += 30
             if monthly.iloc[-1] < monthly_ma12.iloc[-1]:
                 long_signals.append("月線收盤跌破MA12")
-                monthly_break = bool(True)
+                monthly_break = True
                 penalties["long"] += 40
         elif len(monthly) < 13:
             long_signals.append("月線MA12資料不足")
+
+        # ── 均線整體排列判斷（新增） ──────────────────────────────────
+        ma5 = close.rolling(5).mean().iloc[-1] if len(close) >= 5 else None
+        ma20 = close.rolling(20).mean().iloc[-1] if len(close) >= 20 else None
+        ma60_val = close.rolling(60).mean().iloc[-1] if len(close) >= 60 else None
+        if pd.notna(ma5) and pd.notna(ma20) and pd.notna(ma60_val):
+            if ma5 > ma20 > ma60_val:
+                long_signals.append("均線多頭排列")
+            elif ma5 < ma20 < ma60_val:
+                long_signals.append("均線空頭排列")
+                penalties["long"] += 20
+            else:
+                long_signals.append("均線糾結過渡")
+
+        # ── 支撐/壓力位資訊（新增） ──────────────────────────────────
+        support_df = df[['日期', '台積電最低價', '台積電最高價', '台積電收盤價']].copy()
+        support_df['台積電最低價'] = pd.to_numeric(support_df['台積電最低價'], errors='coerce')
+        support_df['台積電最高價'] = pd.to_numeric(support_df['台積電最高價'], errors='coerce')
+        support, resistance = self._detect_support_resistance(support_df)
 
         short_status = "頂部反轉預警" if kline_warnings else "短期觀察"
         mid_status = "中期轉弱確認" if len(mid_signals) >= 2 else "中期觀察"
         long_status = "長期轉空確認" if len([s for s in long_signals if "資料不足" not in s]) >= 2 else "長期觀察"
 
+        support_resistance_line = ""
+        if support is not None and resistance is not None:
+            support_resistance_line = f"\n   ● 支撐 {support:.0f} / 壓力 {resistance:.0f}"
+
         report_lines = [
             f"● 早期警示: {', '.join(warning_parts) if warning_parts else '無'}",
             f"● 短期形態: {short_status}",
             f"● 中期趨勢: {mid_status} ({'; '.join(mid_signals) if mid_signals else '保持強勢'})",
-            f"● 長期趨勢: {long_status} ({'; '.join(long_signals) if long_signals else '多頭格局'})"
+            f"● 長期趨勢: {long_status} ({'; '.join(long_signals) if long_signals else '多頭格局'})",
         ]
-        return "\n   ".join(report_lines), monthly_break, penalties
+        result = "\n   ".join(report_lines)
+        if support_resistance_line:
+            result += support_resistance_line
+        return result, monthly_break, penalties
+
+    def _enrich_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """在 df 上計算所有技術指標欄位（均線、布林通道、KD 等）。"""
+        df = df.sort_values("日期").copy()
+        df['5MA'] = df['台積電收盤價'].rolling(window=5).mean()
+        df['20MA'] = df['台積電收盤價'].rolling(window=20).mean()
+        df['60MA'] = df['台積電收盤價'].rolling(window=60).mean()
+
+        # 布林通道 (20, 2)
+        df['BB_mid'] = df['20MA']
+        df['BB_std'] = df['台積電收盤價'].rolling(window=20).std()
+        df['BB_upper'] = df['BB_mid'] + 2 * df['BB_std']
+        df['BB_lower'] = df['BB_mid'] - 2 * df['BB_std']
+
+        # KD 指標
+        high = pd.to_numeric(df['台積電最高價'], errors='coerce')
+        low = pd.to_numeric(df['台積電最低價'], errors='coerce')
+        close = pd.to_numeric(df['台積電收盤價'], errors='coerce')
+        k, d = self._calculate_kd(high, low, close)
+        df['%K'] = k.values
+        df['%D'] = d.values
+
+        return df
 
     def analyze_sentiment(self, df: pd.DataFrame) -> Tuple[str, Dict, Dict[str, int]]:
         report_prefix = f"數據來源: {self.source}\n分析邏輯: {self.logic}\n結論: "
@@ -367,41 +642,78 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         if df.empty or len(df) < 5:
             return f"{report_prefix}資料不足", {}, {"early": 0, "short": 0, "mid": 0, "long": 0}
 
+        # 先計算所有技術指標欄位
+        df = self._enrich_indicators(df)
+
         chart_path = self._generate_technical_chart(df)
         ma20_detail, crossed_below = self._format_20ma_deviation(df)
         reversal_detail, monthly_break, penalties = self._format_reversal_signals(df)
-        
+
+        # 新增指標報告
+        ma_status = self._check_ma_convergence(df)
+        bb_status = self._bollinger_bandwidth(df)
+        kd_status = self._format_kd_status(df)
+
+        # 新增 KD 訊號計分
+        penalties = self._add_kd_penalties(df, penalties)
+
         # 整合 MA20 破位權重
-        if crossed_below: penalties["short"] += 20
-        
+        if crossed_below:
+            penalties["short"] += 20
+
         scores = {k: max(0, 100 - v) for k, v in penalties.items()}
-        detail_suffix = f"\n   ● {ma20_detail}\n   {reversal_detail}"
-        
+        detail_suffix = (
+            f"\n   ● {ma20_detail}"
+            f"\n   ● {ma_status}"
+            f"\n   ● {bb_status}"
+            f"\n   ● {kd_status}"
+            f"\n   {reversal_detail}"
+        )
+
+        # 布林通道壓縮後破位判斷
+        bb_squeeze_break = False
+        if not df.empty and 'BB_upper' in df.columns and len(df) > 20:
+            latest = df.iloc[-1]
+            close_val = pd.to_numeric(df['台積電收盤價'], errors='coerce').iloc[-1]
+            bb_lower = latest.get('BB_lower')
+            bb_upper = latest.get('BB_upper')
+            bb_mid = latest.get('BB_mid')
+            if pd.notna(bb_lower) and pd.notna(bb_upper) and pd.notna(bb_mid) and pd.notna(close_val) and bb_mid > 0:
+                bw_now = (bb_upper - bb_lower) / bb_mid * 100
+                # 前 5 日平均寬度 < 5% 代表壓縮
+                prev_bws = []
+                for i in range(-6, -1):
+                    r = df.iloc[i]
+                    if pd.notna(r.get('BB_upper')) and pd.notna(r.get('BB_lower')) and pd.notna(r.get('BB_mid')) and r.get('BB_mid', 0) > 0:
+                        prev_bws.append((r['BB_upper'] - r['BB_lower']) / r['BB_mid'] * 100)
+                prev_bw = sum(prev_bws) / len(prev_bws) if prev_bws else 10
+                # 前期壓縮（< 5%）且現在收在通道外
+                if prev_bw < 5 and (close_val < bb_lower or close_val > bb_upper):
+                    bb_squeeze_break = True
+
         tech_flags = {
             "ma20_cross_below": crossed_below,
-            "monthly_break_ma12": monthly_break
+            "monthly_break_ma12": monthly_break,
+            "bb_squeeze_break": bb_squeeze_break,
         }
 
         # 確保資料按日期升序排序
         recent = df.sort_values("日期").tail(5).copy()
         tsmc_vals = recent['台積電成交金額'].tolist()[::-1]
         mkt_vals = recent['大盤成交金額'].tolist()[::-1]
-        
-        # 1. 偵測量能萎縮（原有的觀望邏輯）
+
+        # 1. 偵測量能萎縮
         tsmc_declining = all(x < y for x, y in zip(tsmc_vals, tsmc_vals[1:3]))
         mkt_declining = all(x < y for x, y in zip(mkt_vals, mkt_vals[1:3]))
 
         # 2. 偵測大戶拋售（量增價跌）
-        # 定義：今日成交金額大於過去 5 日平均的 1.3 倍，且股價下跌
         insights = []
         if '台積電收盤價' in recent.columns:
             avg_vol = recent['台積電成交金額'].mean()
             latest_vol = recent['台積電成交金額'].iloc[-1]
             latest_price = recent['台積電收盤價'].iloc[-1]
             prev_price = recent['台積電收盤價'].iloc[-2]
-            
             price_change = latest_price - prev_price
-            
             if latest_vol > avg_vol * 1.3 and price_change < 0:
                 insights.append("警告：偵測到異常賣壓！成交量顯著放大且股價下跌，疑似大戶減碼。")
             elif latest_vol > avg_vol * 1.5 and price_change > 0:
@@ -414,7 +726,7 @@ class MarketDynamicsAgent(TSMCBaseAgent):
             return f"{report_prefix}市場極度觀望：個股與大盤呈現連鎖縮量。{detail_suffix}{image_md}", tech_flags, scores
         elif tsmc_declining:
             return f"{report_prefix}警訊：台積電成交量持續萎縮，資金動能轉弱。{detail_suffix}{image_md}", tech_flags, scores
-        
+
         return f"{report_prefix}量能結構尚屬正常。{detail_suffix}{image_md}", tech_flags, scores
 
 class InstitutionalInvestorAgent(TSMCBaseAgent):
@@ -694,13 +1006,24 @@ class Orchestrator:
         )
 
         # 檢查轉折訊號 (Trend Reversal Recognition)
-        reversal_active = (
-            tech_flags.get("ma20_cross_below", False) and 
-            tech_flags.get("monthly_break_ma12", False) and 
+        # 基礎版：三者同時觸發
+        reversal_basic = (
+            tech_flags.get("ma20_cross_below", False) and
+            tech_flags.get("monthly_break_ma12", False) and
             chip_flags.get("big_foreign_sell", False)
         )
+        # 進階版：加入布林通道壓縮後破位 + 均線空頭排列
+        reversal_advanced = (
+            tech_flags.get("ma20_cross_below", False) and
+            tech_flags.get("monthly_break_ma12", False) and
+            chip_flags.get("big_foreign_sell", False) and
+            tech_flags.get("bb_squeeze_break", False)
+        )
         reversal_msg = ""
-        if reversal_active:
+        if reversal_advanced:
+            reversal_msg = "\n[🚨🚨🚨 高強度轉折訊號 🚨🚨🚨] 20MA 轉負 + 月線破 MA12 + 外資大額賣超 + 布林通道壓縮後破位，趨勢強烈反轉跡象！"
+            dashboard_summary += f" | {reversal_msg.strip()}"
+        elif reversal_basic:
             reversal_msg = "\n[！！！轉折訊號提醒！！！] 偵測到 20MA 轉負、月線破 MA12 且外資大額賣超，趨勢可能已出現反轉點！"
             dashboard_summary += f" | {reversal_msg.strip()}"
 
@@ -723,8 +1046,12 @@ class Orchestrator:
         
         # 整合評分總結字串
         score_summary = (
-            f"● 技術分項: 早期({tech_scores['early']})*0.1 | 短期({tech_scores['short']})*0.1 | 中期({tech_scores['mid']})*0.15 | 長期({tech_scores['long']})*0.15\n"
-            f"● 籌碼面總分: ({chip_score}) * 0.25 | 全球宏觀(長期趨勢): ({macro_score}) * 0.25\n"
+            f"● 技術分項:\n"
+            f"   早期警示({tech_scores['early']})*0.10 + 短期形態({tech_scores['short']})*0.10\n"
+            f"   + 中期趨勢({tech_scores['mid']})*0.15 + 長期趨勢({tech_scores['long']})*0.15\n"
+            f"   = 技術面小計: {tech_scores['early']*0.1 + tech_scores['short']*0.1 + tech_scores['mid']*0.15 + tech_scores['long']*0.15:.1f}/40\n"
+            f"● 籌碼面總分: ({chip_score}) * 0.25 = {chip_score*0.25:.1f}/25\n"
+            f"● 全球宏觀(長期趨勢): ({macro_score}) * 0.25 = {macro_score*0.25:.1f}/25\n"
             f"● 綜合健康得分: {comprehensive_score:.1f}/100"
         )
 
