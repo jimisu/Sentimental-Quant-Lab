@@ -13,12 +13,13 @@ try:
     HAS_MATPLOTLIB = True
     mpl.rcParams["font.family"] = "sans-serif"
     mpl.rcParams["font.sans-serif"] = [
+        "PingFang HK",
+        "Heiti TC",
+        "STHeiti",
+        "Songti SC",
+        "Arial Unicode MS",
         "Noto Sans CJK TC",
         "Noto Sans CJK SC",
-        "Noto Sans CJK JP",
-        "Noto Sans CJK KR",
-        "AR PL UMing TW",
-        "AR PL UKai TW",
         "DejaVu Sans",
         "sans-serif",
     ]
