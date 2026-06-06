@@ -645,6 +645,8 @@ class MarketDynamicsAgent(TSMCBaseAgent):
 
     def _format_reversal_signals(self, df: pd.DataFrame) -> Tuple[str, bool, Dict[str, int]]:
         """判斷短中長期反轉向下訊號。"""
+        YELLOW = "\033[1;33m"
+        RESET = "\033[0m"
         penalties = {"early": 0, "short": 0, "mid": 0, "long": 0}
         required_cols = {'日期', '台積電開盤價', '台積電最高價', '台積電最低價', '台積電收盤價', '台積電成交金額'}
         if df.empty or not required_cols.issubset(df.columns):
@@ -740,7 +742,7 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         # 組合早期警示報告
         warning_parts = []
         if kline_warnings: warning_parts.append(f"頂部K線形態({', '.join(kline_warnings)})")
-        if vol_price_warnings: warning_parts.append(f"量價背離({', '.join(vol_price_warnings)})")
+        if vol_price_warnings: warning_parts.append(f"{YELLOW}量價背離({', '.join(vol_price_warnings)}){RESET}")
         if rsi_warnings: warning_parts.append(f"RSI頂背離({', '.join(rsi_warnings)})")
 
         mid_signals = []
@@ -876,9 +878,13 @@ class MarketDynamicsAgent(TSMCBaseAgent):
             high_zone_health = {"is_healthy": is_healthy, "safe_signals": safe_signals, "warnings": warnings}
             zone_report_lines.append(f"  高檔量價狀態: {'✅ 安全' if is_healthy else '⚠️ 警告'}")
             if safe_signals:
-                zone_report_lines.append(f"    安全訊號: {'; '.join(safe_signals)}")
+                GREEN = "\033[1;32m"
+                RESET = "\033[0m"
+                zone_report_lines.append(f"    {GREEN}安全訊號: {'; '.join(safe_signals)}{RESET}")
             if warnings:
-                zone_report_lines.append(f"    ⚠️ 警告: {'; '.join(warnings)}")
+                YELLOW = "\033[1;33m"
+                RESET = "\033[0m"
+                zone_report_lines.append(f"    {YELLOW}⚠️ 警告: {'; '.join(warnings)}{RESET}")
             # 高檔且量價不健康 → 扣分
             if not is_healthy:
                 penalties["short"] += 15
