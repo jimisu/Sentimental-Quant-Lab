@@ -1105,22 +1105,13 @@ def main():
     # 輸出儀表板
     print_dashboard(styled_df, value_df.tail(10), market_sentiment_red)
 
-    # 產生並印出總結
-    summary = generate_summary(styled_df, market_sentiment_red)
-    
-    # 控制台彩色輸出
-    display_summary = summary
-    if "紅燈" in summary:
-        display_summary = f"\033[1;31m{summary}\033[0m"
-    elif "黃燈" in summary:
-        display_summary = f"\033[1;33m{summary}\033[0m"
-    elif "綠燈" in summary:
-        display_summary = f"\033[1;32m{summary}\033[0m"
-    print("\n" + display_summary)
+    # 執行 Agent 深度分析（統一由 signal_engine 計算綜合燈號）
+    dashboard_summary = orchestrator.run_full_analysis(
+        quarterly_margins, value_df, chip_data, styled_df,
+        market_sentiment_red=market_sentiment_red
+    )
 
-    # 執行 Agent 深度分析並紀錄日誌
-    orchestrator.run_full_analysis(quarterly_margins, value_df, chip_data, summary, styled_df,
-                                   market_sentiment_red=market_sentiment_red)
+    print(f"\n{dashboard_summary}")
 
 
 if __name__ == "__main__":

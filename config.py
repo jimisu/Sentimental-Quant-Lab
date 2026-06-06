@@ -25,16 +25,26 @@ class CacheConfig:
 
 @dataclass
 class ScoreWeightsConfig:
-    """AI Agent 評分權重（有效資料時動態重新計算分母）"""
-    early:  float = 0.10   # 早期警示（RSI 頂背離、量價背離）
-    short:  float = 0.10   # 短期形態（K線、MA20 破位）
-    mid:    float = 0.15   # 中期趨勢（週線指標）
-    long:   float = 0.15   # 長期趨勢（月線）
+    """
+    綜合健康得分權重。
+    五面向加總 = 1.0：財務 15% + 技術 35% + 籌碼 25% + 宏觀 25%
+    技術面 35% 內部分配：早期 7% + 短期 7% + 中期 10% + 長期 11%
+    """
+    # 財務面
+    financial: float = 0.15
+    # 技術面（合計 0.35）
+    early:  float = 0.07   # 早期警示（RSI 頂背離、量價背離）
+    short:  float = 0.07   # 短期形態（K線、MA20 破位）
+    mid:    float = 0.10   # 中期趨勢（週線指標）
+    long:   float = 0.11   # 長期趨勢（月線）
+    # 籌碼面
     chip:   float = 0.25   # 籌碼分析（三大法人）
-    macro:  float = 0.25   # 全球宏觀（ADR、匯率）
+    # 宏觀面
+    macro:  float = 0.25   # 全球宏觀（ADR、匯率、CAPEX）
 
     def as_dict(self) -> Dict[str, float]:
         return {
+            "financial": self.financial,
             "early": self.early, "short": self.short, "mid": self.mid,
             "long": self.long,   "chip": self.chip,   "macro": self.macro,
         }
