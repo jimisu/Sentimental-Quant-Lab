@@ -26,30 +26,33 @@ class CacheConfig:
 @dataclass
 class ScoreWeightsConfig:
     """
-    綜合健康得分權重。
+    綜合健康得分權重 v1.0。
     六面向加總 = 1.0：
-      純財務 10% + 大廠基本面 10% + 技術 35% + 籌碼 25% + 宏觀 20%
-    技術面 35% 內部分配：早期 7% + 短期 7% + 中期 10% + 長期 11%
+      純財務 30% + 大廠基本面 30% + 技術 20% + 籌碼 10% + 市場情緒 10%
+    技術面 20% 內部分配（內部比例，不影響總權重）：
+      早期 7/35 + 短期 7/35 + 中期 10/35 + 長期 11/35
     """
-    # 純財務面（營收 YoY、毛利率/營益率/淨利率季度變化）
-    financial: float = 0.10
-    # 大廠基本面（CAPEX 趨勢 + NVDA 營收 YoY）
-    bigtech:  float = 0.10
-    # 技術面（合計 0.35）
-    early:  float = 0.07   # 早期警示（RSI 頂背離、量價背離）
-    short:  float = 0.07   # 短期形態（K線、MA20 破位）
-    mid:    float = 0.10   # 中期趨勢（週線指標）
-    long:   float = 0.11   # 長期趨勢（月線）
-    # 籌碼面
-    chip:   float = 0.25   # 籌碼分析（三大法人）
-    # 宏觀面（ADR 折溢價 + 匯率，不含 CAPEX）
-    macro:  float = 0.20
+    # 純財務面（營收 YoY、毛利率/營益率/淨利率季度變化）30%
+    financial: float = 0.30
+    # 大廠基本面（CAPEX 趨勢 + NVDA 營收 YoY）30%
+    bigtech:  float = 0.30
+    # 技術面 20%（四項內部加權平均）
+    tech:     float = 0.20
+    # 技術面內部分配（合計 0.35 比例）
+    early:    float = 0.07   # 早期警示（RSI 頂背離、量價背離）
+    short:    float = 0.07   # 短期形態（K線、MA20 破位）
+    mid:      float = 0.10   # 中期趨勢（週線指標）
+    long:     float = 0.11   # 長期趨勢（月線）
+    # 籌碼面 10%
+    chip:      float = 0.10  # 籌碼分析（三大法人）
+    # 市場情緒 10%
+    market_sentiment: float = 0.10  # 量能（個股/大盤連續量縮）
 
     def as_dict(self) -> Dict[str, float]:
         return {
             "financial": self.financial, "bigtech": self.bigtech,
-            "early": self.early, "short": self.short, "mid": self.mid,
-            "long": self.long,   "chip": self.chip,   "macro": self.macro,
+            "tech": self.tech, "chip": self.chip,
+            "market_sentiment": self.market_sentiment,
         }
 
 

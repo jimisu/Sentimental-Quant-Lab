@@ -74,6 +74,19 @@ class BigTechSignals:
 
 
 @dataclass
+class MarketSentimentSignals:
+    """市場情緒信號（由 dashboard 量能分析提供）"""
+    # 量能狀態分數 (0~100)
+    score: int = 100
+    # 旗標
+    tsmc_volume_declining: bool = False      # 個股連續量縮
+    market_volume_declining: bool = False    # 大盤連續量縮
+    triple_decline: bool = False             # 個股+大盤連三降
+    # 成交量趨勢
+    volume_trend: str = "normal"             # "declining" / "normal" / "expanding"
+
+
+@dataclass
 class MacroSignals:
     """宏觀面向信號（由 GlobalMacroAgent 提供，不含 CAPEX）"""
     score: int = 100
@@ -85,11 +98,9 @@ class ComprehensiveResult:
     # 各面向分數
     financial_score: float = 100.0
     bigtech_score: float = 100.0
-    tech_early_score: float = 100.0
-    tech_short_score: float = 100.0
-    tech_mid_score: float = 100.0
-    tech_long_score: float = 100.0
+    tech_score: float = 100.0               # 技術面綜合（早期/短期/中期/長期合併）
     chip_score: float = 100.0
+    market_sentiment_score: float = 100.0
     macro_score: float = 100.0
     # 綜合
     comprehensive_score: float = 100.0
@@ -274,14 +285,12 @@ class ComprehensiveScoreCalculator:
     整合六面向計算綜合健康得分。
 
     權重（config.py ScoreWeightsConfig 可調整）：
-    - 純財務面   10%
-    - 大廠基本面 10%
-    - 技術-早期    7%
-    - 技術-短期    7%
-    - 技術-中期   10%
-    - 技術-長期   11%
-    - 籌碼面     25%
-    - 宏觀面     20%
+    - 純財務面   30%
+    - 大廠基本面 30%
+    - 技術面     20%（早期/短期/中期/長期合併計算）
+    - 籌碼面     10%
+    - 市場情緒   10%
+    - 宏觀面     0%（已拆分至其他面向，保留相容性）
     """
 
     def __init__(self, weights: Optional[Dict[str, float]] = None):
@@ -290,12 +299,9 @@ class ComprehensiveScoreCalculator:
             self.weights = {
                 "financial": w.financial,
                 "bigtech":   w.bigtech,
-                "tech_early": w.early,
-                "tech_short": w.short,
-                "tech_mid":   w.mid,
-                "tech_long":  w.long,
-                "chip":       w.chip,
-                "macro":      w.macro,
+                "tech":      w.tech,
+                "chip":      w.chip,
+                "market_sentiment": w.market_sentiment,
             }
         else:
             self.weights = weights
@@ -306,22 +312,33 @@ class ComprehensiveScoreCalculator:
         bigtech_signals: BigTechSignals,
         tech_signals: TechnicalSignals,
         chip_signals: ChipSignals,
-        macro_signals: MacroSignals,
+        market_sentiment_signals: MarketSentimentSignals,
     ) -> Tuple[float, Dict[str, float]]:
         """
         計算綜合健康得分。
+        技術面四項（早期/短期/中期/長期）先加權平均為單一 tech 分數。
         回傳：(comprehensive_score, breakdown)
         """
+        # 技術面四項加權平均
         tech = tech_signals.scores
+        tech_sub_weights = CONFIG.weights
+        tech_total_w = tech_sub_weights.early + tech_sub_weights.short + tech_sub_weights.mid + tech_sub_weights.long
+        if tech_total_w > 0:
+            tech_combined = (
+                tech["early"]  * tech_sub_weights.early +
+                tech["short"]  * tech_sub_weights.short +
+                tech["mid"]    * tech_sub_weights.mid +
+                tech["long"]   * tech_sub_weights.long
+            ) / tech_total_w
+        else:
+            tech_combined = 100.0
+
         breakdown = {
-            "financial": financial_score * self.weights["financial"],
-            "bigtech":   bigtech_signals.score * self.weights["bigtech"],
-            "tech_early": tech["early"] * self.weights["tech_early"],
-            "tech_short": tech["short"] * self.weights["tech_short"],
-            "tech_mid":   tech["mid"]   * self.weights["tech_mid"],
-            "tech_long":  tech["long"]  * self.weights["tech_long"],
-            "chip":       chip_signals.score * self.weights["chip"],
-            "macro":      macro_signals.score * self.weights["macro"],
+            "financial":        financial_score * self.weights["financial"],
+            "bigtech":          bigtech_signals.score * self.weights["bigtech"],
+            "tech":             tech_combined * self.weights["tech"],
+            "chip":             chip_signals.score * self.weights["chip"],
+            "market_sentiment": market_sentiment_signals.score * self.weights["market_sentiment"],
         }
         comprehensive = sum(breakdown.values())
         return comprehensive, breakdown
@@ -420,7 +437,7 @@ class SignalEngine:
         bigtech_signals: BigTechSignals,
         tech_signals: TechnicalSignals,
         chip_signals: ChipSignals,
-        macro_signals: MacroSignals,
+        market_sentiment_signals: MarketSentimentSignals,
     ) -> ComprehensiveResult:
         """
         完整分析流程：
@@ -448,15 +465,12 @@ class SignalEngine:
 
         # Step 3: 綜合得分
         comp_score, breakdown = self.score_calc.calculate(
-            fin_score, bigtech_signals, tech_signals, chip_signals, macro_signals
+            fin_score, bigtech_signals, tech_signals, chip_signals, market_sentiment_signals
         )
         result.comprehensive_score = comp_score
-        result.tech_early_score = tech_signals.scores["early"]
-        result.tech_short_score = tech_signals.scores["short"]
-        result.tech_mid_score = tech_signals.scores["mid"]
-        result.tech_long_score = tech_signals.scores["long"]
+        result.tech_score = breakdown.get("tech", 0) / self.score_calc.weights["tech"] if self.score_calc.weights["tech"] > 0 else 100
         result.chip_score = chip_signals.score
-        result.macro_score = macro_signals.score
+        result.market_sentiment_score = market_sentiment_signals.score
 
         # Step 4: 特殊訊號偵測
         reversal_basic = (
@@ -476,7 +490,7 @@ class SignalEngine:
             len(fin_warnings) > 0 and comp_score < AlertLevelDetector.YELLOW_THRESHOLD
         )
 
-        # Step 4: 燈號
+        # Step 5: 燈號
         level, label, emoji, message = self.alert_detector.detect(
             comp_score, fin_warnings, tech_signals.flags, chip_signals.flags,
             reversal_basic=reversal_basic,
