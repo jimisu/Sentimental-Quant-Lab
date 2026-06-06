@@ -1549,11 +1549,11 @@ class Orchestrator:
         breakdown = result.details["breakdown"]
         bs = market_sentiment_signals
         score_summary = (
-            f"● 財務面({result.financial_score:.0f})*{w.financial:.0f}% = {breakdown['financial']:.1f}/{w.financial*100:.0f}\n"
-            f"● 大廠基本面({result.bigtech_score:.0f})*{w.bigtech:.0f}% = {breakdown['bigtech']:.1f}/{w.bigtech*100:.0f}\n"
-            f"● 技術面({result.tech_score:.0f})*{w.tech:.0f}% = {breakdown['tech']:.1f}/{w.tech*100:.0f}\n"
-            f"● 籌碼面({chip_score})*{w.chip:.0f}% = {breakdown['chip']:.1f}/{w.chip*100:.0f}\n"
-            f"● 市場情緒({bs.score})*{w.market_sentiment:.0f}% = {breakdown['market_sentiment']:.1f}/{w.market_sentiment*100:.0f}\n"
+            f"● 財務面({result.financial_score:.0f})*{w.financial*100:.0f}% = {breakdown['financial']:.1f}/{w.financial*100:.0f}\n"
+            f"● 大廠基本面({result.bigtech_score:.0f})*{w.bigtech*100:.0f}% = {breakdown['bigtech']:.1f}/{w.bigtech*100:.0f}\n"
+            f"● 技術面({result.tech_score:.0f})*{w.tech*100:.0f}% = {breakdown['tech']:.1f}/{w.tech*100:.0f}\n"
+            f"● 籌碼面({chip_score})*{w.chip*100:.0f}% = {breakdown['chip']:.1f}/{w.chip*100:.0f}\n"
+            f"● 市場情緒({bs.score})*{w.market_sentiment*100:.0f}% = {breakdown['market_sentiment']:.1f}/{w.market_sentiment*100:.0f}\n"
             f"● 綜合健康得分: {comprehensive_score:.1f}/100"
         )
 
