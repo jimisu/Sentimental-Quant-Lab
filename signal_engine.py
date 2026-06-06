@@ -62,8 +62,10 @@ class BigTechSignals:
     capex_score: int = 100
     capex_growing_count: int = 0
     capex_valid_count: int = 0
-    # NVDA 營收 YoY%
+    # NVDA 營收 YoY%（最新一季）
     nvda_revenue_yoy: Optional[float] = None
+    # NVDA 過去三季營收 YoY% 列表（每季 dict: {"period": str, "yoy": float}）
+    nvda_revenue_yoy_quarters: List = field(default_factory=list)
     # NVDA 營收趨勢分數 (0~100)
     nvda_revenue_score: int = 100
     # 綜合大廠分數（由 BigTechSignalCalculator 計算後寫入）

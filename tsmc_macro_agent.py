@@ -191,8 +191,9 @@ class GlobalMacroAgent:
         # ── NVDA 營收 YoY ──
         nvda_yoy = None
         nvda_score = 100
+        nvda_quarters = []
         try:
-            nvda_yoy = self._fetch_nvda_revenue_yoy()
+            nvda_yoy, nvda_quarters = self._fetch_nvda_revenue_yoy()
             if nvda_yoy is not None:
                 if nvda_yoy >= 50:
                     nvda_score = 100
@@ -206,6 +207,11 @@ class GlobalMacroAgent:
                 else:
                     nvda_score = 40
                     report_lines.append(f"- NVDA 營收 YoY: {nvda_yoy:.1f}%（負成長）")
+                # 列出過去三季 YoY
+                if nvda_quarters:
+                    report_lines.append("  過去三季營收 YoY：")
+                    for q in nvda_quarters:
+                        report_lines.append(f"    · {q['period']}: {q['yoy']:.1f}%")
             else:
                 report_lines.append("- NVDA 營收 YoY: 資料不足")
         except Exception as exc:
@@ -224,15 +230,18 @@ class GlobalMacroAgent:
             "capex_valid_count": valid_count,
             "capex_score": capex_score,
             "nvda_revenue_yoy": nvda_yoy,
+            "nvda_revenue_yoy_quarters": nvda_quarters,
             "nvda_score": nvda_score,
             "score": combined_score,
         }
         return data, "\n".join(report_lines)
 
-    def _fetch_nvda_revenue_yoy(self) -> Optional[float]:
+    def _fetch_nvda_revenue_yoy(self) -> Tuple[Optional[float], List[Dict]]:
         """
-        從 SEC XBRL 抓取 NVDA 最近一季的營收 YoY%。
-        回傳 YoY% 或 None（資料不足時）。
+        從 SEC XBRL 抓取 NVDA 過去三季的營收 YoY%。
+        回傳：(latest_yoy, quarters)
+          - latest_yoy: 最新一季 YoY% 或 None
+          - quarters: list of {"period": str, "yoy": float}，最多三季（新→舊）
         """
         url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{NVDA_CIK}.json"
         cache_key = f"sec_companyfacts_{NVDA_CIK}"
@@ -243,7 +252,7 @@ class GlobalMacroAgent:
                 headers=SEC_HEADERS, timeout=20,
             )
         except Exception:
-            return None
+            return None, []
 
         facts = data.get("facts", {}).get("us-gaap", {})
 
@@ -270,36 +279,47 @@ class GlobalMacroAgent:
             if len(quarterly) < 2:
                 continue
 
-            # 按 end date 排序，取最近兩季
+            # 按 end date 排序（舊→新）
             quarterly.sort(key=lambda e: e.get("end", ""))
 
-            latest = quarterly[-1]
-            latest_val = float(latest["val"])
+            # 對每一季（從最新的最多三季）計算 YoY
+            quarters = []
+            for i in range(len(quarterly) - 1, max(len(quarterly) - 4, -1), -1):
+                if len(quarters) >= 3:
+                    break
+                cur = quarterly[i]
+                cur_val = float(cur["val"])
+                cur_end = date.fromisoformat(cur["end"])
+                target_date = cur_end - timedelta(days=365)
 
-            # 找去年同季（約 365 天前）
-            latest_end = date.fromisoformat(latest["end"])
-            target_date = latest_end - timedelta(days=365)
+                # 找去年同季（排除自己）
+                best_match = None
+                best_diff = None
+                for j, e in enumerate(quarterly):
+                    if j == i:
+                        continue
+                    e_end = date.fromisoformat(e.get("end", "2000-01-01"))
+                    diff = abs((e_end - target_date).days)
+                    if best_diff is None or diff < best_diff:
+                        best_diff = diff
+                        best_match = e
 
-            best_match = None
-            best_diff = None
-            for e in quarterly:
-                e_end = date.fromisoformat(e.get("end", "2000-01-01"))
-                diff = abs((e_end - target_date).days)
-                if best_diff is None or diff < best_diff:
-                    best_diff = diff
-                    best_match = e
+                if best_match is None or best_diff is None or best_diff > 60:
+                    continue
 
-            if best_match is None or best_diff is None or best_diff > 60:
-                continue
+                prev_val = float(best_match["val"])
+                if prev_val <= 0:
+                    continue
 
-            prev_val = float(best_match["val"])
-            if prev_val <= 0:
-                continue
+                yoy = (cur_val - prev_val) / prev_val * 100
+                period_label = f"{cur.get('fp', '?')} ({cur['end']})"
+                quarters.append({"period": period_label, "yoy": yoy})
 
-            yoy = (latest_val - prev_val) / prev_val * 100
-            return yoy
+            if quarters:
+                latest_yoy = quarters[0]["yoy"]
+                return latest_yoy, quarters
 
-        return None
+        return None, []
 
     def _fetch_yahoo_price(self, ticker: str) -> float:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"

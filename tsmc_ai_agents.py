@@ -1522,6 +1522,7 @@ class Orchestrator:
             capex_growing_count=bigtech_data.get("capex_growing_count", 0),
             capex_valid_count=bigtech_data.get("capex_valid_count", 0),
             nvda_revenue_yoy=bigtech_data.get("nvda_revenue_yoy"),
+            nvda_revenue_yoy_quarters=bigtech_data.get("nvda_revenue_yoy_quarters", []),
         )
         tech_signals = TechnicalSignals(scores=tech_scores, flags=tech_flags)
         chip_signals = ChipSignals(score=chip_score, flags=chip_flags)
