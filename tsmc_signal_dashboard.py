@@ -536,19 +536,15 @@ def parse_twse_date(value) -> Optional[str]:
 def get_recent_month_starts(months: int = 3) -> List[dt.date]:
     """
     回傳從本月往前推的月份起始日。
-    會確保日期不早於 TWSE 限制的 2010-01-04。
+    會確保日期不早於 TWSE 限制的 1990-01-04。
     """
     month_starts = []
     year = TODAY.year
     month = TODAY.month
     for _ in range(months):
         d = dt.date(year, month, 1)
-        # 檢查是否早於 TWSE 支援的最早日期
         if d < TWSE_MIN_DATE:
-            if d.year == TWSE_MIN_DATE.year and d.month == TWSE_MIN_DATE.month:
-                month_starts.append(TWSE_MIN_DATE)
             break
-
         month_starts.append(d)
         month -= 1
         if month == 0:
@@ -557,13 +553,23 @@ def get_recent_month_starts(months: int = 3) -> List[dt.date]:
     return month_starts
 
 
-def fetch_twse_report(report: str, params: Dict[str, str]) -> List[List[str]]:
+def _is_current_month(date_obj: dt.date) -> bool:
+    """檢查指定日期是否屬於當月（當月資料需每次抓取）"""
+    return date_obj.year == TODAY.year and date_obj.month == TODAY.month
+
+
+def fetch_twse_report(report: str, params: Dict[str, str],
+                      force_refresh: bool = False) -> List[List[str]]:
     """
     從 TWSE afterTrading API 取得報表資料列。
+
+    快取策略：
+    - 當月資料（force_refresh=True）：每次重新抓取，不快取
+    - 已過月份（force_refresh=False）：使用 24 小時快取，減少 TWSE 請求量
     """
     url = f"{TWSE_AFTER_TRADING_URL}/{report}"
     request_params = {"response": "json", **params}
-    
+
     # 建立更完整的瀏覽器標頭，偽裝成從官網查詢頁面發出的請求
     selected_ua = random.choice(USER_AGENTS)
     headers = {
@@ -573,9 +579,9 @@ def fetch_twse_report(report: str, params: Dict[str, str]) -> List[List[str]]:
         "Referer": "https://www.twse.com.tw/zh/trading/historical/stock-day.html",
         "X-Requested-With": "XMLHttpRequest",
         "Connection": "keep-alive",
-        "Host": "www.twse.com.tw"
+        "Host": "www.twse.com.tw",
     }
-    
+
     # 為不同的報表類型設定不同的 Referer
     if "FMTQIK" in report:
         headers["Referer"] = "https://www.twse.com.tw/zh/trading/historical/fmtqik.html"
@@ -587,61 +593,60 @@ def fetch_twse_report(report: str, params: Dict[str, str]) -> List[List[str]]:
         params.get("stockNo", "market"),
     )
 
+    # ── 快取讀取（已過月份使用 24h TTL）──────────────────────────
+    if not force_refresh:
+        cached_data = _read_twse_cache(cache_key, max_age_hours=24)
+        if cached_data is not None:
+            return cached_data
+
+    # ── 實際請求 TWSE ────────────────────────────────────────────
     max_retries = 3
+    blocked = False
     for attempt in range(max_retries):
         try:
-            # 移除固定的長延遲，改為微小的隨機抖動 (0.1s - 0.5s)，幾乎不影響速度
             time.sleep(0.1 + random.random() * 0.4)
-            
-            resp = session.get(url, params=request_params, headers=headers, timeout=30, allow_redirects=False)
-            
-            # 檢查是否為 307 重新導向或回傳了 HTML 安全性頁面
+
+            resp = session.get(url, params=request_params, headers=headers,
+                               timeout=30, allow_redirects=False)
+
             content_type = resp.headers.get("Content-Type", "")
             if resp.status_code == 307 or "text/html" in content_type:
+                blocked = True
                 if attempt < max_retries - 1:
-                    # 只有被攔截時才進行較長的等待並重試
-                    wait_time = (attempt + 1) * 2
-                    print(f"  -> 遭遇安全性防護，嘗試第 {attempt + 1} 次重試 (等待 {wait_time}s)...", file=sys.stderr)
-                    time.sleep(wait_time)
+                    time.sleep((attempt + 1) * 2)
                     continue
-                else:
-                    print(f"  -> 提示: TWSE 安全性防護持續攔截，切換至快取模式。", file=sys.stderr)
-                    cached_data = get_cached_data(cache_key)
-                    return cached_data if cached_data is not None else []
+                break
 
             if resp.status_code == 200:
-                break # 成功取得資料
+                break
 
-        except requests.RequestException as exc:
-            if attempt == max_retries - 1:
-                print(f"Error: TWSE request failed after {max_retries} attempts: {exc}", file=sys.stderr)
-                cached_data = get_cached_data(cache_key)
-                return cached_data if cached_data is not None else []
-            time.sleep(1)
+        except requests.RequestException:
+            blocked = True
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            break
 
-    if resp.status_code != 200:
-        print(
-            f"Error: TWSE request failed with status {resp.status_code}: {resp.text}",
-            file=sys.stderr,
-        )
+    # ── 被防護或請求失敗 → fallback 到快取 ─────────────────────
+    if blocked or resp.status_code != 200:
         cached_data = get_cached_data(cache_key)
-        return cached_data if cached_data is not None else []
+        if cached_data is not None:
+            return cached_data
+        return []
 
+    # ── 解析回應 ─────────────────────────────────────────────────
     payload = resp.json()
     stat = payload.get("stat")
     if stat not in {"OK", "很抱歉，沒有符合條件的資料!"}:
-        # 檢查是否為已知的邊界限制或未來日期（用於模擬數據時）
         is_date_limit = "查詢日期小於" in stat or "查詢日期大於今日" in stat
         cached_data = get_cached_data(cache_key)
-        
+
         if is_date_limit and cached_data is not None:
-            # 若有快取且為日期限制問題，則視為模擬數據載入，不輸出 Error
-            print(f"  -> 提示: 伺服器拒絕日期 {params.get('date')} ({stat})，已切換至快取模式。")
             return cached_data
-            
+
         if stat != "很抱歉，沒有符合條件的資料!":
             print(f"Error: TWSE returned status: {stat}", file=sys.stderr)
-            
+
         return cached_data if cached_data is not None else []
 
     rows = payload.get("data", [])
@@ -658,15 +663,43 @@ def fetch_twse_report(report: str, params: Dict[str, str]) -> List[List[str]]:
     return rows
 
 
+def _read_twse_cache(cache_key: str, max_age_hours: int) -> Optional[List]:
+    """
+    讀取 TWSE 快取，檢查新鮮度。
+    命中時印出提示（僅限第一次，避免重複）。
+    """
+    cached = read_latest_cache(cache_key)
+    if cached is None:
+        return None
+
+    cached_at = cached.get("cached_at")
+    if not cached_at:
+        return None
+
+    try:
+        cached_dt = dt.datetime.fromisoformat(cached_at)
+    except ValueError:
+        return None
+
+    age = dt.datetime.now() - cached_dt
+    if age > dt.timedelta(hours=max_age_hours):
+        return None
+
+    return cached.get("data")
+
+
 def get_twse_stock_trading_values(stock_no: str, months: int = 3) -> pd.DataFrame:
     """
     從 TWSE STOCK_DAY 抓取個股各日成交金額。
+    當月以外月份使用 24h 快取，減少 TWSE 請求量。
     """
     records = []
     for month_start in get_recent_month_starts(months):
+        is_current = _is_current_month(month_start)
         rows = fetch_twse_report(
             "STOCK_DAY",
             {"date": month_start.strftime("%Y%m%d"), "stockNo": stock_no},
+            force_refresh=is_current,
         )
         for row in rows:
             if len(row) < 7:
@@ -679,26 +712,33 @@ def get_twse_stock_trading_values(stock_no: str, months: int = 3) -> pd.DataFram
             close_price = parse_twse_float(row[6])
             if date and trading_value is not None and close_price is not None:
                 records.append({
-                    "日期": date, 
+                    "日期": date,
                     "台積電成交金額": trading_value,
                     "台積電開盤價": open_price,
                     "台積電最高價": high_price,
                     "台積電最低價": low_price,
-                    "台積電收盤價": close_price
+                    "台積電收盤價": close_price,
                 })
 
     if not records:
-        return pd.DataFrame(columns=["日期", "台積電成交金額", "台積電開盤價", "台積電最高價", "台積電最低價", "台積電收盤價"])
+        return pd.DataFrame(columns=["日期", "台積電成交金額", "台積電開盤價",
+                                      "台積電最高價", "台積電最低價", "台積電收盤價"])
     return pd.DataFrame(records).drop_duplicates(subset=["日期"]).sort_values("日期")
 
 
 def get_twse_market_trading_values(months: int = 3) -> pd.DataFrame:
     """
     從 TWSE FMTQIK 抓取大盤各日成交金額。
+    當月以外月份使用 24h 快取，減少 TWSE 請求量。
     """
     records = []
     for month_start in get_recent_month_starts(months):
-        rows = fetch_twse_report("FMTQIK", {"date": month_start.strftime("%Y%m%d")})
+        is_current = _is_current_month(month_start)
+        rows = fetch_twse_report(
+            "FMTQIK",
+            {"date": month_start.strftime("%Y%m%d")},
+            force_refresh=is_current,
+        )
         for row in rows:
             if len(row) < 3:
                 continue
@@ -716,8 +756,12 @@ def get_recent_trading_value_history(days: int = 260) -> pd.DataFrame:
     """
     從 TWSE 抓取最近 N 個交易日的成交金額。
     回傳 DataFrame，日期由舊到新，包含足夠天數以計算技術指標。
+
+    月份計算：每月平均 ~19 個交易日，加 1 個月緩衝。
+    已過月份使用 24h 快取，僅當月實際請求 TWSE，大幅減少 API 呼叫。
     """
-    months = max(3, min(18, days // 18 + 2))
+    # 每月平均 19 個交易日，加 1 個月緩衝，最少 3 個月，最多 18 個月
+    months = max(3, min(18, -(-days // 19) + 1))
     stock_df = get_twse_stock_trading_values("2330", months=months)
     market_df = get_twse_market_trading_values(months=months)
 
