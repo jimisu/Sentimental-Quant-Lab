@@ -25,18 +25,34 @@ class CacheConfig:
 
 @dataclass
 class ScoreWeightsConfig:
-    """AI Agent 評分權重（有效資料時動態重新計算分母）"""
-    early:  float = 0.10   # 早期警示（RSI 頂背離、量價背離）
-    short:  float = 0.10   # 短期形態（K線、MA20 破位）
-    mid:    float = 0.15   # 中期趨勢（週線指標）
-    long:   float = 0.15   # 長期趨勢（月線）
-    chip:   float = 0.25   # 籌碼分析（三大法人）
-    macro:  float = 0.25   # 全球宏觀（ADR、匯率）
+    """
+    綜合健康得分權重 v1.0。
+    六面向加總 = 1.0：
+      純財務 30% + 大廠基本面 30% + 技術 20% + 籌碼 10% + 市場情緒 10%
+    技術面 20% 內部分配（內部比例，不影響總權重）：
+      早期 7/35 + 短期 7/35 + 中期 10/35 + 長期 11/35
+    """
+    # 純財務面（營收 YoY、毛利率/營益率/淨利率季度變化）30%
+    financial: float = 0.30
+    # 大廠基本面（CAPEX 趨勢 + NVDA 營收 YoY）30%
+    bigtech:  float = 0.30
+    # 技術面 20%（四項內部加權平均）
+    tech:     float = 0.20
+    # 技術面內部分配（合計 0.35 比例）
+    early:    float = 0.07   # 早期警示（RSI 頂背離、量價背離）
+    short:    float = 0.07   # 短期形態（K線、MA20 破位）
+    mid:      float = 0.10   # 中期趨勢（週線指標）
+    long:     float = 0.11   # 長期趨勢（月線）
+    # 籌碼面 10%
+    chip:      float = 0.10  # 籌碼分析（三大法人）
+    # 市場情緒 10%
+    market_sentiment: float = 0.10  # 量能（個股/大盤連續量縮）
 
     def as_dict(self) -> Dict[str, float]:
         return {
-            "early": self.early, "short": self.short, "mid": self.mid,
-            "long": self.long,   "chip": self.chip,   "macro": self.macro,
+            "financial": self.financial, "bigtech": self.bigtech,
+            "tech": self.tech, "chip": self.chip,
+            "market_sentiment": self.market_sentiment,
         }
 
 
@@ -83,6 +99,19 @@ class DashboardAlertConfig:
 
 
 @dataclass
+class BigTechConfig:
+    """大廠基本面設定（CAPEX + NVDA 營收 YoY）"""
+    # CAPEX 公司名單（只留這 4 家）
+    capex_companies: tuple = ("MSFT", "META", "GOOGL", "AMZN")
+    # NVDA 營收 YoY
+    nvda_ticker: str = "NVDA"
+    # CAPEX 快取 TTL（與季報同步，7 天）
+    capex_ttl_hours: float = 168.0
+    # NVDA 營收快取 TTL（月營收級別，24 小時）
+    nvda_revenue_ttl_hours: float = 24.0
+
+
+@dataclass
 class ChipAlertConfig:
     """籌碼分析警示設定"""
     consecutive_days:       int   = 5      # 連續賣超天數
@@ -114,6 +143,7 @@ class AnalysisConfig:
     penalty:   TechnicalPenaltyConfig = field(default_factory=TechnicalPenaltyConfig)
     bollinger: BollingerConfig        = field(default_factory=BollingerConfig)
     alert:     DashboardAlertConfig   = field(default_factory=DashboardAlertConfig)
+    bigtech:   BigTechConfig          = field(default_factory=BigTechConfig)
     chip:      ChipAlertConfig        = field(default_factory=ChipAlertConfig)
     api:       ApiConfig              = field(default_factory=ApiConfig)
 

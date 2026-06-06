@@ -31,18 +31,17 @@ SEC_HEADERS = {
 CACHE_MAX_AGE_DAYS = 7  # 與 data_cache.DATA_POLICIES["macro_capex"] 一致
 
 
-BIG_TECH_COMPANIES = {
-    "Amazon": {"ticker": "AMZN", "cik": "0001018724"},
+# CAPEX 分析公司（只留這 4 家作為大廠基本面指標）
+CAPEX_COMPANIES = {
     "Microsoft": {"ticker": "MSFT", "cik": "0000789019"},
-    "NVIDIA": {
-        "ticker": "NVDA",
-        "cik": "0001045810",
-    },
-    "Apple": {"ticker": "AAPL", "cik": "0000320193"},
-    "Tesla": {"ticker": "TSLA", "cik": "0001318605"},
-    "Google": {"ticker": "GOOGL", "cik": "0001652044"},
-    "Meta": {"ticker": "META", "cik": "0001326801"},
+    "Meta":      {"ticker": "META", "cik": "0001326801"},
+    "Google":    {"ticker": "GOOGL", "cik": "0001652044"},
+    "Amazon":    {"ticker": "AMZN", "cik": "0001018724"},
 }
+
+# NVDA 營收 YoY（單獨抓取財報資料）
+NVDA_CIK = "0001045810"
+NVDA_TICKER = "NVDA"
 
 CAPEX_TAGS = [
     "PaymentsToAcquirePropertyPlantAndEquipment",
@@ -58,8 +57,8 @@ class GlobalMacroAgent:
     """
     def __init__(self):
         self.name = "全球宏觀 Agent"
-        self.source = "Yahoo Finance (TSM ADR & TWD=X) / SEC 官方 10-Q/10-K filings"
-        self.logic = "分析美股 ADR 溢價狀況，以及 AI 與雲端大廠資本支出趨勢，捕捉台積電外部需求變化。"
+        self.source = "Yahoo Finance (TSM ADR & TWD=X)"
+        self.logic = "分析美股 ADR 溢價狀況與美元/台幣匯率，捕捉台積電外部需求變化。"
         self.session = requests.Session()
         retry_strategy = Retry(
             total=3,
@@ -99,11 +98,11 @@ class GlobalMacroAgent:
         )
 
     def analyze_global_risk(self, tw_price: float) -> Tuple[str, int]:
+        """分析 ADR 折溢價與匯率（純宏觀面，不含 CAPEX）"""
         if tw_price <= 0:
             return "宏觀專家: 無法取得台股收盤價，跳過 ADR 分析。", 100
 
         try:
-            # 取得 TSM (ADR) 與 TWD=X (匯率)
             tsm_price = self._fetch_yahoo_price("TSM")
             usdtwd = self._fetch_yahoo_price("TWD=X")
 
@@ -126,36 +125,31 @@ class GlobalMacroAgent:
                 f"結論: {conclusion}\n"
                 f"匯率參考: {usdtwd:.2f}"
             )
-            capex_report, capex_score = self.analyze_big_tech_capex()
-            report = f"{report}\n\n{capex_report}"
-            score = min(score, capex_score)
             return report, score
         except Exception as e:
             return f"⚠️ 宏觀專家: 外部數據抓取失敗 ({e})，請檢查網路連線或 API 狀態。", 100
 
-    def analyze_big_tech_capex(self) -> Tuple[str, int]:
+    def analyze_bigtech_fundamentals(self) -> Tuple[Dict, str]:
         """
-        抓取七家大型科技公司的近三季資本支出，並判斷是否逐季成長。
+        分析大廠基本面：CAPEX 趨勢（4 家）+ NVDA 營收 YoY。
+
+        回傳：
+        - data: dict 包含 capex_growing_count, capex_valid_count, nvda_revenue_yoy, score, capex_score, nvda_score
+        - report: 文字報告
         """
-        lines = [
-            "【大型科技客戶資本支出分析】",
-            "數據來源: 各公司遞交給 SEC 的官方 10-Q/10-K 財報；以 SEC XBRL facts 追溯 accession number 與 filing 連結。",
-            "取數規則: 只採用最近三個連續季度；優先採用單季 fact，Q2/Q3/Q4 必要時以同一 tag 的 YTD 差分推算。",
+        report_lines = [
+            "【大廠基本面分析】",
+            f"CAPEX 分析對象: {', '.join(CAPEX_COMPANIES.keys())}",
+            "數據來源: SEC 官方 10-Q/10-K 財報 XBRL facts。",
         ]
         growing_count = 0
         valid_count = 0
 
-        for company_name, meta in BIG_TECH_COMPANIES.items():
+        for company_name, meta in CAPEX_COMPANIES.items():
             try:
                 quarters = self._fetch_recent_capex_quarters(meta)
                 if len(quarters) < 3:
-                    if company_name == "NVIDIA":
-                        lines.append(
-                            f"- {company_name} ({meta['ticker']}): 資料不足，無法判斷近三季趨勢。"
-                            "已排除較廣義的 PaymentsToAcquireProductiveAssets，避免把非純 PP&E CapEx 納入。"
-                        )
-                    else:
-                        lines.append(f"- {company_name} ({meta['ticker']}): 資料不足，無法判斷近三季趨勢。")
+                    report_lines.append(f"- {company_name} ({meta['ticker']}): 資料不足，無法判斷近三季趨勢。")
                     continue
 
                 valid_count += 1
@@ -171,27 +165,141 @@ class GlobalMacroAgent:
                 )
                 latest_source = latest.get("sec_filing_url", "")
                 source_suffix = f"；最新 filing: {latest_source}" if latest_source else ""
-                lines.append(f"- {company_name} ({meta['ticker']}): {trend}，{values}{source_suffix}")
+                report_lines.append(f"- {company_name} ({meta['ticker']}): {trend}，{values}{source_suffix}")
             except Exception as exc:
-                lines.append(f"- {company_name} ({meta['ticker']}): 抓取失敗 ({exc})")
+                report_lines.append(f"- {company_name} ({meta['ticker']}): 抓取失敗 ({exc})")
 
+        # ── CAPEX 結論 ──
         if valid_count == 0:
-            lines.append("結論: 無可用資料，暫不調整宏觀分數。")
-            return "\n".join(lines), 100
-
-        ratio = growing_count / valid_count
-        if ratio >= 0.6:
-            conclusion = f"結論: {growing_count}/{valid_count} 家資本支出持續成長，AI/雲端需求動能偏強。"
-            score = 100
-        elif ratio >= 0.3:
-            conclusion = f"結論: {growing_count}/{valid_count} 家資本支出持續成長，需求動能分歧。"
-            score = 85
+            report_lines.append("CAPEX 結論: 無可用資料。")
+            capex_score = 100
         else:
-            conclusion = f"結論: 僅 {growing_count}/{valid_count} 家資本支出持續成長，需留意大型客戶投資放緩。"
-            score = 70
+            ratio = growing_count / valid_count
+            if ratio >= 0.75:
+                capex_score = 100
+                report_lines.append(f"CAPEX 結論: {growing_count}/{valid_count} 家持續成長，AI/雲端需求動能偏強。")
+            elif ratio >= 0.5:
+                capex_score = 75
+                report_lines.append(f"CAPEX 結論: {growing_count}/{valid_count} 家持續成長，需求動能放緩。")
+            elif ratio >= 0.25:
+                capex_score = 50
+                report_lines.append(f"CAPEX 結論: 僅 {growing_count}/{valid_count} 家持續成長，分歧。")
+            else:
+                capex_score = 25
+                report_lines.append(f"CAPEX 結論: 僅 {growing_count}/{valid_count} 家持續成長，全面放緩。")
 
-        lines.append(conclusion)
-        return "\n".join(lines), score
+        # ── NVDA 營收 YoY ──
+        nvda_yoy = None
+        nvda_score = 100
+        try:
+            nvda_yoy = self._fetch_nvda_revenue_yoy()
+            if nvda_yoy is not None:
+                if nvda_yoy >= 50:
+                    nvda_score = 100
+                    report_lines.append(f"- NVDA 營收 YoY: {nvda_yoy:.1f}%（AI 需求爆發）")
+                elif nvda_yoy >= 20:
+                    nvda_score = 80
+                    report_lines.append(f"- NVDA 營收 YoY: {nvda_yoy:.1f}%（穩健成長）")
+                elif nvda_yoy >= 0:
+                    nvda_score = 60
+                    report_lines.append(f"- NVDA 營收 YoY: {nvda_yoy:.1f}%（成長趨緩）")
+                else:
+                    nvda_score = 40
+                    report_lines.append(f"- NVDA 營收 YoY: {nvda_yoy:.1f}%（負成長）")
+            else:
+                report_lines.append("- NVDA 營收 YoY: 資料不足")
+        except Exception as exc:
+            report_lines.append(f"- NVDA 營收 YoY: 抓取失敗 ({exc})")
+
+        # ── 綜合大廠分數（CAPEX 50% + NVDA 50%）──
+        if nvda_yoy is None:
+            combined_score = capex_score
+        else:
+            combined_score = int(capex_score * 0.5 + nvda_score * 0.5)
+
+        report_lines.append(f"\n大廠基本面綜合分數: {combined_score}/100（CAPEX {capex_score} / NVDA {nvda_score}）")
+
+        data = {
+            "capex_growing_count": growing_count,
+            "capex_valid_count": valid_count,
+            "capex_score": capex_score,
+            "nvda_revenue_yoy": nvda_yoy,
+            "nvda_score": nvda_score,
+            "score": combined_score,
+        }
+        return data, "\n".join(report_lines)
+
+    def _fetch_nvda_revenue_yoy(self) -> Optional[float]:
+        """
+        從 SEC XBRL 抓取 NVDA 最近一季的營收 YoY%。
+        回傳 YoY% 或 None（資料不足時）。
+        """
+        url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{NVDA_CIK}.json"
+        cache_key = f"sec_companyfacts_{NVDA_CIK}"
+
+        try:
+            data = self._fetch_json_with_cache(
+                cache_key, url, policy_name="nvda_revenue",
+                headers=SEC_HEADERS, timeout=20,
+            )
+        except Exception:
+            return None
+
+        facts = data.get("facts", {}).get("us-gaap", {})
+
+        # 嘗試不同的營收 tag
+        revenue_tags = [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+        ]
+
+        for tag in revenue_tags:
+            entries = facts.get(tag, {}).get("units", {}).get("USD", [])
+            if not entries:
+                continue
+
+            # 篩選單季（非 YTD）的 10-Q/10-K entries
+            quarterly = [
+                e for e in entries
+                if e.get("form") in {"10-Q", "10-K"}
+                and e.get("fp") in {"Q1", "Q2", "Q3", "Q4", "FY"}
+                and e.get("val") is not None
+            ]
+
+            if len(quarterly) < 2:
+                continue
+
+            # 按 end date 排序，取最近兩季
+            quarterly.sort(key=lambda e: e.get("end", ""))
+
+            latest = quarterly[-1]
+            latest_val = float(latest["val"])
+
+            # 找去年同季（約 365 天前）
+            latest_end = date.fromisoformat(latest["end"])
+            target_date = latest_end - timedelta(days=365)
+
+            best_match = None
+            best_diff = None
+            for e in quarterly:
+                e_end = date.fromisoformat(e.get("end", "2000-01-01"))
+                diff = abs((e_end - target_date).days)
+                if best_diff is None or diff < best_diff:
+                    best_diff = diff
+                    best_match = e
+
+            if best_match is None or best_diff is None or best_diff > 60:
+                continue
+
+            prev_val = float(best_match["val"])
+            if prev_val <= 0:
+                continue
+
+            yoy = (latest_val - prev_val) / prev_val * 100
+            return yoy
+
+        return None
 
     def _fetch_yahoo_price(self, ticker: str) -> float:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
@@ -434,17 +542,27 @@ def main() -> None:
         default=0,
         help="台積電台股收盤價；提供後會一併輸出 ADR 折溢價分析。",
     )
+    parser.add_argument(
+        "--bigtech",
+        action="store_true",
+        help="同時輸出大廠基本面分析（CAPEX + NVDA 營收 YoY）。",
+    )
     args = parser.parse_args()
 
     agent = GlobalMacroAgent()
+
+    # 宏觀分析（ADR + 匯率）
     if args.tw_price > 0:
         report, score = agent.analyze_global_risk(args.tw_price)
-    else:
-        report, score = agent.analyze_big_tech_capex()
+        print("=== 全球宏觀 Agent 分析 ===")
+        print(report)
+        print(f"\n宏觀分數: {score}/100")
 
-    print("=== 全球宏觀 Agent 單獨分析 ===")
-    print(report)
-    print(f"\n宏觀分數: {score}/100")
+    # 大廠基本面分析
+    if args.bigtech or args.tw_price <= 0:
+        data, report = agent.analyze_bigtech_fundamentals()
+        print("\n=== 大廠基本面分析 ===")
+        print(report)
 
 
 if __name__ == "__main__":

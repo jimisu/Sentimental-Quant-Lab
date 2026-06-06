@@ -31,8 +31,17 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+from config import CONFIG
 from tsmc_financial_agent import QuarterlyFinancialAgent
 from tsmc_macro_agent import GlobalMacroAgent
+from signal_engine import (
+    SignalEngine,
+    FinancialSignals,
+    BigTechSignals,
+    TechnicalSignals,
+    ChipSignals,
+    MarketSentimentSignals,
+)
 
 
 def prepare_daily_chart_path(charts_dir: str, prefix: str) -> str:
@@ -1338,8 +1347,9 @@ class Orchestrator:
         self.tech_agent = MarketDynamicsAgent()
         self.chip_agent = InstitutionalInvestorAgent()
         self.macro_agent = GlobalMacroAgent()
+        self.signal_engine = SignalEngine()
         self.log_path = log_path
-        
+
         # 建立圖表儲存目錄
         if not os.path.exists("charts"):
             os.makedirs("charts")
@@ -1389,54 +1399,163 @@ class Orchestrator:
 
         return md_table + "\n".join(rows)
 
+    def _build_financial_signals(self, quarterly_data: Dict, styled_df: pd.DataFrame) -> FinancialSignals:
+        """
+        從季度資料與儀表板 DataFrame 建構 FinancialSignals。
+        """
+        signals = FinancialSignals()
+
+        # 從 quarterly_data 取得最新一季數據
+        if quarterly_data:
+            sorted_keys = sorted(quarterly_data.keys(), reverse=True)
+            if sorted_keys:
+                latest = quarterly_data[sorted_keys[0]]
+                signals.latest_gross_margin = latest.get("gross_margin")
+                signals.latest_operating_margin = latest.get("operating_margin")
+                signals.latest_net_margin = latest.get("net_margin")
+                signals.gross_drop = latest.get("gross_drop")
+                signals.op_drop = latest.get("op_drop")
+                signals.net_drop = latest.get("net_drop")
+
+                # 檢查三率是否連續惡化（需要至少 3 季）
+                if len(sorted_keys) >= 3:
+                    q0 = quarterly_data[sorted_keys[0]]
+                    q1 = quarterly_data[sorted_keys[1]]
+                    q2 = quarterly_data[sorted_keys[2]]
+                    for key in ["gross_margin", "operating_margin", "net_margin"]:
+                        v0 = q0.get(key)
+                        v1 = q1.get(key)
+                        v2 = q2.get(key)
+                        if v0 is not None and v1 is not None and v2 is not None:
+                            if v0 < v1 < v2:
+                                signals.margin_deteriorating = True
+                                break
+
+        # 從 styled_df 取得最新月營收 YoY
+        if styled_df is not None and not styled_df.empty:
+            rev_col = "營收 YoY (%)"
+            if rev_col in styled_df.columns:
+                valid_rev = pd.to_numeric(styled_df[rev_col], errors='coerce').dropna()
+                if not valid_rev.empty:
+                    signals.latest_revenue_yoy = float(valid_rev.iloc[-1])
+                    # 檢查最近 3 個月是否連續下滑
+                    if len(valid_rev) >= 3:
+                        last_3 = valid_rev.tail(3)
+                        if last_3.iloc[-1] < last_3.iloc[-2] < last_3.iloc[-3]:
+                            signals.revenue_yoy_declining = True
+
+        return signals
+
+    def _build_market_sentiment_signals(
+        self, trading_df: pd.DataFrame, market_sentiment_red: bool
+    ) -> MarketSentimentSignals:
+        """
+        從交易資料建構市場情緒信號。
+
+        評分邏輯：
+        - 個股 + 大盤連三降（market_sentiment_red）→ 40 分
+        - 僅個股連三降 → 60 分
+        - 僅大盤連三降 → 70 分
+        - 正常 → 100 分
+        """
+        signals = MarketSentimentSignals()
+
+        if trading_df.empty or len(trading_df) < 3:
+            return signals
+
+        recent = trading_df.tail(10)
+        tsmc_vals = recent['台積電成交金額'].tolist()[::-1]  # 最新在前
+        mkt_vals = recent['大盤成交金額'].tolist()[::-1]
+
+        # 檢查連三降
+        def _has_three_consecutive_decline(values):
+            if len(values) < 3:
+                return False
+            for i in range(len(values) - 2):
+                if values[i] < values[i + 1] < values[i + 2]:
+                    return True
+            return False
+
+        tsmc_declining = _has_three_consecutive_decline(tsmc_vals)
+        mkt_declining = _has_three_consecutive_decline(mkt_vals)
+
+        signals.tsmc_volume_declining = tsmc_declining
+        signals.market_volume_declining = mkt_declining
+        signals.triple_decline = market_sentiment_red
+
+        if market_sentiment_red:
+            signals.score = 40
+            signals.volume_trend = "declining"
+        elif tsmc_declining and mkt_declining:
+            signals.score = 50
+            signals.volume_trend = "declining"
+        elif tsmc_declining:
+            signals.score = 60
+            signals.volume_trend = "declining"
+        elif mkt_declining:
+            signals.score = 70
+            signals.volume_trend = "declining"
+        else:
+            signals.score = 100
+            signals.volume_trend = "normal"
+
+        return signals
+
     def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict],
-                          dashboard_summary: str, styled_df: pd.DataFrame,
-                          market_sentiment_red: bool = False) -> None:
-        # 執行分析
+                          styled_df: pd.DataFrame,
+                          market_sentiment_red: bool = False) -> str:
+        """
+        執行完整分析並回傳 dashboard_summary 字串。
+        綜合得分燈號邏輯統一由 signal_engine 處理。
+        """
+        # ── Step 1: 各 Agent 分析 ──
         fin_report = self.fin_agent.analyze_margins(quarterly_data)
         tech_report, tech_flags, tech_scores = self.tech_agent.analyze_sentiment(trading_df)
         chip_report, chip_flags, chip_score = self.chip_agent.analyze_flow(chip_data, trading_df)
         tw_price = trading_df['台積電收盤價'].iloc[-1] if not trading_df.empty else 0
         macro_report, macro_score = self.macro_agent.analyze_global_risk(tw_price)
-        
-        # 計算綜合分數 (根據用戶要求權重)
-        # 1.早期 10%, 2.短期 10%, 3.中期 15%, 4.技術長期 15%, 5.籌碼分析 25%, 6.全球宏觀(長期趨勢) 25%
-        comprehensive_score = (
-            tech_scores["early"] * 0.10 +
-            tech_scores["short"] * 0.10 +
-            tech_scores["mid"] * 0.15 +
-            tech_scores["long"] * 0.15 +
-            chip_score * 0.25 +
-            macro_score * 0.25
+        bigtech_data, bigtech_report = self.macro_agent.analyze_bigtech_fundamentals()
+
+        # ── Step 2: 建構信號 ──
+        financial_signals = self._build_financial_signals(quarterly_data, styled_df)
+        bigtech_signals = BigTechSignals(
+            capex_growing_count=bigtech_data.get("capex_growing_count", 0),
+            capex_valid_count=bigtech_data.get("capex_valid_count", 0),
+            nvda_revenue_yoy=bigtech_data.get("nvda_revenue_yoy"),
+        )
+        tech_signals = TechnicalSignals(scores=tech_scores, flags=tech_flags)
+        chip_signals = ChipSignals(score=chip_score, flags=chip_flags)
+
+        # 市場情緒信號
+        market_sentiment_signals = self._build_market_sentiment_signals(
+            trading_df, market_sentiment_red
         )
 
-        # 檢查轉折訊號 (Trend Reversal Recognition)
-        # 基礎版：三者同時觸發
-        reversal_basic = (
-            tech_flags.get("ma20_cross_below", False) and
-            tech_flags.get("monthly_break_ma12", False) and
-            chip_flags.get("big_foreign_sell", False)
+        # ── Step 3: Signal Engine 整合計算 ──
+        result = self.signal_engine.analyze(
+            financial_signals, bigtech_signals, tech_signals, chip_signals,
+            market_sentiment_signals
         )
-        # 進階版：加入布林通道壓縮後破位 + 均線空頭排列
-        reversal_advanced = (
-            tech_flags.get("ma20_cross_below", False) and
-            tech_flags.get("monthly_break_ma12", False) and
-            chip_flags.get("big_foreign_sell", False) and
-            tech_flags.get("bb_squeeze_break", False)
-        )
-        reversal_msg = ""
-        if reversal_advanced:
-            reversal_msg = "\n[🚨🚨🚨 高強度轉折訊號 🚨🚨🚨] 20MA 轉負 + 月線破 MA12 + 外資大額賣超 + 布林通道壓縮後破位，趨勢強烈反轉跡象！"
-            dashboard_summary += f" | {reversal_msg.strip()}"
-        elif reversal_basic:
-            reversal_msg = "\n[！！！轉折訊號提醒！！！] 偵測到 20MA 轉負、月線破 MA12 且外資大額賣超，趨勢可能已出現反轉點！"
-            dashboard_summary += f" | {reversal_msg.strip()}"
 
-        # 檢查雙重黃燈警示 (Double Yellow Warning Recognition)
-        double_yellow = ("目前處於黃燈預警" in dashboard_summary) and (comprehensive_score < 60)
-        severe_msg = ""
-        if double_yellow:
-            severe_msg = "\n\033[1;37;41m【！嚴重警示！】儀表板與 AI 專家同時發出黃燈預警，基本面與技術面出現轉弱共振，請極度小心！\033[0m"
+        # ── Step 4: 組合報告 ──
+        comprehensive_score = result.comprehensive_score
+        alert_emoji = result.alert_emoji
+        alert_label = result.alert_label
+        alert_level = result.alert_level
+        alert_message = result.alert_message
+
+        # 建構 score_summary（顯示新權重）
+        w = CONFIG.weights
+        breakdown = result.details["breakdown"]
+        bs = market_sentiment_signals
+        score_summary = (
+            f"● 財務面({result.financial_score:.0f})*{w.financial*100:.0f}% = {breakdown['financial']:.1f}/{w.financial*100:.0f}\n"
+            f"● 大廠基本面({result.bigtech_score:.0f})*{w.bigtech*100:.0f}% = {breakdown['bigtech']:.1f}/{w.bigtech*100:.0f}\n"
+            f"● 技術面({result.tech_score:.0f})*{w.tech*100:.0f}% = {breakdown['tech']:.1f}/{w.tech*100:.0f}\n"
+            f"● 籌碼面({chip_score})*{w.chip*100:.0f}% = {breakdown['chip']:.1f}/{w.chip*100:.0f}\n"
+            f"● 市場情緒({bs.score})*{w.market_sentiment*100:.0f}% = {breakdown['market_sentiment']:.1f}/{w.market_sentiment*100:.0f}\n"
+            f"● 綜合健康得分: {comprehensive_score:.1f}/100"
+        )
 
         # 控制台輸出
         print("\n=== [AI Agent 聯手分析報告] ===")
@@ -1448,41 +1567,88 @@ class Orchestrator:
         print()
         print(f"[籌碼專家] > {chip_report}")
         print()
-        
-        # 整合評分總結字串
-        score_summary = (
-            f"● 技術分項:\n"
-            f"   早期警示({tech_scores['early']})*0.10 + 短期形態({tech_scores['short']})*0.10\n"
-            f"   + 中期趨勢({tech_scores['mid']})*0.15 + 長期趨勢({tech_scores['long']})*0.15\n"
-            f"   = 技術面小計: {tech_scores['early']*0.1 + tech_scores['short']*0.1 + tech_scores['mid']*0.15 + tech_scores['long']*0.15:.1f}/40\n"
-            f"● 籌碼面總分: ({chip_score}) * 0.25 = {chip_score*0.25:.1f}/25\n"
-            f"● 全球宏觀(長期趨勢): ({macro_score}) * 0.25 = {macro_score*0.25:.1f}/25\n"
-            f"● 綜合健康得分: {comprehensive_score:.1f}/100"
-        )
+        print(f"[大廠基本面] > {bigtech_report}")
+        print()
 
-        if reversal_msg:
-            print(f"\033[1;31;40m{reversal_msg}\033[0m")
+        # 市場情緒
+        ms = market_sentiment_signals
+        sentiment_label = "🔴 量能衰退" if ms.score <= 40 else "🟡 量能偏弱" if ms.score <= 70 else "🟢 量能正常"
+        sentiment_detail = []
+        if ms.triple_decline:
+            sentiment_detail.append("個股+大盤連三降")
+        elif ms.tsmc_volume_declining:
+            sentiment_detail.append("個股連三降")
+        elif ms.market_volume_declining:
+            sentiment_detail.append("大盤連三降")
+        detail_str = f"（{', '.join(sentiment_detail)}）" if sentiment_detail else ""
+        print(f"[市場情緒] {sentiment_label} {ms.score}/100{detail_str}")
+        print()
 
-        # 控制台輸出評分總結，高於 80 分以綠色顯示，低於 60 分以黃色顯示
+        print(f"{'='*50}")
+        print(f"{alert_emoji} 燈號：{alert_label}")
+        print(f"   {alert_message}")
+        print(f"{'='*50}")
+
+        # 特殊訊號警示
+        if result.reversal_advanced:
+            print(f"\033[1;31;40m[🚨🚨🚨 高強度轉折訊號 🚨🚨🚨]\033[0m")
+            print(f"\033[1;31m   20MA 轉負 + 月線破 MA12 + 外資大額賣超 + 布林通道壓縮後破位\033[0m")
+        elif result.reversal_signal:
+            print(f"\033[1;33m[！！！轉折訊號提醒！！！]\033[0m")
+            print(f"\033[1;33m   20MA 轉負 + 月線破 MA12 + 外資大額賣超\033[0m")
+
+        if result.double_warning:
+            fin_warnings = result.details.get("financial_warnings", [])
+            print(f"\033[1;37;41m【！嚴重警示！】基本面與技術面同時轉弱\033[0m")
+            for fw in fin_warnings:
+                print(f"\033[1;31m   ⚠ {fw}\033[0m")
+
+        # 財務面警告（如果有的話）
+        fin_warnings = result.details.get("financial_warnings", [])
+        if fin_warnings and not result.double_warning:
+            print(f"\n⚠️ 財務面警示:")
+            for fw in fin_warnings:
+                print(f"   · {fw}")
+
+        # 大廠基本面警告（如果有的話）
+        bigtech_warnings = result.details.get("bigtech_warnings", [])
+        if bigtech_warnings:
+            print(f"\n⚠️ 大廠基本面警示:")
+            for bw in bigtech_warnings:
+                print(f"   · {bw}")
+
+        # 市場情緒警示
+        ms = market_sentiment_signals
+        if ms.score <= 60:
+            print(f"\n⚠️ 市場情緒警示: 量能衰退（{ms.score}/100）")
+            if ms.triple_decline:
+                print(f"   · 個股與大盤連續三日量縮")
+
+        # 燈號顏色顯示綜合分數
         console_summary = score_summary
-        if comprehensive_score > 80:
-            console_summary = score_summary.replace(f"{comprehensive_score:.1f}/100", f"\033[1;32m🟢 {comprehensive_score:.1f}/100\033[0m")
-        elif comprehensive_score < 60:
-            console_summary = score_summary.replace(f"{comprehensive_score:.1f}/100", f"\033[1;33m🟡 {comprehensive_score:.1f}/100\033[0m")
+        score_str = f"{comprehensive_score:.1f}/100"
+        if alert_level == "green":
+            console_summary = console_summary.replace(score_str, f"\033[1;32m🟢 {score_str}\033[0m")
+        elif alert_level == "yellow":
+            console_summary = console_summary.replace(score_str, f"\033[1;33m🟡 {score_str}\033[0m")
+        else:
+            console_summary = console_summary.replace(score_str, f"\033[1;31m🔴 {score_str}\033[0m")
 
         print(f"\n--- 綜合評分總結 ---\n{console_summary}\n------------------")
-        if severe_msg:
-            print(severe_msg)
+
+        # 建立 dashboard_summary（統一燈號）
+        dashboard_summary = f"{alert_emoji} {alert_label} | {alert_message}"
 
         # 建立 Markdown 表格
         fin_table_md = self._df_to_md_table(styled_df)
         vol_table_md = self._df_to_md_table(trading_df.tail(10)[["日期", "台積電成交金額", "大盤成交金額"]])
 
         # 寫入日誌
-        log_summary = dashboard_summary + (" | 嚴重警示：雙重黃燈共振" if double_yellow else "")
-        self._append_to_log(log_summary, fin_report, tech_report, chip_report, macro_report,
+        self._append_to_log(dashboard_summary, fin_report, tech_report, chip_report, macro_report,
                             score_summary, fin_table_md, vol_table_md, market_sentiment_red)
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
+
+        return dashboard_summary
 
     def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str,
                        chip_report: str, macro_report: str, score_summary: str,
