@@ -31,6 +31,7 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+from config import CONFIG
 from tsmc_financial_agent import QuarterlyFinancialAgent
 from tsmc_macro_agent import GlobalMacroAgent
 from signal_engine import (
