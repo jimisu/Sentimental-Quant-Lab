@@ -1,25 +1,17 @@
 # Sentimental-Quant-Lab
 
-A quantitative analysis laboratory that combines **stock market data acquisition** (TSMC/2330.TW) with **sentiment analysis** and **market sentiment detection**.
+A quantitative analysis laboratory that combines **TSMC (2330.TW) market data acquisition** with **multi-agent AI analysis** and **technical indicator detection**.
 
 ## 📋 Overview
 
 This repository provides tools to:
-- Fetch TSMC's monthly revenue year‑over‑year (YoY) from FinMind.
-- Retrieve quarterly gross margin and operating margin from financial statements.
-- Detect consecutive three‑day traded-value declines for both TSMC and the Taiwan weighted index using TWSE data.
-- Display the past 10 trading days of TSMC and Taiwan weighted index traded value in a separate table.
-- Display a colour‑coded dashboard in the terminal using the `rich` library.
-
-## 📂 Project Structure
-
-```
-Sentimental-Quant-Lab/
-├── tsmc_signal_dashboard.py   # Main script: fetches data, applies logic, prints dashboard
-├── requirements.txt           # Python dependencies
-├── CLAUDE.md                  # Usage instructions for Claude Code
-└── .gitignore                 # Ignore virtual environments, caches, etc.
-```
+- Fetch TSMC's monthly revenue YoY from FinMind
+- Retrieve quarterly gross margin and operating margin from financial statements
+- Analyze technical indicators (Bollinger Bands, RSI, KD, MACD, moving averages)
+- Track institutional investor (foreign/trust/dealer) buy-sell dynamics
+- Monitor ADR premium/discount and big-tech CAPEX trends from SEC filings
+- Display a colour-coded dashboard in the terminal using the `rich` library
+- Generate 4-panel technical charts (price/volume/RSI+KD/MACD)
 
 ## 🚀 Quick Start
 
@@ -28,7 +20,7 @@ Sentimental-Quant-Lab/
 git clone https://github.com/jimisu/Sentimental-Quant-Lab.git
 cd Sentimental-Quant-Lab
 
-# 2. Create and activate a virtual environment (optional but recommended)
+# 2. Create and activate a virtual environment
 python3 -m venv venv
 source venv/bin/activate   # On Windows: venv\Scripts\activate
 
@@ -39,51 +31,63 @@ pip install -r requirements.txt
 python tsmc_signal_dashboard.py
 ```
 
-*If you have a FinMind token for higher rate limits, set it as an environment variable:*
+*If you have a FinMind token for higher rate limits:*
 ```bash
 export FINMIND_TOKEN=your_token_here
 ```
 
-## 📖 Usage Details
+## 📖 Architecture
 
 ### Data Sources
-- **Monthly Revenue**: `TaiwanStockMonthRevenue` dataset (FinMind) – calculates YoY change.
-- **Quarterly Margins**: `TaiwanStockFinancialStatements` dataset – computes gross margin and operating margin, and quarter‑over‑quarter changes.
-- **Traded Value Data**: TWSE `STOCK_DAY` for `2330` and TWSE `FMTQIK` for the Taiwan weighted index – displays the latest 10 trading days in a separate table from oldest to newest.
+| Source | Data | Cache |
+|--------|------|-------|
+| FinMind API | Monthly revenue, quarterly financials, institutional buy/sell | 24h–7d TTL |
+| TWSE API | Daily OHLCV (STOCK_DAY), market trading value (FMTQIK) | 24h for past months |
+| Yahoo Finance | TSM ADR price, USD/TWD rate | 1h |
+| SEC EDGAR XBRL | Big-tech CAPEX (AMZN, MSFT, NVDA, AAPL, TSLA, GOOGL, META) | 7d |
+
+### AI Agent System
+Four specialized agents collaborate via an Orchestrator:
+
+| Agent | Expertise | Key Indicators |
+|-------|-----------|----------------|
+| **Financial Agent** | Quarterly margins | Gross/operating/net margin QoQ trends |
+| **Technical Agent** | Market dynamics | Bollinger Bands, RSI, KD, MACD, MA alignment, support/resistance |
+| **Chip Agent** | Institutional flow | Foreign/trust/dealer 5-day cumulative, 3-institution resonance |
+| **Macro Agent** | Global trends | ADR premium, big-tech CAPEX trends |
+
+### Composite Scoring
+```
+Score = Technical(early)*0.10 + Technical(short)*0.10 + Technical(mid)*0.15
+      + Technical(long)*0.15 + Chip*0.25 + Macro*0.25
+```
 
 ### Colour Logic (Dashboard)
 | Indicator | Condition | Colour |
 |-----------|-----------|--------|
-| **Monthly Revenue YoY** | < 20 % | Yellow |
-| | Two consecutive months < 20 % | Red |
-| **Gross Margin** | QoQ decline > 2 pp | Yellow |
-| **Operating Margin** | QoQ decline > 2 pp | Yellow |
-| **Both Margins** | Both QoQ declines > 2 pp | Red |
-| **Market Sentiment** | TSMC and the Taiwan weighted index each show 3‑day consecutive traded-value decline | Red banner: “市場情緒指標：個股與大盤交易量連三降”; this uses TWSE traded value as the volume proxy and the summary is treated as red alert |
-
-### Summary Message
-After the table, a sentence is printed:
-- **Red Alert** → “目前處於紅燈預警，建議減碼並密切監控。”
-- **Yellow Alert** → “目前處於黃燈預警，建議啟動階梯式觀察，暫不加碼。”
-- **Green** → “目前皆為綠燈，可正常觀察並考慮適度加碼。”
+| **Monthly Revenue YoY** | < 20% | 🟡 Yellow |
+| | Two consecutive months < 20% | 🔴 Red |
+| **Gross/Operating Margin** | QoQ decline > 2pp | 🟡 Yellow |
+| | Both margins declining > 2pp | 🔴 Red |
+| **Market Sentiment** | TSMC + market 3-day volume decline | 🔴 Red banner |
 
 ## 🛠️ Requirements
 
-See `requirements.txt`:
 ```
 requests
 httpx
 rich
 pandas
+matplotlib
 ```
-(Pytest and vaderSentiment were removed as they are not used in the current dashboard.)
 
 ## 📝 Notes
 
-- The script automatically handles missing data (e.g., if traded value data cannot be retrieved, the market sentiment check is skipped).
-- All outputs are printed to the terminal; no files are written by default.
-- The dashboard is intended for quick visual inspection; for deeper analysis, modify the script or import its functions.
+- The script automatically handles missing data and API failures with cache fallback
+- All outputs are printed to the terminal; charts saved to `charts/`, logs to `analysis_log.md`
+- TWSE has intermittent CDN security blocks — handled by retry logic + 24h cache for past months
+- Charts are auto-cleaned to latest per day
 
 ## 📜 License
 
-MIT © 2026 Jan‑isa
+MIT © 2026 Jan-isa
