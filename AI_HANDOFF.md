@@ -7,8 +7,8 @@
 
 ## 📌 基本資訊
 - **目前所在分支 (Current Branch)**: `feat/add-codex-ai-working-follow`
-- **本次交接時間 (Timestamp)**: 2026-06-07 23:10 (UTC+8)
-- **目前負責人/AI (Handler)**: Codex
+- **本次交接時間 (Timestamp)**: 2026-06-08 10:50 (UTC+8)
+- **目前負責人/AI (Handler)**: Gemini Code Assist
 
 ---
 
@@ -20,6 +20,9 @@
 - [x] **Codex 規則落地驗證**：確認 `CODEX_RULES.md` 已建立，且 `PROJECT_ARCHITECTURE.md` 與 `DEVELOPMENT_FLOW.md` 已引用 Codex / GitHub Copilot 協作規範。
 - [x] **規則整合**：新增 `AI_COLLABORATION_RULES.md` 作為 Gemini/Codex 共用規範，並將 `GEMINI_RULES.md`、`CODEX_RULES.md` 改為工具入口文件。
 - [x] **文件引用同步**：更新 `PROJECT_ARCHITECTURE.md`、`DEVELOPMENT_FLOW.md` 與 `CHANGELOG.md`，使共同規範成為主要參考。
+- [x] **規則輕量化**：已將 `CODEX_RULES.md` 改為與 `GEMINI_RULES.md` 一致的參考入口格式。
+- [x] **架構與流程整合**：已將 `CLAUDE.md` 的技術細節與指令集整合至專案核心文件。
+- [x] **Claude 入口規範化**：`CLAUDE.md` 已改為輕量化入口格式。
 
 ### 歷史已完成（先前分支）
 - [x] **feat/eps-price-ration**：完成 EPS 估算、本益比警告與價量背離功能之開發與提交。
@@ -30,7 +33,7 @@
 - [x] --test 自測功能
 
 ## ⏳ 未完成 / 待辦事項 (Pending Tasks)
-1. **[優先級：高] 提交本次文件整合**：目前分支包含 `AI_COLLABORATION_RULES.md` 新增，以及 `GEMINI_RULES.md`、`CODEX_RULES.md`、`AI_HANDOFF.md`、`DEVELOPMENT_FLOW.md`、`PROJECT_ARCHITECTURE.md`、`CHANGELOG.md` 文件更新；建議檢查後進行原子提交。
+1. **[優先級：高] 推送分支與建立 PR**：文件整合任務已全部完成，可進行最後的提交與推送。
 
 ---
 
@@ -46,8 +49,6 @@
 > 9. EPS 推算邏輯：優先使用 Q1 年化（Q1×4），若無 Q1 2025 對照則只用年化值；若有 Q1 2025 則用比例法推算
 
 ## 🚀 給下一個 AI 建議
-1. **提交文件變更**：建議提交訊息 `docs: unify Gemini and Codex collaboration rules`。
+1. **提交文件變更**：建議提交訊息 `docs: unify collaboration rules and rollback Codex references`。
 2. **後續開發**：若要進行程式碼修改，請先依 `AI_COLLABORATION_RULES.md` 與對應入口規範再次確認分支與交接內容，並保持小步提交。
-
-如需交接，請對我說「下班了」或「交班」，我會自動完成交接流程！
 ---

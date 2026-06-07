@@ -4,6 +4,54 @@
 
 ---
 
+## 0. 開發指令速查 (CLI Commands)
+
+### 環境設定
+```bash
+python3 -m venv venv              # 建立虛擬環境
+source venv/bin/activate           # 啟動環境
+pip install -r requirements.txt    # 安裝依賴
+```
+
+### 執行主程式
+```bash
+python tsmc_signal_dashboard.py     # 執行儀表板
+python tsmc_signal_dashboard.py --test  # 系統診斷自測 (API, 網路, 環境)
+```
+
+### 獨立代理程式測試
+```bash
+python tsmc_financial_agent.py      # 獨立執行財務分析
+python tsmc_macro_agent.py          # 獨立執行宏觀分析
+python test.py                      # 測試 Yahoo Finance 即時價格
+```
+
+---
+
+## 0. 開發指令速查 (CLI Commands)
+
+### 環境設定
+```bash
+python3 -m venv venv              # 建立虛擬環境
+source venv/bin/activate           # 啟動環境
+pip install -r requirements.txt    # 安裝依賴
+```
+
+### 執行主程式
+```bash
+python tsmc_signal_dashboard.py     # 執行儀表板
+python tsmc_signal_dashboard.py --test  # 系統診斷自測 (API, 網路, 環境)
+```
+
+### 獨立代理程式測試
+```bash
+python tsmc_financial_agent.py      # 獨立執行財務分析
+python tsmc_macro_agent.py          # 獨立執行宏觀分析
+python test.py                      # 測試 Yahoo Finance 即時價格
+```
+
+---
+
 ## 1. 架構防禦 (Architectural Defense)
 - **嚴禁擅自重構**：未經使用者明確授權，AI 禁止擅自更動目錄結構、拆分現有穩定模組（例如將 `tsmc_ai_agents.py` 拆分為多個檔案）或修改底層單例設計（如 `config.py` 中的 `CONFIG`）。
 - **風格一致性**：新撰寫的程式碼必須遵循現有的編碼模式。例如：

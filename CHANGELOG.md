@@ -4,6 +4,20 @@
 
 ---
 
+## [2026-06-08 10:45]
+- **Docs**: 完成跨文件內容整合與 commit 準備。
+- **Changed**: 將 `CLAUDE.md` 的數據流、技術指標整合至 `PROJECT_ARCHITECTURE.md`，CLI 指令整合至 `DEVELOPMENT_FLOW.md`。
+- **Changed**: `CLAUDE.md` 轉型為輕量化入口文件。
+
+## [2026-06-08 10:30]
+- **Docs**: 完成跨文件內容整合。
+- **Changed**: 將 `CLAUDE.md` 中的技術指標細節、數據流圖整合至 `PROJECT_ARCHITECTURE.md`。
+- **Changed**: 將常用開發指令整合至 `DEVELOPMENT_FLOW.md`，落實單一來源原則。
+
+## [2026-06-08 10:00]
+- **Docs**: 修正 Codex (GitHub Copilot) 協作狀態。
+- **Changed**: 更新 `CODEX_RULES.md` 為輕量化入口文件，與 `GEMINI_RULES.md` 保持結構一致，並將核心規則收納至 `AI_COLLABORATION_RULES.md`。
+
 ## [2026-06-07 23:10]
 - **Docs**: 整合 `GEMINI_RULES.md` 與 `CODEX_RULES.md`，新增共同規範 `AI_COLLABORATION_RULES.md`。
 - **Changed**: 將 `GEMINI_RULES.md` 與 `CODEX_RULES.md` 改為工具入口文件，避免多 AI 協作規則重複與衝突。

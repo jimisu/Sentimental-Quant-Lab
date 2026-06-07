@@ -34,6 +34,58 @@ Sentimental-Quant-Lab/
 └── .gitignore                 # Git 忽略檔案
 ```
 
+## 🔄 數據流架構 (Data Flow)
+
+```
+FinMind API ──┬── TaiwanStockMonthRevenue ──→ 月營收 YoY
+              ├── TaiwanStockFinancialStatements ──→ 季度毛利/營益/淨利
+              └── TaiwanStockInstitutionalInvestorsBuySell ──→ 籌碼資料
+
+TWSE API ─────┬── STOCK_DAY (2330) ──→ 台積電日線 OHLCV
+              └── FMTQIK ──→ 大盤每日成交金額
+
+Yahoo Finance ──→ TSM ADR 價格 + USD/TWD 匯率
+SEC EDGAR XBRL ──→ 大型科技公司 CAPEX 數據 (4-7 家)
+
+所有來源 ─────→ local_cache/ (JSON, 環形快取, 每個 Key 保留 3 份)
+                    ↓
+          tsmc_signal_dashboard.py (主程式進入點)
+                    ↓
+          Orchestrator.run_full_analysis()
+                    ↓
+    ┌──────────┬──────────┬──────────┬──────────┐
+    │ 財務專家  │ 技術專家  │ 籌碼專家  │ 宏觀專家  │
+    └──────────┴──────────┴──────────┴──────────┘
+                    ↓
+          綜合評分 + 儀表板顯示 + analysis_log.md
+```
+
+## 🔄 數據流架構 (Data Flow)
+
+```
+FinMind API ──┬── TaiwanStockMonthRevenue ──→ 月營收 YoY
+              ├── TaiwanStockFinancialStatements ──→ 季度毛利/營益/淨利
+              └── TaiwanStockInstitutionalInvestorsBuySell ──→ 籌碼資料
+
+TWSE API ─────┬── STOCK_DAY (2330) ──→ 台積電日線 OHLCV
+              └── FMTQIK ──→ 大盤每日成交金額
+
+Yahoo Finance ──→ TSM ADR 價格 + USD/TWD 匯率
+SEC EDGAR XBRL ──→ 大型科技公司 CAPEX 數據 (4-7 家)
+
+所有來源 ─────→ local_cache/ (JSON, 環形快取, 每個 Key 保留 3 份)
+                    ↓
+          tsmc_signal_dashboard.py (主程式進入點)
+                    ↓
+          Orchestrator.run_full_analysis()
+                    ↓
+    ┌──────────┬──────────┬──────────┬──────────┐
+    │ 財務專家  │ 技術專家  │ 籌碼專家  │ 宏觀專家  │
+    └──────────┴──────────┴──────────┴──────────┘
+                    ↓
+          綜合評分 + 儀表板顯示 + analysis_log.md
+```
+
 ## 🔧 核心組件功能說明
 
 ### 1. 主程式: `tsmc_signal_dashboard.py`
@@ -75,19 +127,26 @@ Sentimental-Quant-Lab/
   - 提供多頭或警告狀態的結論
 
 **B. MarketDynamicsAgent (技術市場專家)**
-- **資料來源**：TWSE 每日收盤行情 (STOCK_DAY) 與 大盤統計 (FMTQIK)
-- **分析邏輯**：
-  - 比對台積電成交金額與大盤之變動
-  - 偵測「連鎖縮量」以判定市場觀望情緒
-  - 計算「量價背離」以偵測大戶拋售或進場行為
-  - 技術指標：5MA、20MA、RSI、MACD
-  - K線形態分析（頂部K線形態、吞噬黑K、連續小實體）
-  - 多時期分析：短期（頂部反轉預警）、中期（MA12/RSI/MACD 轉弱）、長期（月線MA12/收盤價關係）
-- **輸出**：
-  - 技術圖表（價格+均線、成交量、RSI）
-  - 20MA 乖離率分析
-  - 反轉訊號判斷（早期警示、短中期長期趨勢）
-  - 市場情緒洞察（異常賣壓、大戶進場、連鎖縮量）
+**資料來源**：TWSE 每日收盤行情 (STOCK_DAY) 與 大盤統計 (FMTQIK)
+**實作細節與指標**：
+  - **核心計算方法**：
+    - `_calculate_rsi()`, `_calculate_kd()`, `_calculate_macd()`: 核心數學邏輯。
+    - `_enrich_indicators()`: 負責將所有 MA/BB/KD 欄位附加至 DataFrame。
+  - **技術指標清單**：
+    - 均線系統：5MA, 20MA, 60MA + 週線 MA12 + 月線 MA12。
+    - 布林通道：(20, 2) 帶寬擠壓偵測 (Squeeze detection)。
+    - RSI (14)：日線與週線頂背離偵測。
+    - KD (9, 3)：超買/超賣區判定與黃金/死亡交叉。
+    - MACD (12, 26, 9)：日線與週線訊號。
+    - 支撐阻力：近 60 日高低點。
+    - 價量關係：Swing High 的價量背離偵測。
+    - K線形態：長上影線、吞噬黑K、連續小實體。
+  - **評分機制**：
+    - 扣分會累積在 `early`, `short`, `mid`, `long` 四個桶子。
+    - 每個維度的最終分數為 `max(0, 100 - penalty)`。
+**輸出**：
+  - 四面板 Matplotlib 圖表 (價格+BB / 成交量 / RSI+KD / MACD)。
+  - 20MA 乖離率分析與反轉訊號判斷。
 
 **C. InstitutionalInvestorAgent (籌碼分析專家)**
 - **資料來源**：FinMind 三大法人買賣超資料集 (TaiwanStockInstitutionalInvestorsBuySell)
