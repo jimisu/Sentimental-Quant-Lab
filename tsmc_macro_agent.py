@@ -129,9 +129,12 @@ class GlobalMacroAgent:
         except Exception as e:
             return f"⚠️ 宏觀專家: 外部數據抓取失敗 ({e})，請檢查網路連線或 API 狀態。", 100
 
-    def analyze_bigtech_fundamentals(self) -> Tuple[Dict, str]:
+    def analyze_bigtech_fundamentals(self, quarterly_data: Dict = None) -> Tuple[Dict, str]:
         """
-        分析大廠基本面：CAPEX 趨勢（4 家）+ NVDA 營收 YoY。
+        分析大廠基本面：CAPEX 趨勢（4 家）+ NVDA 營收 YoY + TSMC EPS 預估。
+
+        參數：
+        - quarterly_data: 可選，FinMind 季度財務資料（含 EPS），用於推算 2026 預估 EPS
 
         回傳：
         - data: dict 包含 capex_growing_count, capex_valid_count, nvda_revenue_yoy, score, capex_score, nvda_score
@@ -225,6 +228,27 @@ class GlobalMacroAgent:
 
         report_lines.append(f"\n大廠基本面綜合分數: {combined_score}/100（CAPEX {capex_score} / NVDA {nvda_score}）")
 
+        # ── TSMC 2026 預估 EPS ──
+        try:
+            # 從 quarterly_data 取得 EPS 歷史資料
+            eps_est = self._fetch_tsm_eps_estimate(quarterly_data)
+            if eps_est:
+                report_lines.append(f"\n【TSMC 2026 預估 EPS】")
+                if "eps_detail" in eps_est:
+                    report_lines.append(f"  過去四季 EPS：{eps_est['eps_detail']}")
+                if "eps_trailing_4q" in eps_est:
+                    report_lines.append(f"  過去 4 季加總：{eps_est['eps_trailing_4q']:.2f} 元")
+                if "eps_q1_2026" in eps_est:
+                    report_lines.append(f"  2026 Q1 EPS：{eps_est['eps_q1_2026']:.2f} 元")
+                if "eps_2026_estimate" in eps_est:
+                    report_lines.append(f"  2026 全年預估 EPS：{eps_est['eps_2026_estimate']:.2f} 元（依 Q1 比例推算）")
+                elif "eps_2026_annualized" in eps_est:
+                    report_lines.append(f"  2026 全年預估 EPS：{eps_est['eps_2026_annualized']:.2f} 元（Q1 年化）")
+            else:
+                report_lines.append(f"\n【TSMC 2026 預估 EPS】資料不足")
+        except Exception as exc:
+            report_lines.append(f"\n【TSMC 2026 預估 EPS】抓取失敗 ({exc})")
+
         data = {
             "capex_growing_count": growing_count,
             "capex_valid_count": valid_count,
@@ -235,6 +259,59 @@ class GlobalMacroAgent:
             "score": combined_score,
         }
         return data, "\n".join(report_lines)
+
+    def _fetch_tsm_eps_estimate(self, quarterly_data: Dict = None) -> Optional[Dict]:
+        """
+        根據 FinMind 歷史 EPS 資料推算 TSMC 2026 全年預估 EPS。
+        使用過去 4 季 EPS 年化 + Q1 2026 推算全年。
+        回傳 dict 包含 eps_trailing_4q, eps_2026_estimate 或 None。
+        """
+        eps_info = {}
+
+        if quarterly_data:
+            sorted_keys = sorted(quarterly_data.keys(), reverse=True)
+            eps_values = []
+            for k in sorted_keys:
+                ev = quarterly_data[k].get("eps")
+                if ev is not None:
+                    eps_values.append((k, ev))
+
+            if len(eps_values) >= 1:
+                # 過去 4 季 EPS 加總（年化基準）
+                trailing_4q = sum(v for _, v in eps_values[:4])
+                eps_info["eps_trailing_4q"] = round(trailing_4q, 2)
+
+                # 2026 全年預估：若已有 Q1 2026，用 Q1 × 4 或 Q1 / 過去 Q1 比例推算
+                q1_2026 = None
+                q1_2025 = None
+                for (y, q), v in eps_values:
+                    if y == 2026 and q == 1:
+                        q1_2026 = v
+                    if y == 2025 and q == 1:
+                        q1_2025 = v
+
+                if q1_2026 is not None:
+                    # 方法一：Q1 年化 × 4
+                    eps_2026_annualized = round(q1_2026 * 4, 2)
+                    eps_info["eps_2026_annualized"] = eps_2026_annualized
+
+                    # 方法二：用 Q1 佔去年全年比例推算
+                    if q1_2025 is not None and q1_2025 > 0:
+                        # 2025 全年 EPS
+                        eps_2025_total = sum(v for (y, q), v in eps_values if y == 2025)
+                        if eps_2025_total > 0:
+                            q1_ratio = q1_2025 / eps_2025_total
+                            if q1_ratio > 0:
+                                eps_2026_estimate = round(q1_2026 / q1_ratio, 2)
+                                eps_info["eps_2026_estimate"] = eps_2026_estimate
+
+                    eps_info["eps_q1_2026"] = q1_2026
+
+                # 過去四季 EPS 明細
+                eps_detail = " → ".join(f"{y}Q{q}: {v:.2f}" for (y, q), v in eps_values[:4])
+                eps_info["eps_detail"] = eps_detail
+
+        return eps_info if eps_info else None
 
     def _fetch_nvda_revenue_yoy(self) -> Tuple[Optional[float], List[Dict]]:
         """
