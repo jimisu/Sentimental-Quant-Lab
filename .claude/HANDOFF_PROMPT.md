@@ -31,7 +31,7 @@ git log --oneline -5
 
 - 👩‍💻 **當前分支：** `[填入目前 Git 分支]`
 - 📝 我已經把本次的開發進度與未竟事宜寫入 `AI_HANDOFF.md`。
-- 🎯 **下一棒提示：** 如果您接下來要切換給 **GitHub Copilot**，請在 IDE 中保持打開 `AI_HANDOFF.md`，並在程式碼中使用 `// TODO:` 註解引導它。
+- 🎯 **下一棒提示：** 如果您接下來要切換給 **GitHub Copilot / Codex**，請參考 `CODEX_RULES.md` 中的「承接檢查清單」，依序執行：確認環境 → 讀取上下文 → 確認接手狀態 → 開始工作。
 - 💾 請執行以下指令完成本輪存檔：
   ```bash
   git add . && git commit -m "chore: claudecode handoff to next AI"
@@ -63,3 +63,4 @@ git log --oneline -5
 2. **絕不靜默離開**：無論對話長短，只要觸發交接關鍵字，就必須跳出提示區塊。
 3. **AI_HANDOFF.md 是唯一的交接真相來源**：確保內容最新且準確。
 4. **Commit 由總工程師執行**：AI 只負責提示，不自動執行 commit（除非使用者明確要求）。
+5. **⛔ 絕對禁止自動 `git push`**：任何情況下 AI 都不得自行推送。即使交接報告建議推送，AI 只能提醒人類評估，**絕不自行執行**。違反視為嚴重錯誤。

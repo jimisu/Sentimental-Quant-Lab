@@ -1,6 +1,30 @@
 # 多 AI 協作開發流程規範 (DEVELOPMENT_FLOW)
 
-本專案採用多 AI 工具（Gemini Code Assist, GitHub Copilot, Claude Code）輪流協作模式。為了確保系統架構的穩定性、程式碼的一致性以及開發歷史的可追蹤性，所有參與開發的 AI 代理程式必須嚴格遵守以下四大規範。
+本專案採用多 AI 工具（Gemini Code Assist, GitHub Copilot/Codex, Claude Code）輪流協作模式。為了確保系統架構的穩定性、程式碼的一致性以及開發歷史的可追蹤性，所有參與開發的 AI 代理程式必須嚴格遵守 `AI_COLLABORATION_RULES.md` 與以下四大規範。
+
+---
+
+## 0. 開發指令速查 (CLI Commands)
+
+### 環境設定
+```bash
+python3 -m venv venv              # 建立虛擬環境
+source venv/bin/activate           # 啟動環境
+pip install -r requirements.txt    # 安裝依賴
+```
+
+### 執行主程式
+```bash
+python tsmc_signal_dashboard.py     # 執行儀表板
+python tsmc_signal_dashboard.py --test  # 系統診斷自測 (API, 網路, 環境)
+```
+
+### 獨立代理程式測試
+```bash
+python tsmc_financial_agent.py      # 獨立執行財務分析
+python tsmc_macro_agent.py          # 獨立執行宏觀分析
+python test.py                      # 測試 Yahoo Finance 即時價格
+```
 
 ---
 
@@ -22,6 +46,7 @@
 - **微小增量**：每完成一個獨立的邏輯修改、新增一個小功能或修復一個特定錯誤，AI **必須**立即停止後續動作。
 - **主動提示**：在確認當前變更無誤後，AI **必須主動提示**使用者進行 `git commit`。
 - **規範內容**：提交訊息應包含行為標記（feat, fix, docs, refactor, style）及其具體變更內容。
+- **⛔ 禁止自動 `git push`**：詳細規則見 `AI_COLLABORATION_RULES.md` 第 4 節。任何情況下 AI 不得自行推送，必須由人類明確指令方可執行。
 
 ## 4. AI 輪班交接 (AI Handoff Protocol)
 - **交接檔案**：在切換 AI 開發工具前（或使用者要求時），目前的 AI 必須在根目錄建立或更新 **`AI_HANDOFF.md`**。
@@ -39,7 +64,7 @@
 ---
 
 ## 執行聲明
-當使用者啟動 AI 助手時，AI 應先讀取本文件以同步開發共識。任何違反上述規範的建議，使用者有權拒絕並要求 AI 重新調整。
+當使用者啟動 AI 助手時，AI 應先讀取 `AI_COLLABORATION_RULES.md` 與本文件以同步開發共識。任何違反上述規範的建議，使用者有權拒絕並要求 AI 重新調整。
 
-**版本**: 1.0.0  
-**最後更新日期**: 2026-06-02
+**版本**: 1.1.0
+**最後更新日期**: 2026-06-07
