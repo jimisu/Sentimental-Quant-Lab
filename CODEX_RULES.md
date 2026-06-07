@@ -1,8 +1,17 @@
 # Codex / GitHub Copilot 入口規範 (CODEX_RULES.md)
 
-Codex (GitHub Copilot) 在參與 `Sentimental-Quant-Lab` 專案時，必須遵循共同規範。雖然目前參與頻率較低，但協作標準應與其他 AI 工具保持一致：
+Codex (GitHub Copilot) 在參與 `Sentimental-Quant-Lab` 專案時，必須遵循共同規範。
+
+## 自動載入
+
+當你在 VS Code 中開啟此專案時，GitHub Copilot 會自動讀取 `.github/copilot-instructions.md` 作為專案指令。該文件包含完整的 Pre-flight Check、架構防禦、原子化提交、多 Agent 併發安全與交接規範。
+
+本文件（`CODEX_RULES.md`）作為補充入口，供手動查閱、CLI 環境（OpenAI Codex）或其他工具載入時使用。
+
+## 快速參考
 
 - 主要規範：`AI_COLLABORATION_RULES.md`
+- 完整指令：`.github/copilot-instructions.md`
 - 目前交接：`AI_HANDOFF.md`
 - 協作流程：`DEVELOPMENT_FLOW.md`
 - 技術架構：`PROJECT_ARCHITECTURE.md`
