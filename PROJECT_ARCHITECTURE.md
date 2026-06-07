@@ -28,6 +28,7 @@ Sentimental-Quant-Lab/
 ├── README.md                  # 項目概覽和快速開始指南
 ├── DEVELOPMENT_FLOW.md        # 多 AI 協作開發流程規範
 ├── AI_HANDOFF.md              # AI 輪班交接報告
+├── CODEX_RULES.md             # Codex / GitHub Copilot 特定規則
 ├── GEMINI_RULES.md            # Gemini Code Assist 特定規則
 └── .gitignore                 # Git 忽略檔案
 ```

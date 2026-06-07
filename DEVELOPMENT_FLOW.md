@@ -1,6 +1,6 @@
 # 多 AI 協作開發流程規範 (DEVELOPMENT_FLOW)
 
-本專案採用多 AI 工具（Gemini Code Assist, GitHub Copilot, Claude Code）輪流協作模式。為了確保系統架構的穩定性、程式碼的一致性以及開發歷史的可追蹤性，所有參與開發的 AI 代理程式必須嚴格遵守以下四大規範。
+本專案採用多 AI 工具（Gemini Code Assist, GitHub Copilot/Codex, Claude Code）輪流協作模式。為了確保系統架構的穩定性、程式碼的一致性以及開發歷史的可追蹤性，所有參與開發的 AI 代理程式必須嚴格遵守以下四大規範。
 
 ---
 
