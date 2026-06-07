@@ -7,8 +7,8 @@
 
 ## 📌 基本資訊
 - **目前所在分支 (Current Branch)**: `feat/add-codex-ai-working-follow`
-- **本次交接時間 (Timestamp)**: 2026-06-08 10:50 (UTC+8)
-- **目前負責人/AI (Handler)**: Gemini Code Assist
+- **本次交接時間 (Timestamp)**: 2026-06-08 11:15 (UTC+8)
+- **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
 
@@ -24,6 +24,18 @@
 - [x] **架構與流程整合**：已將 `CLAUDE.md` 的技術細節與指令集整合至專案核心文件。
 - [x] **Claude 入口規範化**：`CLAUDE.md` 已改為輕量化入口格式。
 
+### OWL 本次 Session 新增修復（2026-06-08 11:00-11:15）
+- [x] **修復重複內容**：刪除 `DEVELOPMENT_FLOW.md` 中重複的 CLI 指令速查區塊
+- [x] **修復重複內容**：刪除 `PROJECT_ARCHITECTURE.md` 中重複的數據流架構圖
+- [x] **修正過時引用**：更新 `GEMINI_RULES.md`、`CODEX_RULES.md`、`AI_COLLABORATION_RULES.md` 中 `CLAUDE.md` 的描述
+- [x] **新增多 Agent 並發衝突處理協議**：在 `AI_COLLABORATION_RULES.md` 新增第 6 節（檔案串行化、analysis_log.md 保護、快取安全、衝突升級）
+- [x] **新增 Codex 承接檢查清單**：在 `CODEX_RULES.md` 新增 4 步承接流程
+- [x] **建立原生指令文件**：
+  - `.github/copilot-instructions.md` — GitHub Copilot 自動載入
+  - `.gemini/GEMINI.md` — Gemini Code Assist 自動載入
+- [x] **更新交接提示**：`.claude/HANDOFF_PROMPT.md` 中 Copilot 指引改為引用 `CODEX_RULES.md` 承接檢查清單
+- [x] **更新 CHANGELOG.md**：記錄所有 2026-06-08 的變更
+
 ### 歷史已完成（先前分支）
 - [x] **feat/eps-price-ration**：完成 EPS 估算、本益比警告與價量背離功能之開發與提交。
 - [x] 報告結構重構、資料表格回填、報告順序調整（宏觀→財務→技術→籌碼）
@@ -33,8 +45,7 @@
 - [x] --test 自測功能
 
 ## ⏳ 未完成 / 待辦事項 (Pending Tasks)
-1. **[優先級：高] 推送分支與建立 PR**：文件整合任務已全部完成，可進行最後的提交與推送。（本交接報告更新於 2026-06-08，建議執行 `git add . && git commit -m "docs: fix duplicate content, add concurrency rules, update references"` 後推送。）
-2. **[優先級：中] 驗證多 AI 協作規則**：已修復重複內容、補充併發衝突協議、修正過時引用，建議在下一個開發任務中驗證規則有效性。
+1. **[優先級：高] 建立 PR 合併到 main**：`feat/add-codex-ai-working-follow` 分支的所有文件整合與規則修復工作已全部完成，已推送至遠端，可建立 PR 合併。
 
 ---
 
@@ -48,8 +59,10 @@
 > 7. `build_dataframe()` 的 DataFrame 現在包含 `"EPS (元)"` 欄位
 > 8. 本益比警告門檻：PE > 31 倍；高檔全面警示需同時滿足：PE>31 + 量價背離 + 外資賣超 + 市場情緒≤60
 > 9. EPS 推算邏輯：優先使用 Q1 年化（Q1×4），若無 Q1 2025 對照則只用年化值；若有 Q1 2025 則用比例法推算
+> 10. **多 AI 自動載入入口**：Claude Code（`CLAUDE.md` + hook）、Copilot（`.github/copilot-instructions.md`）、Gemini（`.gemini/GEMINI.md`）
 
 ## 🚀 給下一個 AI 建議
-1. **提交文件變更**：建議提交訊息 `docs: unify collaboration rules and rollback Codex references`。
-2. **後續開發**：若要進行程式碼修改，請先依 `AI_COLLABORATION_RULES.md` 與對應入口規範再次確認分支與交接內容，並保持小步提交。
+1. **建立 PR**：此分支已完工，建議建立 PR 合併到 main。
+2. **後續開發**：若要進行程式碼修改，請先進入對應的自動載入入口確認協作規則，並保持小步提交。
+3. **分支清理**：合併後可刪除 `feat/add-codex-ai-working-follow` 分支。
 ---
