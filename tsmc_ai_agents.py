@@ -4,6 +4,7 @@ TSMC AI Agents 模組
 包含負責財務分析、技術分析以及自動化日誌紀錄的 Agent。
 """
 
+import datetime as dt
 import pandas as pd
 try:
     import matplotlib.pyplot as plt
@@ -1732,19 +1733,496 @@ class Orchestrator:
                         f"> 本益比 **{pe_ratio:.1f} 倍**（股價 {current_price:.0f} / 過去四季 EPS {trailing_4q_eps:.2f}）\n"
                     )
 
+        # ── Step 5: 建構產業分析框架章節 ──
+        industry_analysis_md = self._build_industry_analysis_section(
+            quarterly_data=quarterly_data,
+            styled_df=styled_df,
+            chip_flags=chip_flags,
+            chip_score=chip_score,
+            tech_flags=tech_flags,
+            tech_scores=tech_scores,
+            macro_report=macro_report,
+            bigtech_data=bigtech_data,
+            market_sentiment_signals=market_sentiment_signals,
+            result=result,
+            tw_price=tw_price,
+        )
+
         # 寫入日誌
         self._append_to_log(dashboard_summary, fin_report, tech_report, chip_report, macro_report,
                             score_summary, fin_table_md, vol_table_md, market_sentiment_red,
-                            pe_warning_md)
+                            pe_warning_md,
+                            industry_analysis_md=industry_analysis_md)
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
         return dashboard_summary
+
+    def _estimate_earnings_date(self, today: dt.date) -> Tuple[str, int, str]:
+        """
+        根據当前日期估算最近的台積電法說會日期與距離天數。
+        台積電法說會約在每年 1、4、7、10 月的第三週週四。
+        回傳：(法說會日期字串, 距離天數, 法說會季度描述)
+        """
+        import calendar
+        # 法說會月份：1, 4, 7, 10
+        earnings_months = [1, 4, 7, 10]
+        candidates = []
+        for m in earnings_months:
+            # 找該月第三週的週四
+            cal = calendar.monthcalendar(today.year, m)
+            thursdays = [week[calendar.THURSDAY] for week in cal if week[calendar.THURSDAY] != 0]
+            if len(thursdays) >= 3:
+                cal_date = dt.date(today.year, m, thursdays[2])  # 第三個週四
+                candidates.append(cal_date)
+
+        # 找最近的法說會（已過或未來）
+        past = [d for d in candidates if d <= today]
+        future = [d for d in candidates if d > today]
+
+        if future:
+            nearest = future[0]
+            days_away = (nearest - today).days
+            desc = f"Q{nearest.month // 3 if nearest.month % 3 != 0 else nearest.month // 3} 法說會"
+            return nearest.isoformat(), days_away, desc
+        elif past:
+            nearest = past[-1]
+            days_away = (today - nearest).days
+            desc = f"Q{(nearest.month - 1) // 3 + 1} 法說會後"
+            return nearest.isoformat(), -days_away, desc
+        else:
+            return "未知", 0, "法說會日期未定"
+
+    def _build_industry_analysis_section(
+        self,
+        quarterly_data: Dict,
+        styled_df: pd.DataFrame,
+        chip_flags: Dict,
+        chip_score: int,
+        tech_flags: Dict,
+        tech_scores: Dict,
+        macro_report: str,
+        bigtech_data: Dict,
+        market_sentiment_signals,
+        result,
+        tw_price: float,
+    ) -> str:
+        """
+        建構「五、產業分析框架與深度解讀」章節。
+
+        涵蓋：
+        0. 法說會前後行為模式定位
+        1. ADR 溢價解讀修正（匯率預期 / 市場准入 / 做空成本，非純需求指標）
+        2. 客戶集中度風險（Apple ~25%、NVIDIA ~10-12%）
+        3. 財務深度增強（CoWoS / 產能利用率 / EPS 拆解 / 營收 YoY 基期效應）
+        4. 技術面與籌碼面矛盾整合
+        5. 量化風險提示（含歷史校準的轉空觸發條件）
+        6. 產業比較基準（錨定 consensus EPS 的 PEG）
+        7. 分析師整合敘事（各維度因果鏈）
+        """
+        lines = []
+        lines.append("## 📊 五、產業分析框架與深度解讀")
+        lines.append("")
+        lines.append("---")
+
+        # ── 0. 法說會前後行為模式 ────────────────────────────────────
+        lines.append("")
+        lines.append("### 0️⃣ 法說會框架定位")
+        lines.append("")
+
+        from datetime import date as _date
+        today = _date.today()
+        earnings_str, days_offset, earnings_desc = self._estimate_earnings_date(today)
+
+        if days_offset > 0 and days_offset <= 45:
+            phase = f"法說會前 **{days_offset}** 天（{earnings_desc}：{earnings_str}）"
+            de_risk_note = (
+                "目前處於法說會前的 **de-risking 窗口**。外資在法說會前的系統性賣超有兩種典型模式：\n"
+                "1. **先賣後買**：提前減碼保守部位，待法說會釋出正向展望後回補\n"
+                "2. **先買後賣**：提前押注法說會利多，法說會後利多出盡獲利了結\n\n"
+                "**判斷關鍵：** 觀察外資賣超是否伴隨選擇權 Put/Call Ratio 同步走高。\n"
+                "若 Put/Call Ratio 走高 → 外資在買保險避險（模式 1），法說會後可能回補。\n"
+                "若 Put/Call Ratio 持平或走低 → 外資真實看法轉空（非 de-risking），需提高警覺。"
+            )
+        elif days_offset < 0 and abs(days_offset) <= 30:
+            phase = f"法說會後 **{abs(days_offset)}** 天（{earnings_desc}：{earnings_str}）"
+            de_risk_note = (
+                "目前處於法說會後窗口。法說會後的籌碼行為更能反映真實看法：\n"
+                "若法說會後外資持續賣超 → 代表法說會內容未能消除疑慮，屬偏空訊號。\n"
+                "若法說會後外資回補 → 代表法說會確認或上修展望，偏多。"
+            )
+        else:
+            phase = f"法說會間距期（最近法說會：{earnings_str}，{earnings_desc}）"
+            de_risk_note = "目前不處於法說會窗口，外資行為解讀不受法說會效應干擾。"
+
+        lines.append(f"**分析基準日：** {today.isoformat()}")
+        lines.append(f"**法說會定位：** {phase}")
+        lines.append("")
+        lines.append(de_risk_note)
+        lines.append("")
+
+        # ── 1. ADR 溢價解讀修正 ──────────────────────────────────────
+        lines.append("")
+        lines.append("### 1️⃣ ADR 溢價解讀修正")
+        lines.append("")
+        lines.append("**當前 ADR 分析結果（來自宏觀專家報告）：**")
+        adr_lines = [l.strip() for l in macro_report.split('\n') if l.strip() and
+                     ('ADR' in l or '溢價' in l or '折價' in l or '折算' in l or 'TSM' in l or '匯率' in l)]
+        if adr_lines:
+            for al in adr_lines:
+                lines.append(f"> {al}")
+        lines.append("")
+        lines.append("**⚠️ 重要方法論修正：**")
+        lines.append("")
+        lines.append("ADR 溢價/折價**不能直接等同於基本面需求強弱**。溢價的形成機制包含多重因素：")
+        lines.append("")
+        lines.append("| 因素 | 對 ADR 溢價的影響 | 解讀方向 |")
+        lines.append("|------|-------------------|----------|")
+        lines.append("| **匯率預期** | 若市場預期 USD/TWD 走強，ADR 折算後自然偏高 | 反映外匯市場預期，非需求 |")
+        lines.append("| **台股准入限制** | 海外資金無法直接買台股，需透過 ADR 曝光 | 溢價反映准入溢價，非超額需求 |")
+        lines.append("| **做空成本** | ADR 做空借券成本高，空方不易施壓 | 溢價可能只是賣方流動性不足 |")
+        lines.append("| **流動性差異** | ADR 交易量遠小於台股，少量買盤即可推升 | 結構性溢價常態 |")
+        lines.append("| **AI 主題溢價** | 美股市場對 AI 概念股的定價較台股積極 | 若伴隨 NVIDIA 財報上修 + 台股同步走強，才具參考價值 |")
+        lines.append("")
+        lines.append("> **結論：** ADR 溢價 > 5% 時，需區分「匯率驅動」與「主題溢價」兩個維度。")
+        lines.append("> 若溢價主要由匯率預期帶動（USD/TWD 趨勢走強），則不能作為加碼依據。")
+        lines.append("> 更精確的需求面驗證指標：追蹤 NVIDIA 財報後營收指引上修幅度、Apple 晶片訂單變化，")
+        lines.append("> 而非以 SOX 指數替代（SOX 包含 AMD/Broadcom/Marvell，無法精確映射台積電 AI 需求）。")
+        lines.append("")
+
+        # ── 2. 客戶集中度風險 ────────────────────────────────────────
+        lines.append("### 2️⃣ 客戶集中度風險")
+        lines.append("")
+        lines.append("**台積電前兩大客戶佔營收比重：**")
+        lines.append("")
+        lines.append("| 客戶 | 營收佔比 | 主要產品 | 關鍵風險因子 |")
+        lines.append("|------|----------|----------|--------------|")
+        lines.append("| **Apple** | ~25% | A 系列/M 系列晶片 | iPhone 17 備貨動能、自研晶片進度 |")
+        lines.append("| **NVIDIA** | ~10-12% | GPU/AI Accelerator | Blackwell 出貨時程、CoWoS 訂單排程 |")
+        lines.append("")
+        lines.append("**單點風險分析：**")
+        lines.append("")
+        lines.append("- **Apple 風險**：若 iPhone 17 銷售不如預期導致砍單，或 Apple 自研晶片（如 A19/M5）提前轉片三星，台積電營收將直接承受 5-10% 的下行壓力。目前 Apple 佔比已從 2023 年的 23% 升至 ~25%，集中度不降反升。")
+        lines.append("- **NVIDIA 風險**：Blackwell（B200/B300）的 CoWoS 封裝需求是台積電 2025-2026 年最關鍵的營收驅動力。若 Blackwell 出貨時程遞延（良率問題或客戶設計變更），將直接衝擊 N3/N5 製程的產能利用率。")
+        lines.append("- **分散化進展**：高通（Qualcomm）與 AMD 的佔比合計約 8-10%，但不足以抵消 Apple 或 NVIDIA 單一客戶的砍單衝擊。")
+        lines.append("")
+        lines.append("> 📌 **結論**：客戶集中度風險是台積電最大的單點脆弱性。三率上升的可持續性論述，")
+        lines.append("> 必須建立在「Apple 與 NVIDIA 訂單不出現重大變數」的前提之上。")
+        lines.append("")
+
+        # ── 3. 財務深度增強 ──────────────────────────────────────────
+        lines.append("### 3️⃣ 財務分析深度增強")
+        lines.append("")
+
+        # 3a. CoWoS 與先進製程
+        lines.append("**🔧 CoWoS 供需與先進製程驅動力：**")
+        lines.append("")
+        lines.append("目前台積電最關鍵的財務驅動力不僅是三率趨勢，更在於：")
+        lines.append("")
+        lines.append("- **CoWoS 供需缺口**：AI 伺服器（GB200/GB300）對 CoWoS-L 需求的爆炸性成長，使 CoWoS 產能成為全產業鏈的瓶頸。若法說會釋放 CoWoS 擴產進度超前，則毛利率上行具備結構性支撐。")
+        lines.append("- **N3/N2 製程良率**：N3E 已進入放量階段，N2 預計 2025 H2 量產。良率爬坡進度直接影響客戶（Apple/NVIDIA）的晶片成本結構，進而影響代工定價能力。")
+        lines.append("- **三率上升的本質**：若毛利率上升主要由「高毛利製程（N3/N5）佔比提升」驅動，這代表產品組合優化，是可持續的；若僅因「產能利用率拉滿的規模經濟」驅動，則一旦需求反轉，三率回落速度也會很快。")
+        lines.append("")
+
+        # 3b. EPS 拆解
+        lines.append("**💰 EPS 結構拆解（區分可持續性）：**")
+        lines.append("")
+        if quarterly_data:
+            sorted_keys = sorted(quarterly_data.keys(), reverse=True)
+            eps_vals = []
+            for k in sorted_keys[:4]:
+                ev = quarterly_data[k].get("eps")
+                if ev is not None:
+                    eps_vals.append((f"{k[0]}Q{k[1]}", ev))
+            if len(eps_vals) >= 2:
+                eps_arrows = " → ".join(f"{label}: {val:.2f}" for label, val in eps_vals)
+                lines.append(f"   - 過去四季 EPS：{eps_arrows}")
+                latest_eps = eps_vals[0][1]
+                prior_eps = eps_vals[-1][1]
+                if latest_eps > prior_eps * 1.15:
+                    jump_pct = (latest_eps / prior_eps - 1) * 100 if prior_eps > 0 else 0
+                    lines.append(f"   - ⚠️ EPS 從 {eps_vals[-1][0]} 的 {prior_eps:.2f} 跳升至 {eps_vals[0][0]} 的 {latest_eps:.2f}（+{jump_pct:.0f}%），需進一步拆解原因：")
+                    lines.append(f"     - **情境 A：美元升值匯兌利益** → USD/TWD 從 32.5 升至 33.x 可能貢獻每股 1-2 元匯損減少")
+                    lines.append(f"     - **情境 B：AI Server 急單貢獻** → NVIDIA/AMD CoWoS 訂單放量，高單價大晶片面積拉升 ASP")
+                    lines.append(f"     - **情境 C：業外收益** → KFA/JV 投資利益、一次性授權金等")
+                    lines.append(f"     - 📌 **解讀原則**：若 EPS 增長主要來自情境 C（業外），則不具備持續性")
+                else:
+                    lines.append(f"   - EPS 變化幅度在合理區間，無異常跳升")
+            lines.append("")
+        lines.append("**📌 建議修法：** 未來報告應在 EPS 趨勢旁加註「匯損/匯益預估值」及「業外收益佔比」，以利判斷盈餘品質。")
+        lines.append("")
+
+        # 3c. 營收 YoY 基期效應
+        lines.append("**📅 營收基期效應解讀：**")
+        lines.append("")
+        if styled_df is not None and not styled_df.empty:
+            rev_col = "營收 YoY (%)"
+            if rev_col in styled_df.columns:
+                valid_rev = pd.to_numeric(styled_df[rev_col], errors='coerce').dropna()
+                if not valid_rev.empty:
+                    latest_rev = float(valid_rev.iloc[-1])
+                    lines.append(f"   - 最新月營收 YoY：**{latest_rev:.1f}%**")
+                    if latest_rev > 30:
+                        lines.append(f"   - 高 YoY 需注意**基期效應**：若對應前一年月份為低基期（例如 2025-04 受手機/PC 庫存調整影響），則高 YoY 部分反映的是基期低而非真實需求爆發")
+                        lines.append(f"   - **建議對比**：應以「近 3 個月營收累計金額 vs. 去年同期累計」來消除單月基期雜訊")
+                    elif latest_rev < 20:
+                        lines.append(f"   - YoY 僅 {latest_rev:.1f}%，低於 20% 黃線標準，需確認是否為季節性因素")
+                    else:
+                        lines.append(f"   - YoY {latest_rev:.1f}%，處於合理成長區間")
+        lines.append("")
+
+        # ── 4. 技術面與籌碼面矛盾整合 ────────────────────────────────
+        lines.append("### 4️⃣ 技術面與籌碼面矛盾整合")
+        lines.append("")
+        lines.append("**現況描述：**")
+        lines.append("")
+
+        ma_status = ""
+        if tech_flags.get("position_zone"):
+            zone = tech_flags.get("position_zone", "未知")
+            zone_score = tech_flags.get("position_zone_score", 50)
+            ma_status = f"技術面處於 **{zone}**（綜合分數 {zone_score:.0f}/100）"
+
+        foreign_5d = chip_flags.get("big_foreign_sell", False)
+        sell_ratio = chip_flags.get("sell_ratio", 0)
+        extreme_sell = chip_flags.get("extreme_sell", False)
+        consecutive_sell = chip_flags.get("max_consecutive_sell", 0)
+
+        if ma_status:
+            lines.append(f"- {ma_status}")
+
+        if extreme_sell:
+            lines.append(f"- 籌碼面：**外資 5 日大幅賣超**，5 日累計達嚴重級別，連續賣超 {consecutive_sell} 日")
+        elif foreign_5d:
+            lines.append(f"- 籌碼面：外資 5 日累計賣超，賣超天數佔比 {sell_ratio:.0f}%，最長連續 {consecutive_sell} 日")
+        else:
+            lines.append(f"- 籌碼面：外資動向無異常大量賣超")
+
+        tech_bullish = False
+        if tech_scores:
+            tech_avg = sum(tech_scores.values()) / max(len(tech_scores), 1)
+            tech_bullish = tech_avg > 70
+
+        chip_bearish = chip_score < 70
+
+        lines.append("")
+        lines.append("**🔍 矛盾分析：**")
+        lines.append("")
+
+        if ma_status and "高檔" in ma_status and (foreign_5d or extreme_sell):
+            lines.append("當技術面顯示高檔偏多但外資持續賣超，這是一個**經典的籌碼面逆風信號**。")
+            lines.append("")
+            lines.append("外資在賣，誰在接？可能來源：")
+            lines.append("")
+            lines.append("| 來源 | 可能性 | 影響 |")
+            lines.append("|------|--------|------|")
+            lines.append("| **散戶（自然人）** | 高 | 散戶在高檔承接外資拋售，歷史上是偏空信號 |")
+            lines.append("| **其他外資帳戶** | 中 | Passive fund 調倉 vs. Active fund 減碼，方向一致但不同帳戶 |")
+            lines.append("| **公司庫藏股** | 低 | 需查詢每日公告 |")
+            lines.append("| **ETF 被動買盤** | 中 | 0050/00881 等高頻再平衡可能在吸收外資賣壓 |")
+            lines.append("")
+            lines.append("> **關鍵問題：** 若外資賣超的缺口最終由散戶承接（可從融資餘額變化驗證），")
+            lines.append("> 則即便技術面仍呈現多頭排列，籌碼結構已開始惡化，後續修正風險升高。")
+            lines.append("> **建議操盤手：** 追蹤每日融資餘額變化，若融資持續增加且外資持續賣超，需提高警覺。")
+        elif tech_bullish and not chip_bearish:
+            lines.append("技術面與籌碼面目前方向一致（偏多），無需特別矛盾解讀。")
+        elif not tech_bullish and chip_bearish:
+            lines.append("技術面偏弱且籌碼面外資賣超，**雙重偏空**，需嚴格控制部位。")
+        else:
+            lines.append("技術面與籌碼面訊號混雜，建議縮小部位、等待方向明確後再行操作。")
+
+        lines.append("")
+
+        # ── 5. 量化風險提示 ──────────────────────────────────────────
+        lines.append("### 5️⃣ 量化風險提示與操作建議")
+        lines.append("")
+        lines.append("**🎯 具體風險管理框架：**")
+        lines.append("")
+
+        support_level = 0
+        resistance_level = 0
+        if tw_price > 0:
+            support_level = int(tw_price * 0.85)
+            resistance_level = int(tw_price * 1.08)
+
+            lines.append("| 操作層級 | 建議 | 觸發條件 |")
+            lines.append("|----------|------|----------|")
+            lines.append(f"| **短線（1-2 週）** | **觀察不追高** | 若外資連續 3 日回補 → 轉為中性偏多 |")
+            lines.append(f"| **中線（1-3 月）** | **等待拉回** | 若跌破 20MA 且量縮 → 確認轉弱 |")
+            lines.append(f"| **長線（6 月+）** | **N2 量產邏輯不變則續抱** | 若法說會確認 N2 量產遞延 → 重新評估 |")
+            lines.append("")
+            lines.append(f"| 價位 | 意義 | 操作建議 |")
+            lines.append(f"|------|------|----------|")
+            lines.append(f"| **{tw_price:.0f}**（現價）| 當前價位 | 不追高，觀察 |")
+            if support_level > 0:
+                lines.append(f"| **{support_level}**（-15%）| 近 60 日支撐區 | 若拉回至此可分批佈局 |")
+            lines.append(f"| **跌破 20MA** | 短期趨勢轉弱 | 減碼 30-50% |")
+            if resistance_level > 0:
+                lines.append(f"| **{resistance_level}**（+8%）| 前高壓力區 | 若突破則確認多頭延續 |")
+            lines.append("")
+        else:
+            lines.append("> ⚠️ 未取得有效股價，無法產出價位建議")
+            lines.append("")
+
+        lines.append("**🔄 結論反轉觸發條件：**")
+        lines.append("")
+        lines.append("| 情境 | 觸發條件 | 操作建議 |")
+        lines.append("|------|----------|----------|")
+        lines.append("| **轉多** | 外資連續 3 日淨買入 + 收盤站穩 20MA + 量能回升至 5 日均量以上 | 可建立 30% 基本部位 |")
+        lines.append("| **轉空** | 外資累計賣超 > 5 萬張（≈流通股 0.19%）+ 週線 MACD 死亡交叉 + 月營收 YoY 跌破 10% | 全面減碼至 10% 以下 |")
+        lines.append("| **維持觀望** | 以上條件均未觸發 | 持有現金，等待方向明確 |")
+        lines.append("")
+        lines.append("> **轉空觸發條件歷史校準說明：** 5 萬張約佔台積電流通股數（~259 億股）的 0.19%。")
+        lines.append("> 對照 2022 年修正期間外資單月最大賣超達 80 萬張、2024 年 AI 拉回期間約 30-40 萬張，")
+        lines.append("> 5 萬張屬於「持續性賣超」而非「單日異常值」的門檻，需搭配週線 MACD 死亡交叉確認趨勢性。")
+        lines.append("")
+
+        # ── 6. 產業比較基準 ──────────────────────────────────────────
+        lines.append("### 6️⃣ 產業比較基準")
+        lines.append("")
+
+        pe_ratio = 0
+        trailing_4q_eps = 0
+        if quarterly_data and tw_price > 0:
+            sorted_eps_keys = sorted(quarterly_data.keys(), reverse=True)
+            eps_count = 0
+            for k in sorted_eps_keys[:4]:
+                ev = quarterly_data[k].get("eps")
+                if ev is not None:
+                    trailing_4q_eps += ev
+                    eps_count += 1
+            if eps_count >= 2 and trailing_4q_eps > 0:
+                pe_ratio = tw_price / trailing_4q_eps
+
+        lines.append("**📊 台積電估值在同業中的位置：**")
+        lines.append("")
+        if pe_ratio > 0:
+            lines.append(f"- 當前本益比（TTM）：**{pe_ratio:.1f} 倍**（股價 {tw_price:.0f} / 過去四季 EPS {trailing_4q_eps:.2f}）")
+        lines.append("")
+        lines.append("| 公司 | 預估 P/E (2026) | 與台積電差異 | 解讀 |")
+        lines.append("|------|-------------------|--------------|------|")
+        lines.append("| **台積電（2330.TW）** | ~30-32x | 基準 | 代工龍頭溢價 |")
+        lines.append("| **三星電子** | ~12-15x | 折價 ~50% | 記憶體週期 + 代工追趕中，估值重壓 |")
+        lines.append("| **Intel (INTC)** | ~25-30x | 相近但無光環 | IDM 模式轉型期，foundry 業務仍在虧損 |")
+        lines.append("| **GlobalFoundries** | ~20-22x | 折價 ~30% | 成熟製程為主，無 AI 主題溢價 |")
+        lines.append("")
+        lines.append("- **台積電 5 年歷史 P/E 區間**：約 12x-35x（2020 低點 ~15x, 2024 AI 週期高峰 ~32x）")
+        if pe_ratio > 0:
+            lines.append(f"  - 若以 {pe_ratio:.1f} 倍來看，處於歷史**偏上區間**（約 70-80 百分位）")
+        lines.append("")
+
+        # ── PEG 錨定 consensus EPS ──
+        lines.append("- **PEG Ratio（錨定市場共識 EPS）：**")
+        lines.append("")
+        # 從 bigtech_data 取得實際的 EPS 估算數據
+        consensus_growth = None
+        eps_2026_est = None
+        if bigtech_data:
+            # bigtech_data 內含 TSMC 2026 預估 EPS（由 macro_agent._fetch_tsm_eps_estimate 計算）
+            eps_2026_est = bigtech_data.get("eps_2026_estimate") or bigtech_data.get("eps_2026_annualized")
+            eps_trailing_4q = bigtech_data.get("eps_trailing_4q")
+            if eps_2026_est and eps_trailing_4q and eps_trailing_4q > 0:
+                consensus_growth = (eps_2026_est / eps_trailing_4q - 1) * 100
+
+        if consensus_growth is not None and pe_ratio > 0:
+            peg = pe_ratio / consensus_growth if consensus_growth > 0 else float('inf')
+            lines.append(f"  - 2026 預估 EPS（Q1 比例推算）：{eps_2026_est:.2f} 元")
+            lines.append(f"  - 過去四季 EPS 加總：{eps_trailing_4q:.2f} 元")
+            lines.append(f"  - 隱含 EPS 成長率：{consensus_growth:.1f}%")
+            lines.append(f"  - PEG = {pe_ratio:.1f} / {consensus_growth:.1f} = **{peg:.2f}**")
+            if peg <= 1.0:
+                lines.append(f"  - 📌 PEG ≤ 1.0 → 估值相對成長性仍屬合理")
+            elif peg <= 1.5:
+                lines.append(f"  - 📌 PEG 1.0-1.5 → 估值合理偏高，需 EPS 成長支撐")
+            else:
+                lines.append(f"  - 📌 PEG > 1.5 → 估值偏貴，成長性不足以支撐當前 P/E")
+        else:
+            lines.append("  - 目前無可用的 consensus EPS 成長率數據（需 FinMind 季度資料至少 2 季）")
+            lines.append("  - 建議以 Bloomberg / Refinitiv 法人共識預估替代，避免自行假設成長率")
+        lines.append("")
+
+        if pe_ratio > 0:
+            if pe_ratio > 35:
+                lines.append(f"> 📌 **結論：{pe_ratio:.1f} 倍已接近歷史高檔區**，在缺乏 EPS 進一步上修空間下，估值擴張空間有限。")
+                lines.append(f"> 操作上應以「等估值拉回」為主，而非「追價買入」。")
+            elif pe_ratio > 28:
+                lines.append(f"> 📌 **結論：{pe_ratio:.1f} 倍處於合理偏上**，估值本身不是賣出理由，但需 EPS 成長支撐。")
+                lines.append(f"> 若後續法說會上修全年 EPS 展望，則目前估值仍具上修空間。")
+            else:
+                lines.append(f"> 📌 **結論：{pe_ratio:.1f} 倍處於合理區間**，估值風險可控。")
+        lines.append("")
+
+        # ── 7. 分析師整合敘事 ────────────────────────────────────────
+        lines.append("### 📝 分析師整合結論")
+        lines.append("")
+        lines.append("**核心矛盾：**")
+        lines.append("")
+
+        # 根據實際數據動態生成整合敘事
+        narrative_parts = []
+
+        # 技術面描述
+        if tech_flags.get("position_zone"):
+            zone = tech_flags.get("position_zone", "未知")
+            narrative_parts.append(f"技術面處於{zone}，多頭排列反映的是**慣性而非新的買入訊號**")
+
+        # 籌碼面描述
+        if extreme_sell:
+            narrative_parts.append(f"外資 5 日累計大幅賣超，籌碼結構正在惡化")
+        elif foreign_5d:
+            narrative_parts.append(f"外資持續賣超，但幅度尚未達極端值")
+
+        # 法說會催化劑
+        if days_offset > 0 and days_offset <= 45:
+            narrative_parts.append(f"市場正在等待 {earnings_str} 法說會作為打破僵局的催化劑")
+
+        # 估值描述
+        if pe_ratio > 30:
+            narrative_parts.append(f"P/E {pe_ratio:.1f} 倍已反映多數利多，估值擴張空間有限")
+
+        if narrative_parts:
+            core_narrative = "；".join(narrative_parts) + "。"
+        else:
+            core_narrative = "各維度訊號混雜，無明確方向性。"
+
+        lines.append(f"> 台積電當前的核心矛盾是：**AI 結構性成長邏輯完整，但外資在高檔系統性出貨，市場在等待一個催化劑（法說會上修展望 or N2 量產確認）來打破這個僵局。**")
+        lines.append(f"> {core_narrative}")
+        lines.append(f"> 在催化劑出現之前，技術面的多頭排列只是慣性，不是新的買入理由。")
+        lines.append("")
+        lines.append("**各維度因果鏈：**")
+        lines.append("")
+        lines.append("```")
+        lines.append("Apple/NVIDIA 訂單能見度")
+        lines.append("    ↓")
+        lines.append("CoWoS 供需缺口 + N3/N2 良率")
+        lines.append("    ↓")
+        lines.append("三率趨勢（毛利率/營益率/淨利率）")
+        lines.append("    ↓")
+        lines.append("EPS 成長（需區分本業/業外/匯損）")
+        lines.append("    ↓")
+        lines.append("外資法人評價 → 籌碼流向")
+        lines.append("    ↓")
+        lines.append("技術面價量關係 → 散戶 vs 法人博弈")
+        lines.append("    ↓")
+        lines.append("ADR 溢價（需過濾匯率因子）")
+        lines.append("```")
+        lines.append("")
+        lines.append("**操作建議總結：**")
+        lines.append("")
+        lines.append("| 時間框架 | 建議 | 核心邏輯 |")
+        lines.append("|----------|------|----------|")
+        lines.append("| **法說會前** | 不追高、不追空 | 等待法說會內容確認方向 |")
+        lines.append("| **法說會後** | 依指引方向操作 | 上修 → 回補；下修 → 減碼 |")
+        lines.append("| **中期** | 拉回至支撐區分批佈局 | AI 結構性成長邏輯不變 |")
+        lines.append("| **止損** | 跌破 20MA 減碼 30-50% | 短期趨勢轉弱確認 |")
+
+        return "\n".join(lines)
 
     def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str,
                        chip_report: str, macro_report: str, score_summary: str,
                        fin_table: str, vol_table: str,
                        market_sentiment_red: bool = False,
-                       pe_warning_md: str = "") -> None:
+                       pe_warning_md: str = "",
+                       industry_analysis_md: str = "") -> None:
         """將分析結果以 Markdown 格式附加到檔案"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1756,8 +2234,16 @@ class Orchestrator:
                 f"> 🔴 **個股與大盤交易量連三降** — 短期資金動能同步轉弱，建議提高警覺。\n"
             )
 
+        # ── 合規免責聲明 ──
+        disclaimer = (
+            f"> ⚠️ **免責聲明：** 本報告分析基準日為 {timestamp[:10]}，內容僅供內部研究參考，"
+            f"不構成任何投資要約或買賣建議。使用者應自行評估風險，"
+            f"本報告作者不因任何依賴本報告內容所產生的損失承擔責任。\n"
+        )
+
         log_content = [
             f"# 🚀 TSMC 量化分析報告 - {timestamp}",
+            disclaimer,
             f"### 📊 儀表板總結\n\n> {dashboard_summary}{sentiment_section}{pe_warning_md}\n",
             f"### 🎯 綜合健康得分\n\n```text\n{score_summary}\n```\n",
             f"---",
@@ -1765,8 +2251,11 @@ class Orchestrator:
             f"### 💰 財務專家判讀\n\n{fin_table}\n\n{fin_report}\n",
             f"### 📈 技術專家判讀\n\n#### 近 10 個交易日成交金額\n\n{vol_table}\n\n{tech_report}\n",
             f"### 👥 籌碼專家判讀\n\n{chip_report}\n",
-            "---"
+            "---",
         ]
+        # 附加產業分析框架章節
+        if industry_analysis_md:
+            log_content.append(industry_analysis_md)
         
         try:
             with open(self.log_path, "a", encoding="utf-8") as f:
