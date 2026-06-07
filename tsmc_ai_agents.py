@@ -643,8 +643,8 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         signal = macd.ewm(span=9, adjust=False).mean()
         return macd, signal
 
-    def _format_reversal_signals(self, df: pd.DataFrame) -> Tuple[str, bool, Dict[str, int]]:
-        """判斷短中長期反轉向下訊號。"""
+    def _format_reversal_signals(self, df: pd.DataFrame) -> Tuple[str, bool, Dict[str, int], List[str]]:
+        """判斷短中長期反轉向下訊號。回傳 (report, monthly_break, penalties, vol_price_warnings)"""
         YELLOW = "\033[1;33m"
         RESET = "\033[0m"
         penalties = {"early": 0, "short": 0, "mid": 0, "long": 0}
@@ -811,7 +811,7 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         result = "\n   ".join(report_lines)
         if support_resistance_line:
             result += support_resistance_line
-        return result, monthly_break, penalties
+        return result, monthly_break, penalties, vol_price_warnings
 
     def _enrich_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """在 df 上計算所有技術指標欄位（均線、布林通道、KD 等）。"""
@@ -836,18 +836,19 @@ class MarketDynamicsAgent(TSMCBaseAgent):
 
         return df
 
-    def analyze_sentiment(self, df: pd.DataFrame) -> Tuple[str, Dict, Dict[str, int]]:
+    def analyze_sentiment(self, df: pd.DataFrame) -> Tuple[str, Dict, Dict[str, int], bool]:
         report_prefix = f"數據來源: {self.source}\n分析邏輯: {self.logic}\n結論: "
 
         if df.empty or len(df) < 5:
-            return f"{report_prefix}資料不足", {}, {"early": 0, "short": 0, "mid": 0, "long": 0}
+            return f"{report_prefix}資料不足", {}, {"early": 0, "short": 0, "mid": 0, "long": 0}, False
 
         # 先計算所有技術指標欄位
         df = self._enrich_indicators(df)
 
         chart_path = self._generate_technical_chart(df)
         ma20_detail, crossed_below = self._format_20ma_deviation(df)
-        reversal_detail, monthly_break, penalties = self._format_reversal_signals(df)
+        reversal_detail, monthly_break, penalties, vol_price_warnings = self._format_reversal_signals(df)
+        vol_price_divergence = len(vol_price_warnings) > 0
 
         # 新增指標報告
         ma_status = self._check_ma_convergence(df)
@@ -959,13 +960,13 @@ class MarketDynamicsAgent(TSMCBaseAgent):
             tech_flags["high_zone_warnings"] = high_zone_health["warnings"]
 
         if insights:
-            return f"{report_prefix}{' | '.join(insights)}{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores
+            return f"{report_prefix}{' | '.join(insights)}{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores, vol_price_divergence
         if tsmc_declining and mkt_declining:
-            return f"{report_prefix}市場極度觀望：個股與大盤呈現連鎖縮量。{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores
+            return f"{report_prefix}市場極度觀望：個股與大盤呈現連鎖縮量。{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores, vol_price_divergence
         elif tsmc_declining:
-            return f"{report_prefix}警訊：台積電成交量持續萎縮，資金動能轉弱。{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores
+            return f"{report_prefix}警訊：台積電成交量持續萎縮，資金動能轉弱。{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores, vol_price_divergence
 
-        return f"{report_prefix}量能結構尚屬正常。{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores
+        return f"{report_prefix}量能結構尚屬正常。{detail_suffix}\n   {zone_section}{image_md}", tech_flags, scores, vol_price_divergence
 
 class InstitutionalInvestorAgent(TSMCBaseAgent):
     """
@@ -1516,11 +1517,11 @@ class Orchestrator:
         """
         # ── Step 1: 各 Agent 分析 ──
         fin_report = self.fin_agent.analyze_margins(quarterly_data)
-        tech_report, tech_flags, tech_scores = self.tech_agent.analyze_sentiment(trading_df)
+        tech_report, tech_flags, tech_scores, vol_price_divergence = self.tech_agent.analyze_sentiment(trading_df)
         chip_report, chip_flags, chip_score = self.chip_agent.analyze_flow(chip_data, trading_df)
         tw_price = trading_df['台積電收盤價'].iloc[-1] if not trading_df.empty else 0
         macro_report, macro_score = self.macro_agent.analyze_global_risk(tw_price)
-        bigtech_data, bigtech_report = self.macro_agent.analyze_bigtech_fundamentals()
+        bigtech_data, bigtech_report = self.macro_agent.analyze_bigtech_fundamentals(quarterly_data)
 
         # ── Step 2: 建構信號 ──
         financial_signals = self._build_financial_signals(quarterly_data, styled_df)
@@ -1531,6 +1532,7 @@ class Orchestrator:
             nvda_revenue_yoy_quarters=bigtech_data.get("nvda_revenue_yoy_quarters", []),
         )
         tech_signals = TechnicalSignals(scores=tech_scores, flags=tech_flags)
+        chip_flags["vol_price_divergence"] = vol_price_divergence
         chip_signals = ChipSignals(score=chip_score, flags=chip_flags)
 
         # 市場情緒信號
@@ -1564,11 +1566,30 @@ class Orchestrator:
             f"● 綜合健康得分: {comprehensive_score:.1f}/100"
         )
 
+        # EPS 趨勢摘要
+        eps_summary = ""
+        if quarterly_data:
+            sorted_eps_keys = sorted(quarterly_data.keys(), reverse=True)
+            eps_vals = []
+            for k in sorted_eps_keys[:4]:
+                ev = quarterly_data[k].get("eps")
+                if ev is not None:
+                    eps_vals.append((f"{k[0]}Q{k[1]}", ev))
+            if len(eps_vals) >= 2:
+                eps_arrows = " → ".join(f"{label}: {val:.2f}" for label, val in eps_vals)
+                if eps_vals[0][1] > eps_vals[-1][1]:
+                    trend_icon = "⬆"
+                elif eps_vals[0][1] < eps_vals[-1][1]:
+                    trend_icon = "⬇"
+                else:
+                    trend_icon = "→"
+                eps_summary = f"\n   EPS 趨勢：{eps_arrows}（{trend_icon}）"
+
         # 控制台輸出
         print("\n=== [AI Agent 聯手分析報告] ===")
         print(f"[宏觀專家] > {macro_report}")
         print()
-        print(f"[財務專家] > {fin_report}")
+        print(f"[財務專家] > {fin_report}{eps_summary}")
         print()
         print(f"[技術專家] > {tech_report}")
         print()
@@ -1624,6 +1645,35 @@ class Orchestrator:
             for bw in bigtech_warnings:
                 print(f"   · {bw}")
 
+        # ── 本益比警告 ──────────────────────────────────────────
+        # 計算本益比 = 股價 / 過去四季 EPS 加總
+        current_price = tw_price  # 已取得於 Step 1
+        if quarterly_data and current_price > 0:
+            sorted_eps_keys = sorted(quarterly_data.keys(), reverse=True)
+            trailing_4q_eps = 0.0
+            eps_count = 0
+            for k in sorted_eps_keys[:4]:
+                ev = quarterly_data[k].get("eps")
+                if ev is not None:
+                    trailing_4q_eps += ev
+                    eps_count += 1
+            if eps_count >= 2 and trailing_4q_eps > 0:
+                pe_ratio = current_price / trailing_4q_eps
+                # 判斷各面向是否同時偏空
+                has_vol_price_div = chip_flags.get("vol_price_divergence", False)
+                has_chip_sell = chip_flags.get("big_foreign_sell", False) or chip_flags.get("extreme_sell", False)
+                has_bad_sentiment = market_sentiment_signals.score <= 60
+
+                if pe_ratio > 31 and has_vol_price_div and has_chip_sell and has_bad_sentiment:
+                    print(f"\033[1;37;41m【🚨 高檔全面警示 🚨】\033[0m")
+                    print(f"\033[1;31m   本益比 {pe_ratio:.1f} 倍（股價 {current_price:.0f} / 過去四季 EPS {trailing_4q_eps:.2f}）> 31 倍\033[0m")
+                    print(f"\033[1;31m   + 技術面量價背離\033[0m")
+                    print(f"\033[1;31m   + 籌碼面外資賣超\033[0m")
+                    print(f"\033[1;31m   + 市場情緒量能衰退（{market_sentiment_signals.score}/100）\033[0m")
+                    print(f"\033[1;33m   → 建議：高檔全面偏空，留意追高風險\033[0m")
+                elif pe_ratio > 31:
+                    print(f"\n⚠️ 本益比偏高（>31 倍）：{pe_ratio:.1f} 倍（股價 {current_price:.0f} / 過去四季 EPS {trailing_4q_eps:.2f}）")
+
         # 市場情緒警示
         ms = market_sentiment_signals
         if ms.score <= 60:
@@ -1650,9 +1700,42 @@ class Orchestrator:
         fin_table_md = self._df_to_md_table(styled_df)
         vol_table_md = self._df_to_md_table(trading_df.tail(10)[["日期", "台積電成交金額", "大盤成交金額"]])
 
+        # 本益比警告（寫入日誌用，不含 ANSI escape code）
+        pe_warning_md = ""
+        if quarterly_data and current_price > 0:
+            sorted_eps_keys = sorted(quarterly_data.keys(), reverse=True)
+            trailing_4q_eps = 0.0
+            eps_count = 0
+            for k in sorted_eps_keys[:4]:
+                ev = quarterly_data[k].get("eps")
+                if ev is not None:
+                    trailing_4q_eps += ev
+                    eps_count += 1
+            if eps_count >= 2 and trailing_4q_eps > 0:
+                pe_ratio = current_price / trailing_4q_eps
+                has_vol_price_div = chip_flags.get("vol_price_divergence", False)
+                has_chip_sell = chip_flags.get("big_foreign_sell", False) or chip_flags.get("extreme_sell", False)
+                has_bad_sentiment = market_sentiment_signals.score <= 60
+
+                if pe_ratio > 31 and has_vol_price_div and has_chip_sell and has_bad_sentiment:
+                    pe_warning_md = (
+                        f"\n\n### 🚨 高檔全面警示\n\n"
+                        f"> **本益比 {pe_ratio:.1f} 倍**（股價 {current_price:.0f} / 過去四季 EPS {trailing_4q_eps:.2f}）> 31 倍  \n"
+                        f"> + 技術面量價背離  \n"
+                        f"> + 籌碼面外資賣超  \n"
+                        f"> + 市場情緒量能衰退（{market_sentiment_signals.score}/100）  \n"
+                        f"> → **建議：高檔全面偏空，留意追高風險**\n"
+                    )
+                elif pe_ratio > 31:
+                    pe_warning_md = (
+                        f"\n\n### ⚠️ 本益比偏高（>31 倍）\n\n"
+                        f"> 本益比 **{pe_ratio:.1f} 倍**（股價 {current_price:.0f} / 過去四季 EPS {trailing_4q_eps:.2f}）\n"
+                    )
+
         # 寫入日誌
         self._append_to_log(dashboard_summary, fin_report, tech_report, chip_report, macro_report,
-                            score_summary, fin_table_md, vol_table_md, market_sentiment_red)
+                            score_summary, fin_table_md, vol_table_md, market_sentiment_red,
+                            pe_warning_md)
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
         return dashboard_summary
@@ -1660,7 +1743,8 @@ class Orchestrator:
     def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str,
                        chip_report: str, macro_report: str, score_summary: str,
                        fin_table: str, vol_table: str,
-                       market_sentiment_red: bool = False) -> None:
+                       market_sentiment_red: bool = False,
+                       pe_warning_md: str = "") -> None:
         """將分析結果以 Markdown 格式附加到檔案"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1674,7 +1758,7 @@ class Orchestrator:
 
         log_content = [
             f"# 🚀 TSMC 量化分析報告 - {timestamp}",
-            f"### 📊 儀表板總結\n\n> {dashboard_summary}{sentiment_section}\n",
+            f"### 📊 儀表板總結\n\n> {dashboard_summary}{sentiment_section}{pe_warning_md}\n",
             f"### 🎯 綜合健康得分\n\n```text\n{score_summary}\n```\n",
             f"---",
             f"### 🌏 宏觀專家判讀\n\n{macro_report}\n",

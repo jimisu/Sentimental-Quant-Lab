@@ -411,7 +411,7 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
     sorted_quarters = sorted(quarterly_data.keys())
     for idx, (year, quarter) in enumerate(sorted_quarters):
         d = quarterly_data[(year, quarter)]
-        
+
         # 營收
         revenue = get_financial_value(d, REVENUE_KEYS)
         # 毛利
@@ -425,6 +425,8 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
             origin_keywords=NET_INCOME_ORIGIN_KEYWORDS,
             exclude_origin_keywords=NET_INCOME_ORIGIN_EXCLUDE_KEYWORDS,
         )
+        # EPS
+        eps = get_financial_value(d, ["EPS"])
 
         if revenue is None or revenue == 0:
             continue
@@ -439,7 +441,7 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
         if idx > 0:
             p_key = sorted_quarters[idx - 1]
             p_d = quarterly_data[p_key]
-            
+
             prev_revenue = get_financial_value(p_d, REVENUE_KEYS)
             prev_gross_profit = get_financial_value(p_d, GROSS_PROFIT_KEYS)
             prev_operating_income = get_financial_value(p_d, OPERATING_INCOME_KEYS)
@@ -467,6 +469,7 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
             "gross_drop": gross_drop,
             "op_drop": op_drop,
             "net_drop": net_drop,
+            "eps": eps,
         }
 
     write_circular_cache(
@@ -807,6 +810,7 @@ def build_dataframe(
     gross_drop_list = []
     op_drop_list = []
     net_drop_list = []
+    eps_list = []
     for ym in months:
         year = int(ym[:4])
         month = int(ym[5:7])
@@ -820,6 +824,7 @@ def build_dataframe(
             gross_drop_list.append(qm["gross_drop"])
             op_drop_list.append(qm["op_drop"])
             net_drop_list.append(qm["net_drop"])
+            eps_list.append(qm.get("eps"))
         else:
             gross_margin_list.append(None)
             operating_margin_list.append(None)
@@ -827,6 +832,7 @@ def build_dataframe(
             gross_drop_list.append(None)
             op_drop_list.append(None)
             net_drop_list.append(None)
+            eps_list.append(None)
 
     # 建立 DataFrame
     df = pd.DataFrame(
@@ -836,6 +842,7 @@ def build_dataframe(
             "毛利率 (%)": gross_margin_list,
             "營業利益率 (%)": operating_margin_list,
             "稅後淨利率 (%)": net_margin_list,
+            "EPS (元)": eps_list,
             "_gross_drop": gross_drop_list,
             "_op_drop": op_drop_list,
             "_net_drop": net_drop_list,
@@ -909,6 +916,7 @@ def print_dashboard(
     table.add_column("毛利率 (%)", justify="right")
     table.add_column("營業利益率 (%)", justify="right")
     table.add_column("稅後淨利率 (%)", justify="right")
+    table.add_column("EPS (元)", justify="right")
 
     def format_number(value) -> str:
         return "-" if pd.isna(value) else f"{value:.2f}"
@@ -942,12 +950,17 @@ def print_dashboard(
         elif row["稅後淨利率 色彩"] == "yellow":
             net_text = f"[yellow]{net_text}[/yellow]"
 
+        # EPS
+        eps_val = row.get("EPS (元)")
+        eps_text = "-" if pd.isna(eps_val) else f"{eps_val:.2f}"
+
         table.add_row(
             str(row["月份"]),
             rev_text,
             gross_text,
             op_text,
             net_text,
+            eps_text,
         )
 
     console.print(table)
