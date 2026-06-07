@@ -4,6 +4,11 @@
 
 ---
 
+## [2026-06-07 23:10]
+- **Docs**: 整合 `GEMINI_RULES.md` 與 `CODEX_RULES.md`，新增共同規範 `AI_COLLABORATION_RULES.md`。
+- **Changed**: 將 `GEMINI_RULES.md` 與 `CODEX_RULES.md` 改為工具入口文件，避免多 AI 協作規則重複與衝突。
+- **Changed**: 更新 `PROJECT_ARCHITECTURE.md` 與 `DEVELOPMENT_FLOW.md`，將共同協作規範列為主要參考。
+
 ## [2026-06-03 23:55]
 - **Added**: 在 `tsmc_signal_dashboard.py` 加入 `--test` 參數與自測模式，支援目錄權限、Token 狀態與 API 連線診斷。
 

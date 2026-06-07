@@ -28,8 +28,9 @@ Sentimental-Quant-Lab/
 ├── README.md                  # 項目概覽和快速開始指南
 ├── DEVELOPMENT_FLOW.md        # 多 AI 協作開發流程規範
 ├── AI_HANDOFF.md              # AI 輪班交接報告
-├── CODEX_RULES.md             # Codex / GitHub Copilot 特定規則
-├── GEMINI_RULES.md            # Gemini Code Assist 特定規則
+├── AI_COLLABORATION_RULES.md  # Gemini/Codex 共用協作規範
+├── CODEX_RULES.md             # Codex / GitHub Copilot 入口規範
+├── GEMINI_RULES.md            # Gemini Code Assist 入口規範
 └── .gitignore                 # Git 忽略檔案
 ```
 
@@ -272,7 +273,7 @@ pip install -r requirements.txt
 
 ## 🤖 多 AI 代理程式協同開發指南
 
-為確保專案在 Gemini Code Assist、Claude Code CLI 和 Codex 之間的協同開發安全且高效，所有代理程式應遵守以下指南：
+為確保專案在 Gemini Code Assist、Claude Code CLI 和 Codex 之間的協同開發安全且高效，所有代理程式應以 `AI_COLLABORATION_RULES.md` 為共同規範，並遵守以下指南：
 
 ### 架構防禦與風格一致性
 - **禁止未授權重構**：未經明確授權，不得拆分現有穩定模組（例如不得將 `tsmc_ai_agents.py` 拆分為多個檔案）或修改底層單例設計（如 `config.py` 中的配置）。
@@ -300,7 +301,7 @@ pip install -r requirements.txt
   2. **已知問題**：開發中遇到的障礙或尚未解決的 Bug
   3. **下一步指示**：明確建議下一個接手的 AI 應該執行的具體任務
 - **交接觸發關鍵字**：當使用者說出「下班了」、「交班」、「任務結束」等關鍵字時，AI 必須自動執行交接流程
-- **開發流程文件**：每次 SessionStart 時自動載入 `CLAUDE.md`、`AI_HANDOFF.md`、`CHANGELOG.md`、`DEVELOPMENT_FLOW.md`、`PROJECT_ARCHITECTURE.md` 和 `HANDOFF_PROMPT.md`
+- **開發流程文件**：每次 SessionStart 時自動載入 `AI_COLLABORATION_RULES.md`、`CLAUDE.md`、`AI_HANDOFF.md`、`CHANGELOG.md`、`DEVELOPMENT_FLOW.md`、`PROJECT_ARCHITECTURE.md` 和 `HANDOFF_PROMPT.md`
 
 ### 多 Agent 安全協作重點
 - **資料競爭避免**：統一快取層 (`data_cache.py`) 使用檔案鎖定機制，確保多 Agent 安全讀寫快取
