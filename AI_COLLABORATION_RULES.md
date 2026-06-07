@@ -39,17 +39,40 @@
 2. 更新 `AI_HANDOFF.md` 的目前狀態、已完成工作、待辦事項、測試狀態與下一步建議。
 3. 生成簡潔交接摘要，提醒使用者提交或推送尚未完成的變更。
 
-## 6. 工具特定入口
+## 6. 多 Agent 併發衝突處理
+
+當多個 AI Agent 可能同時操作同一專案時，必須遵守以下規則：
+
+### 6.1 檔案修改串行化
+- **同一檔案同時只允許一個 AI 修改**：若 `AI_HANDOFF.md` 或 `git status` 顯示有其他 AI 正在進行中的未提交變更，不得修改相同檔案。
+- **優先順序**：先完成當前檔案變更並提交的 Agent 優先；後到的 Agent 必須等待先到的 Agent 完成並提交後，再基於最新 `git pull` 結果繼續。
+- **不同檔案可並行**：若兩個 AI 修改的是完全不同的檔案集（例如 A 改 `tsmc_ai_agents.py`、B 改 `DEVELOPMENT_FLOW.md`），可並行工作，但各自提交前須先 `git pull --rebase` 整合對方變更。
+
+### 6.2 analysis_log.md 寫入保護
+- `analysis_log.md` 採用「讀取全部內容 → 追加新內容 → 原子性覆寫」模式。
+- **多 Agent 不可同時寫入 `analysis_log.md`**：若需寫入，必須在寫入前檢查檔案是否已被其他 Agent 修改（比較 `git status` 或檔案mtime），若有則先 `git pull` 再重試。
+- 若寫入衝突不可避免，後寫入的 Agent 應在日誌中標記 `[Concurrent Write — may overlap with other Agent's entry]`。
+
+### 6.3 快取與圖表目錄安全
+- `local_cache/` 使用環形快取（每個 key 保留 3 份），多 Agent 同時寫入不同 key 是安全的。
+- `charts/` 使用時間戳檔名，多 Agent 同時生成不同圖表是安全的。
+- **但不得刪除其他 Agent 剛生成的檔案**：清理過期檔案時，只刪除超過保留期限的檔案。
+
+### 6.4 衝突升級機制
+- 若兩個 Agent 的修改產生 `git merge conflict`，**不得自行解決衝突**，必須暫停並通知人類工程師處理。
+- 若發現其他 Agent 的變更與自己的修改邏輯矛盾，必須在 `AI_HANDOFF.md` 中標記為「⚠️ 待人類確認的衝突」。
+
+## 7. 工具特定入口
 - `GEMINI_RULES.md`：Gemini Code Assist 的入口文件，應指向本共同規範並保留 Gemini 觸發語。
 - `CODEX_RULES.md`：Codex / GitHub Copilot 的入口文件，應指向本共同規範並保留 Codex 觸發語。
 - 若兩份入口文件與本文件衝突，以本文件為準；若 `AI_HANDOFF.md` 提供更新的分支上下文，以 `AI_HANDOFF.md` 為當前任務上下文。
 
-## 7. 參考文件
+## 8. 參考文件
 執行任務時，依需要參考：
 - `AI_HANDOFF.md`：目前交接狀態與待辦。
 - `DEVELOPMENT_FLOW.md`：多 AI 協作流程規範。
 - `PROJECT_ARCHITECTURE.md`：專案架構與檔案職責。
-- `CLAUDE.md`：技術架構與常用命令。
+- `CLAUDE.md`：Claude Code 入口規範（輕量化入口，技術細節見 `PROJECT_ARCHITECTURE.md`）。
 - `CHANGELOG.md`：專案演進歷史。
 
 ---

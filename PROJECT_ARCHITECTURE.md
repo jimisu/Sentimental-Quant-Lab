@@ -60,32 +60,6 @@ SEC EDGAR XBRL ──→ 大型科技公司 CAPEX 數據 (4-7 家)
           綜合評分 + 儀表板顯示 + analysis_log.md
 ```
 
-## 🔄 數據流架構 (Data Flow)
-
-```
-FinMind API ──┬── TaiwanStockMonthRevenue ──→ 月營收 YoY
-              ├── TaiwanStockFinancialStatements ──→ 季度毛利/營益/淨利
-              └── TaiwanStockInstitutionalInvestorsBuySell ──→ 籌碼資料
-
-TWSE API ─────┬── STOCK_DAY (2330) ──→ 台積電日線 OHLCV
-              └── FMTQIK ──→ 大盤每日成交金額
-
-Yahoo Finance ──→ TSM ADR 價格 + USD/TWD 匯率
-SEC EDGAR XBRL ──→ 大型科技公司 CAPEX 數據 (4-7 家)
-
-所有來源 ─────→ local_cache/ (JSON, 環形快取, 每個 Key 保留 3 份)
-                    ↓
-          tsmc_signal_dashboard.py (主程式進入點)
-                    ↓
-          Orchestrator.run_full_analysis()
-                    ↓
-    ┌──────────┬──────────┬──────────┬──────────┐
-    │ 財務專家  │ 技術專家  │ 籌碼專家  │ 宏觀專家  │
-    └──────────┴──────────┴──────────┴──────────┘
-                    ↓
-          綜合評分 + 儀表板顯示 + analysis_log.md
-```
-
 ## 🔧 核心組件功能說明
 
 ### 1. 主程式: `tsmc_signal_dashboard.py`

@@ -5,7 +5,7 @@ Gemini Code Assist 在參與 `Sentimental-Quant-Lab` 專案時，必須遵循共
 - 主要規範：`AI_COLLABORATION_RULES.md`
 - 目前交接：`AI_HANDOFF.md`
 - 協作流程：`DEVELOPMENT_FLOW.md`
-- 技術架構：`CLAUDE.md`、`PROJECT_ARCHITECTURE.md`
+- 技術架構：`PROJECT_ARCHITECTURE.md`
 - 演進歷史：`CHANGELOG.md`
 
 ## Gemini 特定要求

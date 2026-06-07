@@ -31,7 +31,7 @@ git log --oneline -5
 
 - 👩‍💻 **當前分支：** `[填入目前 Git 分支]`
 - 📝 我已經把本次的開發進度與未竟事宜寫入 `AI_HANDOFF.md`。
-- 🎯 **下一棒提示：** 如果您接下來要切換給 **GitHub Copilot**，請在 IDE 中保持打開 `AI_HANDOFF.md`，並在程式碼中使用 `// TODO:` 註解引導它。
+- 🎯 **下一棒提示：** 如果您接下來要切換給 **GitHub Copilot / Codex**，請參考 `CODEX_RULES.md` 中的「承接檢查清單」，依序執行：確認環境 → 讀取上下文 → 確認接手狀態 → 開始工作。
 - 💾 請執行以下指令完成本輪存檔：
   ```bash
   git add . && git commit -m "chore: claudecode handoff to next AI"

@@ -4,6 +4,15 @@
 
 ---
 
+## [2026-06-08 11:00]
+- **Fixed**: 刪除 `DEVELOPMENT_FLOW.md` 中重複的「開發指令速查」區塊（第 30-51 行與第 7-28 行完全重複）。
+- **Fixed**: 刪除 `PROJECT_ARCHITECTURE.md` 中重複的「數據流架構」ASCII 圖（第 63-86 行與第 38-61 行完全重複）。
+- **Fixed**: 修正 `GEMINI_RULES.md`、`CODEX_RULES.md`、`AI_COLLABORATION_RULES.md` 中 `CLAUDE.md` 的過時引用描述。
+- **Added**: 在 `AI_COLLABORATION_RULES.md` 新增第 6 節「多 Agent 併發衝突處理」，定義檔案修改串行化、analysis_log.md 寫入保護、快取與圖表目錄安全、衝突升級機制。
+- **Added**: 在 `CODEX_RULES.md` 新增「承接檢查清單（Handoff Takeover Steps）」，提供 Codex 接手時的 4 步具體流程。
+- **Updated**: `AI_HANDOFF.md` 待辦事項更新為當前實際狀態。
+- **Updated**: `.claude/HANDOFF_PROMPT.md` 中 Copilot 交接指引改為引用 `CODEX_RULES.md` 承接檢查清單。
+
 ## [2026-06-08 10:45]
 - **Docs**: 完成跨文件內容整合與 commit 準備。
 - **Changed**: 將 `CLAUDE.md` 的數據流、技術指標整合至 `PROJECT_ARCHITECTURE.md`，CLI 指令整合至 `DEVELOPMENT_FLOW.md`。
