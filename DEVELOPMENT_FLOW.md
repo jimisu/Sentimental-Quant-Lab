@@ -46,6 +46,7 @@ python test.py                      # 測試 Yahoo Finance 即時價格
 - **微小增量**：每完成一個獨立的邏輯修改、新增一個小功能或修復一個特定錯誤，AI **必須**立即停止後續動作。
 - **主動提示**：在確認當前變更無誤後，AI **必須主動提示**使用者進行 `git commit`。
 - **規範內容**：提交訊息應包含行為標記（feat, fix, docs, refactor, style）及其具體變更內容。
+- **⛔ 禁止自動 `git push`**：詳細規則見 `AI_COLLABORATION_RULES.md` 第 4 節。任何情況下 AI 不得自行推送，必須由人類明確指令方可執行。
 
 ## 4. AI 輪班交接 (AI Handoff Protocol)
 - **交接檔案**：在切換 AI 開發工具前（或使用者要求時），目前的 AI 必須在根目錄建立或更新 **`AI_HANDOFF.md`**。
