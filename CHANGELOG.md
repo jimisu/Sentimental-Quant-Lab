@@ -4,6 +4,13 @@
 
 ---
 
+## [2026-06-11 16:28]
+- **Added**: 將 `format_tsmc_report.py` 整合進 `Orchestrator`：`_append_to_log()` 寫入成功後自動呼叫 `_generate_formatted_report()`，產出 `reports/tsmc_report_YYYYMMDD_HHMMSS.md`。
+- **Added**: `scripts/format_tsmc_report.py` 仍保留為獨立 CLI 工具，可手動執行。
+
+## [2026-06-11 14:28]
+- **Added**: 新增 `scripts/format_tsmc_report.py`（747 行），將 `analysis_log.md` 最新分析條目轉為固定格式的 TSMC 量化報告，支援 `--input` / `--output` 參數，涵蓋季損益表、BigTech CAPEX、ADR 溢價、法人籌碼等章節。
+
 ## [2026-06-08 11:00]
 - **Fixed**: 刪除 `DEVELOPMENT_FLOW.md` 中重複的「開發指令速查」區塊（第 30-51 行與第 7-28 行完全重複）。
 - **Fixed**: 刪除 `PROJECT_ARCHITECTURE.md` 中重複的「數據流架構」ASCII 圖（第 63-86 行與第 38-61 行完全重複）。
