@@ -188,6 +188,8 @@ class QuarterlyFinancialAgent:
         self,
         process_mix: Optional[Dict] = None,
         capacity_utilization_up: Optional[bool] = None,
+        fx_direction: Optional[str] = None,
+        fx_margin_impact: Optional[float] = None,
     ) -> Dict:
         """
         STEP 2: 三率驅動力判斷。
@@ -198,6 +200,9 @@ class QuarterlyFinancialAgent:
             "q0": {"advanced": 74, "n3": 25},
         }
         若未提供 advanced，會嘗試加總 n2/n3/n5/n7。
+
+        fx_direction: "headwind" | "tailwind" | "neutral" — 匯率方向
+        fx_margin_impact: 匯率對毛利率的估計影響（pp），負值表示台幣升值逆風
         """
         process_mix = process_mix or {}
         q1_mix = process_mix.get("q1") or process_mix.get("previous") or {}
@@ -217,20 +222,41 @@ class QuarterlyFinancialAgent:
         if q0_advanced is not None and q1_advanced is not None:
             advanced_delta = q0_advanced - q1_advanced
 
-        if advanced_delta is not None and advanced_delta > 2:
+        # 匯率逆風加成判斷：若毛利率改善是在台幣升值逆風下達成，結構性驅動力評分上調
+        fx_bonus = (fx_direction == "headwind" and fx_margin_impact is not None and fx_margin_impact < -0.3)
+
+        if advanced_delta is not None and (advanced_delta > 2 or (advanced_delta > 1 and fx_bonus)):
+            label = "🟢 結構性上升，可持續性高"
+            description = f"先進製程營收佔比 QoQ 增加 {advanced_delta:.2f}pp"
+            if fx_bonus:
+                description += (
+                    f"。💡 且在台幣升值逆風下（匯率拖累毛利率約 {abs(fx_margin_impact):.1f}pp）仍達成改善，"
+                    f"代表本業定價能力（Pricing Power）比表面數字更強。"
+                )
+            else:
+                description += "，高於 2pp 門檻。"
             return {
                 "type": "A",
-                "label": "🟢 結構性上升，可持續性高",
-                "description": f"先進製程營收佔比 QoQ 增加 {advanced_delta:.2f}pp，高於 2pp 門檻。",
+                "label": label,
+                "description": description,
                 "advanced_delta": advanced_delta,
+                "fx_bonus": fx_bonus,
             }
 
         if advanced_delta is not None and capacity_utilization_up:
+            label = "🟡 週期性上升，需監控需求持續性"
+            description = "先進製程佔比未顯著提升，但產能利用率/需求動能上升，三率改善較偏固定成本攤薄。"
+            if fx_bonus:
+                description += (
+                    f"💡 但值得注意的是，此改善是在台幣升值逆風（拖累毛利率約 {abs(fx_margin_impact):.1f}pp）下達成，"
+                    f"若未來匯率回穩，毛利率有額外上行空間。"
+                )
             return {
                 "type": "B",
-                "label": "🟡 週期性上升，需監控需求持續性",
-                "description": "先進製程佔比未顯著提升，但產能利用率/需求動能上升，三率改善較偏固定成本攤薄。",
+                "label": label,
+                "description": description,
                 "advanced_delta": advanced_delta,
+                "fx_bonus": fx_bonus,
             }
 
         if advanced_delta is not None:
@@ -239,6 +265,20 @@ class QuarterlyFinancialAgent:
                 "label": "⚪ 驅動力不明，建議補充製程佔比資料",
                 "description": "先進製程佔比未顯著提升，且未提供產能利用率改善訊號。",
                 "advanced_delta": advanced_delta,
+                "fx_bonus": False,
+            }
+
+        # 無製程資料但匯率逆風下的特別標註
+        if fx_bonus:
+            return {
+                "type": "C",
+                "label": "⚪ 驅動力不明，但匯率逆風下的表現值得注意",
+                "description": (
+                    f"缺少可比較的製程佔比資料。但觀察到毛利率改善是在台幣升值逆風下達成"
+                    f"（匯率拖累約 {abs(fx_margin_impact):.1f}pp），暗示本業獲利能力可能被低估。"
+                ),
+                "advanced_delta": None,
+                "fx_bonus": True,
             }
 
         return {
@@ -246,6 +286,7 @@ class QuarterlyFinancialAgent:
             "label": "⚪ 驅動力不明，建議補充製程佔比資料",
             "description": "缺少可比較的最新季與前一季製程佔比資料。",
             "advanced_delta": None,
+            "fx_bonus": False,
         }
 
     def analyze_eps_quality(
@@ -253,9 +294,11 @@ class QuarterlyFinancialAgent:
         financial_records: Optional[Iterable[Dict]] = None,
         latest_financials: Optional[Dict] = None,
         fx_averages: Optional[Dict[str, float]] = None,
+        latest_gross_margin: Optional[float] = None,
     ) -> Dict:
         """
         STEP 3: EPS 成長來源拆解。
+        latest_gross_margin: 最新季度毛利率（若從 financial_records 無法取得，可外部傳入）
         """
         quarter_label = None
         records_by_type = latest_financials or {}
@@ -297,22 +340,38 @@ class QuarterlyFinancialAgent:
         fx_averages = fx_averages or {}
         previous_fx = self._safe_float(fx_averages.get("previous"))
         latest_fx = self._safe_float(fx_averages.get("latest"))
-        fx_eps_low = None
-        fx_eps_high = None
+        fx_eps_impact = None          # 匯率對 EPS 的估計影響（元）
+        fx_margin_impact = None       # 匯率對毛利率的估計影響（pp）
         fx_marker = "⚪ 匯率資料不足"
+        fx_direction = None           # "headwind" | "tailwind" | "neutral"
+        fx_adjusted_gm = None         # 匯率調整後毛利率（排除匯率逆風後的估計值）
+
         if previous_fx is not None and latest_fx is not None:
             fx_delta = latest_fx - previous_fx
-            fx_eps_low = fx_delta * 0.5
-            fx_eps_high = fx_delta * 0.8
-            max_positive = max(fx_eps_low, fx_eps_high)
-            if max_positive > 1:
-                fx_marker = "⚠️ EPS 含匯兌利益，需還原本業獲利"
+            # 台積電約 70% 營收以美元計價、65% 成本以台幣計價
+            # USD/TWD 下降（台幣升值）→ 美元營收換回台幣縮水 → 毛利率受壓
+            # 粗估：USD/TWD 每變化 1 單位，影響毛利率約 0.3-0.5pp
+            fx_margin_impact = fx_delta * 0.4   # 正 = 台幣貶值助毛利率，負 = 台幣升值壓毛利率
+            fx_eps_impact = fx_delta * 0.65      # 正 = 匯兌利益，負 = 匯兌損失
+
+            if fx_delta > 0.5:
+                fx_direction = "tailwind"
+                fx_marker = f"🟢 台幣貶值匯兌助力（USD/TWD +{fx_delta:.2f}）"
+            elif fx_delta < -0.5:
+                fx_direction = "headwind"
+                fx_marker = f"🔴 台幣升值匯率逆風（USD/TWD {fx_delta:.2f}）"
             else:
-                fx_marker = "✅ 未達顯著正貢獻門檻"
+                fx_direction = "neutral"
+                fx_marker = f"⚪ 匯率波動中性（USD/TWD {fx_delta:+.2f}）"
+
+        # 計算匯率調整後毛利率（排除匯率逆風/順風後的本業估計值）
+        # 優先使用外部傳入的 latest_gross_margin，其次從 records_by_type 取得
+        eff_gm = latest_gross_margin if latest_gross_margin is not None else self._get_record_value(records_by_type, "gross_margin")
+        if eff_gm is not None and fx_margin_impact is not None:
+            fx_adjusted_gm = eff_gm - fx_margin_impact
 
         quality_status = "⚠️ 需關注" if (
-            (nonop_ratio is not None and nonop_ratio > 15) or
-            (fx_eps_high is not None and fx_eps_high > 1)
+            (nonop_ratio is not None and nonop_ratio > 15)
         ) else "✅ 良好"
 
         return {
@@ -322,9 +381,12 @@ class QuarterlyFinancialAgent:
             "nonop_eps": nonop_eps,
             "nonop_ratio": nonop_ratio,
             "nonop_marker": nonop_marker,
-            "fx_eps_low": fx_eps_low,
-            "fx_eps_high": fx_eps_high,
+            "fx_eps_impact": fx_eps_impact,
+            "fx_margin_impact": fx_margin_impact,
+            "fx_direction": fx_direction,
             "fx_marker": fx_marker,
+            "fx_adjusted_gm": fx_adjusted_gm,
+            "latest_gm": eff_gm,
             "quality_status": quality_status,
         }
 
@@ -403,8 +465,25 @@ class QuarterlyFinancialAgent:
         """
         analysis_date = analysis_date or dt.date.today().isoformat()
         trend = self.analyze_margin_trend(quarterly_data)
-        driver = self.analyze_margin_driver(process_mix, capacity_utilization_up)
-        eps_quality = self.analyze_eps_quality(financial_records=financial_records, fx_averages=fx_averages)
+
+        # 先跑 EPS 品質分析取得匯率數據，再傳給驅動力判斷
+        # 從 quarterly_data 取得最新毛利率傳入，確保匯率調整後毛利率可計算
+        _gm_from_qd = None
+        if quarterly_data:
+            _sorted_qd = sorted(quarterly_data.keys(), reverse=True)
+            if _sorted_qd:
+                _gm_from_qd = quarterly_data[_sorted_qd[0]].get("gross_margin")
+        eps_quality = self.analyze_eps_quality(
+            financial_records=financial_records,
+            fx_averages=fx_averages,
+            latest_gross_margin=_gm_from_qd,
+        )
+        driver = self.analyze_margin_driver(
+            process_mix,
+            capacity_utilization_up,
+            fx_direction=eps_quality.get("fx_direction"),
+            fx_margin_impact=eps_quality.get("fx_margin_impact"),
+        )
         revenue_effect = self.analyze_revenue_base_effect(revenue_records or [])
 
         def pct(value) -> str:
@@ -421,27 +500,68 @@ class QuarterlyFinancialAgent:
                 f"{metric['q0_label']} {pct(metric['q0'])}（{metric['marker']}）"
             )
 
-        fx_low = eps_quality.get("fx_eps_low")
-        fx_high = eps_quality.get("fx_eps_high")
-        if fx_low is None or fx_high is None:
-            fx_text = "N/A"
-        elif abs(fx_low - fx_high) < 0.005:
-            fx_text = f"{fx_low:+.2f} 元"
+        # 匯率段落：顯示方向、對 EPS 與毛利率的估計影響、匯率調整後毛利率
+        fx_eps_impact = eps_quality.get("fx_eps_impact")
+        fx_margin_impact = eps_quality.get("fx_margin_impact")
+        fx_adjusted_gm = eps_quality.get("fx_adjusted_gm")
+        # 優先從 eps_quality 取得最新毛利率，若無則從 quarterly_data fallback
+        latest_gm = eps_quality.get("latest_gm")
+        if latest_gm is None and quarterly_data:
+            _sorted_qd2 = sorted(quarterly_data.keys(), reverse=True)
+            if _sorted_qd2:
+                latest_gm = quarterly_data[_sorted_qd2[0]].get("gross_margin")
+
+        if fx_eps_impact is not None:
+            fx_text = f"{fx_eps_impact:+.2f} 元"
         else:
-            fx_text = f"{fx_low:+.2f} ~ {fx_high:+.2f} 元"
+            fx_text = "N/A"
+
+        if fx_margin_impact is not None:
+            fx_margin_text = f"{fx_margin_impact:+.2f}pp"
+        else:
+            fx_margin_text = "N/A"
+
+        fx_adjusted_text = pct(fx_adjusted_gm) if fx_adjusted_gm is not None else "N/A"
+
+        # 匯率調整後毛利率的解讀文字
+        fx_insight = ""
+        if fx_margin_impact is not None and latest_gm is not None and fx_adjusted_gm is not None:
+            if fx_margin_impact < -0.3:
+                fx_insight = (
+                    f"\n   💡 **關鍵發現**：在台幣升值逆風（拖累毛利率約 {abs(fx_margin_impact):.1f}pp）下，"
+                    f"毛利率仍達 {latest_gm:.1f}%。排除匯率逆風後，本業毛利率估計約 **{fx_adjusted_gm:.1f}%**，"
+                    f"代表定價能力（Pricing Power）比表面數字更強。"
+                )
+            elif fx_margin_impact > 0.3:
+                fx_insight = (
+                    f"\n   ⚠️ 台幣貶值順風助力毛利率約 +{fx_margin_impact:.1f}pp，"
+                    f"若排除匯率因素，本業毛利率估計約 {fx_adjusted_gm:.1f}%。"
+                )
 
         base_effect = revenue_effect.get("base_effect")
         base_text = "N/A" if base_effect is None else ("有" if base_effect else "無")
 
-        conclusion = (
-            "財務面支撐力偏強，三率趨勢與 EPS 品質顯示獲利主要來自本業。"
-            "營收基期修正後仍維持穩健成長，主要風險在於需求與產能利用率能否延續。"
-        )
-        if trend["status"] == "⚠️" or eps_quality["quality_status"].startswith("⚠️"):
-            conclusion = (
-                "財務面仍具支撐，但三率或 EPS 品質已出現需要追蹤的訊號。"
-                "後續應優先觀察本業利潤率、業外占比與匯率貢獻是否擴大。"
+        # 動態結論
+        conclusion_parts = []
+        if trend["status"] == "✅":
+            conclusion_parts.append("三率持續同步上升，基本面強勁。")
+        else:
+            conclusion_parts.append("三率趨勢出現分歧，需持續追蹤。")
+
+        if eps_quality["quality_status"] == "✅ 良好":
+            conclusion_parts.append("EPS 品質良好，獲利主要來自本業。")
+        else:
+            conclusion_parts.append("EPS 品質需關注業外佔比。")
+
+        if fx_margin_impact is not None and fx_margin_impact < -0.3:
+            conclusion_parts.append(
+                f"匯率逆風下毛利率仍創高，本業獲利能力被低估。"
+                f"若未來台幣回貶，毛利率有額外上行空間。"
             )
+        elif fx_margin_impact is not None and fx_margin_impact > 0.3:
+            conclusion_parts.append("毛利率部分受惠於台幣貶值，需區分本業與匯率貢獻。")
+
+        conclusion = "".join(conclusion_parts)
 
         return "\n".join([
             "### 財務 Agent 分析報告",
@@ -460,7 +580,13 @@ class QuarterlyFinancialAgent:
             f"- 最新季 EPS：{num(eps_quality.get('eps'))} 元",
             f"- 本業貢獻 EPS：{num(eps_quality.get('core_eps'))} 元",
             f"- 業外收益佔比：{pct(eps_quality.get('nonop_ratio'))}（{eps_quality['nonop_marker']}）",
-            f"- 匯兌效益估算：{fx_text}（{eps_quality['fx_marker']}）",
+            "",
+            "**【匯率敏感度分析】**",
+            f"- 匯率方向：{eps_quality['fx_marker']}",
+            f"- 對 EPS 估計影響：{fx_text}",
+            f"- 對毛利率估計影響：{fx_margin_text}",
+            f"- 匯率調整後毛利率：{fx_adjusted_text}（排除匯率因素後的本業估計值）",
+            fx_insight,
             f"→ 盈餘品質結論：{eps_quality['quality_status']}",
             "",
             "**【營收基期修正】**",

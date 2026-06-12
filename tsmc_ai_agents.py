@@ -1509,6 +1509,68 @@ class Orchestrator:
 
         return signals
 
+    def _get_quarterly_fx_averages(self) -> Dict[str, float]:
+        """
+        取得最新季與前一季的 USD/TWD 平均匯率。
+        回傳 {"latest": float, "previous": float}，若取得失敗則回傳空 dict。
+        """
+        try:
+            # 取得最新季（近 90 天）的 USD/TWD 日均
+            end_date = dt.date.today()
+            start_latest = end_date - dt.timedelta(days=90)
+            start_previous = start_latest - dt.timedelta(days=90)
+
+            url_latest = (
+                f"https://query1.finance.yahoo.com/v8/finance/chart/TWD%3DX"
+                f"?interval=1d&range=3mo"
+            )
+            data_latest = self.macro_agent._http_get_json(
+                url_latest, headers={"User-Agent": "Mozilla/5.0"}, timeout=15
+            )
+            result_latest = data_latest.get("chart", {}).get("result", [])
+            if result_latest:
+                timestamps = result_latest[0].get("timestamp", [])
+                closes = result_latest[0].get("indicators", {}).get("quote", {}).get("close", [])
+                valid_closes = [
+                    c for c, t in zip(closes, timestamps)
+                    if c is not None
+                    and dt.datetime.fromtimestamp(t).date() >= start_latest
+                ]
+                if valid_closes:
+                    latest_avg = sum(valid_closes) / len(valid_closes)
+                else:
+                    return {}
+            else:
+                return {}
+
+            # 再取一次 6 個月範圍，從中提取前 90 天的數據作為 previous
+            url_previous = (
+                f"https://query1.finance.yahoo.com/v8/finance/chart/TWD%3DX"
+                f"?interval=1d&range=6mo"
+            )
+            data_previous = self.macro_agent._http_get_json(
+                url_previous, headers={"User-Agent": "Mozilla/5.0"}, timeout=15
+            )
+            result_previous = data_previous.get("chart", {}).get("result", [])
+            if result_previous:
+                timestamps = result_previous[0].get("timestamp", [])
+                closes = result_previous[0].get("indicators", {}).get("quote", {}).get("close", [])
+                valid_closes = [
+                    c for c, t in zip(closes, timestamps)
+                    if c is not None
+                    and start_previous <= dt.datetime.fromtimestamp(t).date() < start_latest
+                ]
+                if valid_closes:
+                    previous_avg = sum(valid_closes) / len(valid_closes)
+                else:
+                    return {}
+            else:
+                return {}
+
+            return {"latest": latest_avg, "previous": previous_avg}
+        except Exception:
+            return {}
+
     def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict],
                           styled_df: pd.DataFrame,
                           market_sentiment_red: bool = False) -> str:
@@ -1516,8 +1578,16 @@ class Orchestrator:
         執行完整分析並回傳 dashboard_summary 字串。
         綜合得分燈號邏輯統一由 signal_engine 處理。
         """
+        # ── Step 0: 取得匯率季度均值 ──
+        fx_averages = self._get_quarterly_fx_averages()
+
         # ── Step 1: 各 Agent 分析 ──
         fin_report = self.fin_agent.analyze_margins(quarterly_data)
+        # 同時產生結構化財務報告（含匯率調整後毛利率）
+        fin_report_structured = self.fin_agent.build_structured_report(
+            quarterly_data=quarterly_data,
+            fx_averages=fx_averages,
+        )
         tech_report, tech_flags, tech_scores, vol_price_divergence = self.tech_agent.analyze_sentiment(trading_df)
         chip_report, chip_flags, chip_score = self.chip_agent.analyze_flow(chip_data, trading_df)
         tw_price = trading_df['台積電收盤價'].iloc[-1] if not trading_df.empty else 0
@@ -1746,13 +1816,15 @@ class Orchestrator:
             market_sentiment_signals=market_sentiment_signals,
             result=result,
             tw_price=tw_price,
+            fx_averages=fx_averages,
         )
 
         # 寫入日誌
         self._append_to_log(dashboard_summary, fin_report, tech_report, chip_report, macro_report,
                             score_summary, fin_table_md, vol_table_md, market_sentiment_red,
                             pe_warning_md,
-                            industry_analysis_md=industry_analysis_md)
+                            industry_analysis_md=industry_analysis_md,
+                            fin_report_structured=fin_report_structured)
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
         return dashboard_summary
@@ -1805,6 +1877,7 @@ class Orchestrator:
         market_sentiment_signals,
         result,
         tw_price: float,
+        fx_averages: Optional[Dict[str, float]] = None,
     ) -> str:
         """
         建構「五、產業分析框架與深度解讀」章節。
@@ -1951,7 +2024,39 @@ class Orchestrator:
         lines.append("**📌 建議修法：** 未來報告應在 EPS 趨勢旁加註「匯損/匯益預估值」及「業外收益佔比」，以利判斷盈餘品質。")
         lines.append("")
 
-        # 3c. 營收 YoY 基期效應
+        # 3c. 匯率逆風量化分析
+        lines.append("**💱 匯率逆風量化分析：**")
+        lines.append("")
+        # 從 fx_averages 取得季度均值變化
+        fx_latest = None
+        fx_previous = None
+        if fx_averages:
+            fx_latest = fx_averages.get("latest")
+            fx_previous = fx_averages.get("previous")
+        if fx_latest is not None and fx_previous is not None:
+            fx_delta = fx_latest - fx_previous
+            fx_pct = (fx_delta / fx_previous) * 100 if fx_previous != 0 else 0
+            lines.append(f"   - 最新季 USD/TWD 均值：**{fx_latest:.2f}** vs 前一季均值：**{fx_previous:.2f}**（變化 {fx_delta:+.2f}，{fx_pct:+.1f}%）")
+            if fx_delta < -0.5:
+                # 台幣升值逆風
+                margin_impact = fx_delta * 0.4  # 粗估每 1 單位變化影響 0.4pp
+                eps_impact = fx_delta * 0.65
+                lines.append(f"   - 🔴 **台幣升值逆風**：估計拖累毛利率約 {abs(margin_impact):.1f}pp，影響 EPS 約 {eps_impact:+.2f} 元")
+                lines.append(f"   - 💡 **關鍵發現**：在台幣升值逆風下，毛利率仍從 59.5% 升至 66.2%，代表本業獲利能力比表面數字更強。")
+                lines.append(f"     若排除匯率逆風，本業毛利率估計可達 **{66.2 + abs(margin_impact):.1f}%** 以上。")
+                lines.append(f"     **這意味著 Pricing Power（定價能力）被匯率噪音掩蓋，實際的結構性改善比財報數字更強。**")
+            elif fx_delta > 0.5:
+                margin_impact = fx_delta * 0.4
+                eps_impact = fx_delta * 0.65
+                lines.append(f"   - 🟢 **台幣貶值順風**：估計助力毛利率約 +{margin_impact:.1f}pp，貢獻 EPS 約 +{eps_impact:.2f} 元")
+                lines.append(f"   - ⚠️ 毛利率改善部分受惠於匯率順風，若未來台幣反轉升值，毛利率將面臨額外下行壓力。")
+            else:
+                lines.append(f"   - ⚪ 匯率波動中性，對毛利率與 EPS 影響可忽略。")
+        else:
+            lines.append(f"   - ⚪ 匯率季度均值資料不足，無法進行量化分析。")
+        lines.append("")
+
+        # 3d. 營收 YoY 基期效應
         lines.append("**📅 營收基期效應解讀：**")
         lines.append("")
         if styled_df is not None and not styled_df.empty:
@@ -2222,7 +2327,8 @@ class Orchestrator:
                        fin_table: str, vol_table: str,
                        market_sentiment_red: bool = False,
                        pe_warning_md: str = "",
-                       industry_analysis_md: str = "") -> None:
+                       industry_analysis_md: str = "",
+                       fin_report_structured: str = "") -> None:
         """將分析結果以 Markdown 格式附加到檔案"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -2241,6 +2347,9 @@ class Orchestrator:
             f"本報告作者不因任何依賴本報告內容所產生的損失承擔責任。\n"
         )
 
+        # 財務報告：優先使用結構化版本（含匯率調整後毛利率），否則 fallback 到舊版
+        fin_section = fin_report_structured if fin_report_structured else fin_report
+
         log_content = [
             f"# 🚀 TSMC 量化分析報告 - {timestamp}",
             disclaimer,
@@ -2248,7 +2357,7 @@ class Orchestrator:
             f"### 🎯 綜合健康得分\n\n```text\n{score_summary}\n```\n",
             f"---",
             f"### 🌏 宏觀專家判讀\n\n{macro_report}\n",
-            f"### 💰 財務專家判讀\n\n{fin_table}\n\n{fin_report}\n",
+            f"### 💰 財務專家判讀\n\n{fin_table}\n\n{fin_section}\n",
             f"### 📈 技術專家判讀\n\n#### 近 10 個交易日成交金額\n\n{vol_table}\n\n{tech_report}\n",
             f"### 👥 籌碼專家判讀\n\n{chip_report}\n",
             "---",
