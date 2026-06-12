@@ -2261,8 +2261,30 @@ class Orchestrator:
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write("\n\n".join(log_content))
             self._keep_latest_daily_logs(timestamp[:10])
+
+            # ── 自動產出格式化報告 ──
+            self._generate_formatted_report(timestamp)
         except Exception as e:
             print(f"寫入日誌失敗: {e}")
+
+    def _generate_formatted_report(self, timestamp: str) -> None:
+        """在 analysis_log.md 寫入完成後，自動產出格式化報告至 reports/ 目錄。"""
+        try:
+            from scripts.format_tsmc_report import build_report
+            from pathlib import Path
+
+            reports_dir = Path("reports")
+            reports_dir.mkdir(parents=True, exist_ok=True)
+
+            ts = timestamp.replace(":", "").replace(" ", "_").replace("-", "")
+            output_path = reports_dir / f"tsmc_report_{ts}.md"
+
+            cache_dir = Path("local_cache")
+            report = build_report(Path(self.log_path), cache_dir)
+            output_path.write_text(report, encoding="utf-8")
+            print(f"[系統] 格式化報告已產出至 {output_path}")
+        except Exception as e:
+            print(f"[系統] 格式化報告產出失敗（不影響分析）: {e}")
 
     def _keep_latest_daily_logs(self, date_str: str, keep: int = 3) -> None:
         """同一天只保留最新 N 筆分析紀錄。"""

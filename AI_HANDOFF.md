@@ -6,8 +6,8 @@
 -->
 
 ## 📌 基本資訊
-- **目前所在分支 (Current Branch)**: `feat/auto-optimization`
-- **本次交接時間 (Timestamp)**: 2026-06-08 12:00 (UTC+8)
+- **目前所在分支 (Current Branch)**: `feat/claude-refactor`
+- **本次交接時間 (Timestamp)**: 2026-06-11 16:30 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
@@ -32,9 +32,15 @@
 - [x] --test 自測功能
 - [x] SessionStart hook 自動載入所有說明文件
 
+### 歷史已完成（本次 session）
+- [x] **format_tsmc_report.py 整合進 Orchestrator**：`_append_to_log` 寫入成功後自動呼叫 `_generate_formatted_report()`，產出 `reports/tsmc_report_YYYYMMDD_HHMMSS.md`
+- [x] **端到端測試驗證**：儀表板執行後自動產出格式化報告，數據正確無誤
+- [x] **報告數據交叉驗證**：財務、技術、籌碼、宏觀、估值各面向數據均與原始快取一致
+
 ## ⏳ 未完成 / 待辦事項 (Pending Tasks)
-1. **[優先級：高] 建立 PR 合併到 main**：`feat/auto-optimization` 分支的產業分析框架升級已完成，可建立 PR 合併。
+1. **[優先級：高] 建立 PR 合併到 main**：`feat/claude-refactor` 分支的格式化報告自動生成已完成，可建立 PR 合併。
 2. **[優先級：中] 清除舊分支**：`feat/add-codex-ai-working-follow` 已合併，可刪除。
+3. **[優先級：低] 舊報告清理**：`reports/` 目錄會隨每次執行累積，可考慮加入 `.gitignore` 或定期清理機制。
 
 ---
 
@@ -49,6 +55,8 @@
 > 8. 多 AI 自動載入入口：Claude Code（`CLAUDE.md` + hook）、Copilot（`.github/copilot-instructions.md`）、Gemini（`.gemini/GEMINI.md`）
 > 9. 報告生成邏輯統一在 `tsmc_ai_agents.py` 的 `Orchestrator` 類中，signal 計算在 `signal_engine.py`
 > 10. 本次 session 發現的 bug：f-string 中不可混用 `.format()` 變數名稱（已修復）
+> 11. `Orchestrator._append_to_log()` 成功寫入後，自動呼叫 `_generate_formatted_report()` 產出 `reports/tsmc_report_*.md`
+> 12. `scripts/format_tsmc_report.py` 仍保留為獨立 CLI 工具，可手動執行 `python scripts/format_tsmc_report.py --output reports/tsmc_report.md`
 
 ## 🚀 給下一個 AI 建議
 1. **建立 PR**：此分支已完工，建議建立 PR 合併到 main。
