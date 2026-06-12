@@ -35,6 +35,7 @@ from typing import Dict, List, Optional, Tuple
 from config import CONFIG
 from tsmc_financial_agent import QuarterlyFinancialAgent
 from tsmc_macro_agent import GlobalMacroAgent
+from tsmc_institutional_tracker import InstitutionalTrackerAgent
 from signal_engine import (
     SignalEngine,
     FinancialSignals,
@@ -1355,6 +1356,7 @@ class Orchestrator:
         self.tech_agent = MarketDynamicsAgent()
         self.chip_agent = InstitutionalInvestorAgent()
         self.macro_agent = GlobalMacroAgent()
+        self.tracker_agent = InstitutionalTrackerAgent()
         self.signal_engine = SignalEngine()
         self.log_path = log_path
 
@@ -1594,6 +1596,9 @@ class Orchestrator:
         macro_report, macro_score = self.macro_agent.analyze_global_risk(tw_price)
         bigtech_data, bigtech_report = self.macro_agent.analyze_bigtech_fundamentals(quarterly_data)
 
+        # 橋水 13F 持倉追蹤
+        tracker_data, tracker_report = self.tracker_agent.analyze_13f_holdings()
+
         # ── Step 2: 建構信號 ──
         financial_signals = self._build_financial_signals(quarterly_data, styled_df)
         bigtech_signals = BigTechSignals(
@@ -1667,6 +1672,8 @@ class Orchestrator:
         print(f"[籌碼專家] > {chip_report}")
         print()
         print(f"[大廠基本面] > {bigtech_report}")
+        print()
+        print(f"[機構 13F] > {tracker_report}")
         print()
 
         # 市場情緒
@@ -1824,7 +1831,8 @@ class Orchestrator:
                             score_summary, fin_table_md, vol_table_md, market_sentiment_red,
                             pe_warning_md,
                             industry_analysis_md=industry_analysis_md,
-                            fin_report_structured=fin_report_structured)
+                            fin_report_structured=fin_report_structured,
+                            tracker_report=tracker_report)
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
         return dashboard_summary
@@ -2328,7 +2336,8 @@ class Orchestrator:
                        market_sentiment_red: bool = False,
                        pe_warning_md: str = "",
                        industry_analysis_md: str = "",
-                       fin_report_structured: str = "") -> None:
+                       fin_report_structured: str = "",
+                       tracker_report: str = "") -> None:
         """將分析結果以 Markdown 格式附加到檔案"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -2360,8 +2369,11 @@ class Orchestrator:
             f"### 💰 財務專家判讀\n\n{fin_table}\n\n{fin_section}\n",
             f"### 📈 技術專家判讀\n\n#### 近 10 個交易日成交金額\n\n{vol_table}\n\n{tech_report}\n",
             f"### 👥 籌碼專家判讀\n\n{chip_report}\n",
-            "---",
         ]
+        # 附加橋水 13F 持倉追蹤
+        if tracker_report:
+            log_content.append(f"### 🏛 橋水 13F 持倉追蹤\n\n{tracker_report}\n")
+        log_content.append("---")
         # 附加產業分析框架章節
         if industry_analysis_md:
             log_content.append(industry_analysis_md)
