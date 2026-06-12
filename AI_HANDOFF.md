@@ -6,8 +6,8 @@
 -->
 
 ## 📌 基本資訊
-- **目前所在分支 (Current Branch)**: `feat/claude-refactor`
-- **本次交接時間 (Timestamp)**: 2026-06-11 16:30 (UTC+8)
+- **目前所在分支 (Current Branch)**: `main`
+- **本次交接時間 (Timestamp)**: 2026-06-12 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
@@ -38,9 +38,9 @@
 - [x] **報告數據交叉驗證**：財務、技術、籌碼、宏觀、估值各面向數據均與原始快取一致
 
 ## ⏳ 未完成 / 待辦事項 (Pending Tasks)
-1. **[優先級：高] 建立 PR 合併到 main**：`feat/claude-refactor` 分支的格式化報告自動生成已完成，可建立 PR 合併。
-2. **[優先級：中] 清除舊分支**：`feat/add-codex-ai-working-follow` 已合併，可刪除。
-3. **[優先級：低] 舊報告清理**：`reports/` 目錄會隨每次執行累積，可考慮加入 `.gitignore` 或定期清理機制。
+1. **[已完成的待辦項目]** ~~建立 PR 合併到 main~~：`feat/claude-refactor` 已通過 PR #15 合併至 main（2026-06-12）。
+2. **[優先級：低] 清除本地舊分支**：`feat/claude-refactor` 和 `feat/add-codex-ai-working-follow` 已合併，可本地刪除。
+3. **[優先級：低] 舊報告清理**：`reports/` 目錄會隨每次執行累積，已有 `.gitignore` 排除，可考慮定期清理機制。
 
 ---
 
@@ -59,7 +59,7 @@
 > 12. `scripts/format_tsmc_report.py` 仍保留為獨立 CLI 工具，可手動執行 `python scripts/format_tsmc_report.py --output reports/tsmc_report.md`
 
 ## 🚀 給下一個 AI 建議
-1. **建立 PR**：此分支已完工，建議建立 PR 合併到 main。
+1. **新分支開發**：目前已在 `main`，新功能請開新分支開發。
 2. **後續開發程式碼修改前**：請先進入對應的自動載入入口確認協作規則，並保持小步提交。
 3. **⚠️ 禁止自動 git push**：任何情況下 AI 都不得自行推送，只能提醒人類評估。
 ---
