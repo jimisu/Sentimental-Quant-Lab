@@ -3,3 +3,4 @@ httpx
 rich
 pandas
 matplotlib
+python-dotenv

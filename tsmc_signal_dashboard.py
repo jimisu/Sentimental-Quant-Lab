@@ -18,11 +18,14 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
+from dotenv import load_dotenv
 from rich import box
 from rich.console import Console
 from rich.table import Table
 from data_cache import fetch_with_cache
 from tsmc_ai_agents import Orchestrator
+
+load_dotenv()
 
 API_URL = "https://api.finmindtrade.com/api/v4/data"
 TWSE_AFTER_TRADING_URL = "https://www.twse.com.tw/rwd/zh/afterTrading"
