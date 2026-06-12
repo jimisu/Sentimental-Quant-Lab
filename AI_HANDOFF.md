@@ -6,6 +6,7 @@
 -->
 
 ## 📌 基本資訊
+
 - **目前所在分支 (Current Branch)**: `main`
 - **本次交接時間 (Timestamp)**: 2026-06-12 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
@@ -38,6 +39,7 @@
 - [x] **報告數據交叉驗證**：財務、技術、籌碼、宏觀、估值各面向數據均與原始快取一致
 
 ## ⏳ 未完成 / 待辦事項 (Pending Tasks)
+<<<<<<< HEAD
 1. **[已完成的待辦項目]** ~~建立 PR 合併到 main~~：`feat/claude-refactor` 已通過 PR #15 合併至 main（2026-06-12）。
 2. **[優先級：低] 清除本地舊分支**：`feat/claude-refactor` 和 `feat/add-codex-ai-working-follow` 已合併，可本地刪除。
 3. **[優先級：低] 舊報告清理**：`reports/` 目錄會隨每次執行累積，已有 `.gitignore` 排除，可考慮定期清理機制。
