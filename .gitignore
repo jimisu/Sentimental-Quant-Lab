@@ -9,3 +9,4 @@ charts/
 local_cache/
 reports/
 analysis_log.md
+.env

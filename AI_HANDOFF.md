@@ -7,7 +7,7 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `main`
+- **目前所在分支 (Current Branch)**: `fix/findmind-return-error`
 - **本次交接時間 (Timestamp)**: 2026-06-12 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
@@ -38,11 +38,41 @@
 - [x] **端到端測試驗證**：儀表板執行後自動產出格式化報告，數據正確無誤
 - [x] **報告數據交叉驗證**：財務、技術、籌碼、宏觀、估值各面向數據均與原始快取一致
 
-## ⏳ 未完成 / 待辦事項 (Pending Tasks)
+### 本次 session 完成（fix/findmind-return-error / 2026-06-12）
+- [x] **FINMIND_TOKEN 環境變數設定**：
+  - 已將 token 寫入 `~/.bashrc`（`export FINMIND_TOKEN="..."`），新 terminal session 自動載入
+  - 已建立 `.env` 檔案（專案目錄下），並加入 `.gitignore` 避免 token 洩露
+  - **⚠️ Token 安全規範**：token 只存放於本機 `~/.bashrc` 與 `.env`，嚴禁上傳至任何外部服務或 API
+- [x] **FinMind API token 驗證**：帶 token 呼叫 `TaiwanStockMonthRevenue` API，成功回傳 200 與月營收數據，token 有效
+- [x] **完整儀表板執行驗證**：五大 Agent（財務、技術、籌碼、宏觀、大廠基本面）全部成功運行，綜合健康得分 89.0/100（綠燈）
+
+## ⚠️ Lesson Learned（本次 session 發現的問題）
+
+### 1. `--test` 自測模式 FinMind 422 是假警報
+- **現象**：`python tsmc_signal_dashboard.py --test` 固定顯示 `FinMind API: 回傳狀態 422`
+- **原因**：自測程式碼（第 1056 行）在測試 FinMind 時直接用 `requests.get(url)` 打 base URL，**沒有帶 token 和任何參數**（dataset、data_id 等），FinMind 伺服器因缺少必要參數回傳 422（Unprocessable Entity）
+- **結論**：這不是真正的連線問題。只要帶 token 和正確參數打 API 即可成功（已驗證回傳 200）
+- **建議修复**（低優先）：修改 `run_self_test()` 中的 FinMind 測試邏輯，帶入 token 和 sample 參數，或將 422 也視為「服務有反應」（類似 TWSE 將 400/401 視為成功）
+
+### 2. FinMind API 無 token 時的行為
+- **無 token 呼叫**：回傳 422，不會提供資料
+- **無 token 但本地有快取**：主程式會自動降級讀取 `local_cache/` 中的舊快取（月營收 24h TTL、季報 7d TTL），所以之前沒 token 也能跑
+- **快取過期後無 token**：`fetch_finmind_dataset` 會 `sys.exit(1)` 崩潰
+- **結論**：設定 `FINMIND_TOKEN` 是必要的，不能只依賴快取
+
+### 3. Token 安全注意事項
+- Token 已存入 `~/.bashrc` 和 `.env`，`.env` 已加入 `.gitignore`
+- **⛔ 禁止將 token 傳送至任何外部服務**（包括 AI API、遠端伺服器、第三方工具）
+- **⛔ 禁止將 token 寫入任何會被 git commit 的檔案**
+- Token 僅用於本機開發環境呼叫 FinMind API
+
+## ⏳ 未完成 / 待事項 (Pending Tasks)
 <<<<<<< HEAD
-1. **[已完成的待辦項目]** ~~建立 PR 合併到 main~~：`feat/claude-refactor` 已通過 PR #15 合併至 main（2026-06-12）。
+1. **[已完成]** ~~建立 PR 合併到 main~~：`feat/claude-refactor` 已通過 PR #15 合併至 main（2026-06-12）。
 2. **[優先級：低] 清除本地舊分支**：`feat/claude-refactor` 和 `feat/add-codex-ai-working-follow` 已合併，可本地刪除。
 3. **[優先級：低] 舊報告清理**：`reports/` 目錄會隨每次執行累積，已有 `.gitignore` 排除，可考慮定期清理機制。
+4. **[優先級：低] 修復 `--test` 自測模式 FinMind 422 假警報**：修改 `run_self_test()`，讓 FinMind 測試帶入 token 或將 422 視為連線成功。
+5. **[已完成]** `FINMIND_TOKEN` 設定：已寫入 `~/.bashrc` 和 `.env`，`.env` 已加入 `.gitignore`。
 
 ---
 
