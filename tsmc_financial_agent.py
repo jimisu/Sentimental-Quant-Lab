@@ -294,9 +294,11 @@ class QuarterlyFinancialAgent:
         financial_records: Optional[Iterable[Dict]] = None,
         latest_financials: Optional[Dict] = None,
         fx_averages: Optional[Dict[str, float]] = None,
+        latest_gross_margin: Optional[float] = None,
     ) -> Dict:
         """
         STEP 3: EPS 成長來源拆解。
+        latest_gross_margin: 最新季度毛利率（若從 financial_records 無法取得，可外部傳入）
         """
         quarter_label = None
         records_by_type = latest_financials or {}
@@ -363,10 +365,10 @@ class QuarterlyFinancialAgent:
                 fx_marker = f"⚪ 匯率波動中性（USD/TWD {fx_delta:+.2f}）"
 
         # 計算匯率調整後毛利率（排除匯率逆風/順風後的本業估計值）
-        latest_gm = self._get_record_value(records_by_type, "gross_margin")
-        if latest_gm is not None and fx_margin_impact is not None:
-            fx_adjusted_gm = latest_gm - fx_margin_impact
-            # 若 fx_margin_impact 為負（台幣升值壓毛利率），減去負值 = 加上，代表本業毛利率更高
+        # 優先使用外部傳入的 latest_gross_margin，其次從 records_by_type 取得
+        eff_gm = latest_gross_margin if latest_gross_margin is not None else self._get_record_value(records_by_type, "gross_margin")
+        if eff_gm is not None and fx_margin_impact is not None:
+            fx_adjusted_gm = eff_gm - fx_margin_impact
 
         quality_status = "⚠️ 需關注" if (
             (nonop_ratio is not None and nonop_ratio > 15)
@@ -384,7 +386,7 @@ class QuarterlyFinancialAgent:
             "fx_direction": fx_direction,
             "fx_marker": fx_marker,
             "fx_adjusted_gm": fx_adjusted_gm,
-            "latest_gm": latest_gm,
+            "latest_gm": eff_gm,
             "quality_status": quality_status,
         }
 
@@ -465,7 +467,17 @@ class QuarterlyFinancialAgent:
         trend = self.analyze_margin_trend(quarterly_data)
 
         # 先跑 EPS 品質分析取得匯率數據，再傳給驅動力判斷
-        eps_quality = self.analyze_eps_quality(financial_records=financial_records, fx_averages=fx_averages)
+        # 從 quarterly_data 取得最新毛利率傳入，確保匯率調整後毛利率可計算
+        _gm_from_qd = None
+        if quarterly_data:
+            _sorted_qd = sorted(quarterly_data.keys(), reverse=True)
+            if _sorted_qd:
+                _gm_from_qd = quarterly_data[_sorted_qd[0]].get("gross_margin")
+        eps_quality = self.analyze_eps_quality(
+            financial_records=financial_records,
+            fx_averages=fx_averages,
+            latest_gross_margin=_gm_from_qd,
+        )
         driver = self.analyze_margin_driver(
             process_mix,
             capacity_utilization_up,
@@ -492,7 +504,12 @@ class QuarterlyFinancialAgent:
         fx_eps_impact = eps_quality.get("fx_eps_impact")
         fx_margin_impact = eps_quality.get("fx_margin_impact")
         fx_adjusted_gm = eps_quality.get("fx_adjusted_gm")
+        # 優先從 eps_quality 取得最新毛利率，若無則從 quarterly_data fallback
         latest_gm = eps_quality.get("latest_gm")
+        if latest_gm is None and quarterly_data:
+            _sorted_qd2 = sorted(quarterly_data.keys(), reverse=True)
+            if _sorted_qd2:
+                latest_gm = quarterly_data[_sorted_qd2[0]].get("gross_margin")
 
         if fx_eps_impact is not None:
             fx_text = f"{fx_eps_impact:+.2f} 元"
@@ -508,7 +525,7 @@ class QuarterlyFinancialAgent:
 
         # 匯率調整後毛利率的解讀文字
         fx_insight = ""
-        if fx_margin_impact is not None and latest_gm is not None:
+        if fx_margin_impact is not None and latest_gm is not None and fx_adjusted_gm is not None:
             if fx_margin_impact < -0.3:
                 fx_insight = (
                     f"\n   💡 **關鍵發現**：在台幣升值逆風（拖累毛利率約 {abs(fx_margin_impact):.1f}pp）下，"
