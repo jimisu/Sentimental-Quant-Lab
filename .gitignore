@@ -7,4 +7,5 @@ __pycache__/
 sentiment_venv/
 charts/
 local_cache/
+reports/
 analysis_log.md
