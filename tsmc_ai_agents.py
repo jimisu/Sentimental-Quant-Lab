@@ -1596,8 +1596,8 @@ class Orchestrator:
         macro_report, macro_score = self.macro_agent.analyze_global_risk(tw_price)
         bigtech_data, bigtech_report = self.macro_agent.analyze_bigtech_fundamentals(quarterly_data)
 
-        # 橋水 13F 持倉追蹤
-        tracker_data, tracker_report = self.tracker_agent.analyze_13f_holdings()
+        # 機構法人 13F 持倉追蹤（BlackRock + Bridgewater）
+        tracker_all_data, tracker_report = self.tracker_agent.analyze_all_institutions()
 
         # ── Step 2: 建構信號 ──
         financial_signals = self._build_financial_signals(quarterly_data, styled_df)
@@ -2370,9 +2370,9 @@ class Orchestrator:
             f"### 📈 技術專家判讀\n\n#### 近 10 個交易日成交金額\n\n{vol_table}\n\n{tech_report}\n",
             f"### 👥 籌碼專家判讀\n\n{chip_report}\n",
         ]
-        # 附加橋水 13F 持倉追蹤
+        # 附加機構法人 13F 持倉追蹤（BlackRock + Bridgewater）
         if tracker_report:
-            log_content.append(f"### 🏛 橋水 13F 持倉追蹤\n\n{tracker_report}\n")
+            log_content.append(f"### 🏛 機構法人 13F 持倉追蹤\n\n{tracker_report}\n")
         log_content.append("---")
         # 附加產業分析框架章節
         if industry_analysis_md:

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
 TSMC 機構法人 13F 持倉追蹤 Agent
-追蹤橋水基金（Bridgewater Associates）每季向 SEC 提交的 13F 報告，
+追蹤多個大型機構法人每季向 SEC 提交的 13F 報告，
 分析其在 TSMC ADR (TSMC)、Microsoft (MSFT)、Google (GOOGL)、
 Amazon (AMZN)、NVIDIA (NVDA) 的持股變化。
+
+目前追蹤：
+  - BlackRock, Inc.（貝萊德）CIK: 0001364742
+  - Bridgewater Associates, LP（橋水基金）CIK: 0001172661
 
 SEC 13F 報告在每個季度結束後 45 天內提交。
 數據源：SEC EDGAR Form 13F-HR（form13fInfoTable.xml）
@@ -28,15 +32,24 @@ SEC_HEADERS = {
 # SEC 13F XML namespace
 NS = "http://www.sec.gov/edgar/document/thirteenf/informationtable"
 
-# ── 機構法人識別碼 ──
-# 注意：CIK 0001364742 在 SEC 資料庫顯示為 BlackRock Finance, Inc.
-# 橋水基金（Bridgewater Associates）的實際 CIK 在 SEC 資料庫中為 0001172661，
-# 但 SEC 顯示該名稱為 "Adviser Compliance Associates LLC"。
-# 這裡使用最廣泛引用的 CIK 0001364742（BlackRock），因為 BlackRock 是全球最大的
-# 機構法人之一，其 13F 持倉數據最具參考價值。
-# 使用者可透過 --cik 參數覆蓋為其他機構法人的 CIK。
-BRIDGEWATER_CIK = "0001364742"
-BRIDGEWATER_NAME = "BlackRock, Inc."
+# ── 機構法人註冊表 ──
+# 每個機構以 cik 為 key，包含名稱與可選說明。
+# 新增追蹤對象只需在此字典新增一筆即可。
+INSTITUTION_REGISTRY: Dict[str, Dict[str, str]] = {
+    "0001364742": {
+        "name": "BlackRock, Inc.",
+        "short_name": "BlackRock",
+        "description": "全球最大資產管理機構",
+    },
+    "0001172661": {
+        "name": "Bridgewater Associates, LP",
+        "short_name": "Bridgewater",
+        "description": "全球最大避險基金（橋水基金）",
+    },
+}
+
+# 預設追蹤所有已註冊機構
+DEFAULT_TRACKED_CIKs = list(INSTITUTION_REGISTRY.keys())
 
 # ── 目標持股（使用名稱匹配，比 CUSIP 更可靠）──
 TARGET_COMPANIES = {
@@ -78,12 +91,14 @@ class InstitutionalTrackerAgent:
     """
     機構法人 13F 持倉追蹤 Agent
     抓取 SEC EDGAR 13F 報告，分析目標持股的季度變化。
+    支援同時追蹤多個機構法人（BlackRock、Bridgewater 等）。
     """
 
-    def __init__(self):
+    def __init__(self, tracked_ciks: Optional[List[str]] = None):
         self.name = "機構法人 13F 追蹤 Agent"
         self.source = "SEC EDGAR Form 13F-HR"
         self.logic = "追蹤大型機構法人每季 13F 持倉變化，分析 TSMC 與四大科技巨頭持股方向。"
+        self.tracked_ciks = tracked_ciks or DEFAULT_TRACKED_CIKs
         self.session = requests.Session()
         retry_strategy = Retry(
             total=3,
@@ -264,10 +279,10 @@ class InstitutionalTrackerAgent:
 
     # ── 核心分析邏輯 ──────────────────────────────────────────────
 
-    def analyze_13f_holdings(self, cik: str = BRIDGEWATER_CIK,
+    def analyze_13f_holdings(self, cik: str,
                             target_tickers: Optional[List[str]] = None) -> Tuple[Dict, str]:
         """
-        核心方法：抓取最近兩份 13F，比較目標持股的季度變化。
+        核心方法：抓取單一機構最近兩份 13F，比較目標持股的季度變化。
 
         回傳：
         - data: dict 包含每檔股票的持股比較、變化量、分數
@@ -276,11 +291,13 @@ class InstitutionalTrackerAgent:
         if target_tickers is None:
             target_tickers = list(TARGET_COMPANIES.keys())
 
+        institution = INSTITUTION_REGISTRY.get(cik, {})
+        inst_name = institution.get("name", f"CIK {cik}")
+        inst_short = institution.get("short_name", inst_name)
+
         report_lines = [
-            f"# 機構法人 13F 持倉追蹤",
-            f"數據來源: SEC EDGAR Form 13F-HR (form13fInfoTable.xml)",
-            f"分析邏輯: 比較最近兩季 13F 報告中目標持股的股數與價值變化",
-            "",
+            f"## 🏛 {inst_name}（CIK: {cik}）",
+            f"",
         ]
 
         try:
@@ -289,8 +306,8 @@ class InstitutionalTrackerAgent:
             filings = self._find_13f_filings(submissions, count=2)
 
             if len(filings) == 0:
-                return {"error": "找不到 13F 報告"}, (
-                    f"⚠️ 無法取得 CIK {cik} 的 13F 報告。"
+                return {"error": "找不到 13F 報告", "cik": cik}, (
+                    f"⚠️ 無法取得 {inst_name}（CIK {cik}）的 13F 報告。"
                     f"可能 SEC 資料尚未更新或 CIK 不正確。"
                 )
 
@@ -320,6 +337,9 @@ class InstitutionalTrackerAgent:
 
             # Step 3: 比較持股變化
             data = {
+                "cik": cik,
+                "institution_name": inst_name,
+                "institution_short": inst_short,
                 "current_date": current["reportDate"],
                 "current_filing_date": current["filingDate"],
                 "previous_date": previous["reportDate"] if previous else None,
@@ -480,28 +500,85 @@ class InstitutionalTrackerAgent:
             if score >= 70:
                 report_lines.append("")
                 report_lines.append(
-                    "**綜合解讀：** 機構對 TSMC 持正面看法，增持動作顯示對半導體/AI 供應鏈的信心。"
+                    f"**{inst_short} 解讀：** 對 TSMC 持正面看法，增持動作顯示對半導體/AI 供應鏈的信心。"
                 )
             elif score >= 50:
                 report_lines.append("")
                 report_lines.append(
-                    "**綜合解讀：** 機構對 TSMC 看法中性，持股穩定並未大幅調整。"
+                    f"**{inst_short} 解讀：** 對 TSMC 看法中性，持股穩定並未大幅調整。"
                 )
             else:
                 report_lines.append("")
                 report_lines.append(
-                    "**綜合解讀：** 機構對 TSMC 偏空，減碼或清倉可能反映對半導體需求的保留態度。"
+                    f"**{inst_short} 解讀：** 對 TSMC 偏空，減碼或清倉可能反映對半導體需求的保留態度。"
                 )
 
         except Exception as exc:
             import traceback
             traceback.print_exc()
-            return {"error": str(exc)}, (
-                f"⚠️ 13F 追蹤失敗：{exc}\n"
+            return {"error": str(exc), "cik": cik}, (
+                f"⚠️ {inst_name} 13F 追蹤失敗：{exc}\n"
                 f"可能原因：SEC API 暫時不可用、網路問題、或 13F 報告尚未提交。"
             )
 
         return data, "\n".join(report_lines)
+
+    def analyze_all_institutions(
+        self,
+        target_tickers: Optional[List[str]] = None,
+    ) -> Tuple[List[Dict], str]:
+        """
+        追蹤所有已註冊機構法人，彙整報告。
+
+        回傳：
+        - all_data: list of per-institution data dicts
+        - combined_report: Markdown 格式的合併報告
+        """
+        all_data = []
+        report_sections = [
+            "# 機構法人 13F 持倉追蹤",
+            f"數據來源: SEC EDGAR Form 13F-HR (form13fInfoTable.xml)",
+            f"分析邏輯: 比較最近兩季 13F 報告中目標持股的股數與價值變化",
+            f"追蹤機構: {', '.join(INSTITUTION_REGISTRY[cik]['name'] for cik in self.tracked_ciks)}",
+            "",
+        ]
+
+        for cik in self.tracked_ciks:
+            data, report = self.analyze_13f_holdings(cik=cik, target_tickers=target_tickers)
+            all_data.append(data)
+            report_sections.append(report)
+            report_sections.append("")
+
+        # 跨機構摘要比較
+        report_sections.append("---")
+        report_sections.append("")
+        report_sections.append("## 🔍 跨機構比較摘要")
+        report_sections.append("")
+
+        # 建立跨機構 TSMC 動向對照表
+        report_sections.append("| 機構 | TSMC 動向 | 分數 |")
+        report_sections.append("|------|----------|------|")
+        for data in all_data:
+            if "error" in data:
+                report_sections.append(f"| {data.get('institution_short', 'N/A')} | ⚠️ 資料取得失敗 | N/A |")
+                continue
+            tsm = data.get("holdings", {}).get("TSM", {})
+            status = tsm.get("status", "not_held")
+            status_label = {
+                "new": "🟢 新建持倉",
+                "increased": "🟢 增持",
+                "unchanged": "🟡 持股不變",
+                "decreased": "🟠 減持",
+                "exited": "🔴 清倉",
+                "not_held": "⚪ 未持有",
+                "held": "🟡 持有",
+            }.get(status, status)
+            score = data.get("score", "N/A")
+            report_sections.append(f"| {data.get('institution_short', 'N/A')} | {status_label} | {score}/100 |")
+
+        report_sections.append("")
+
+        return all_data, "\n".join(report_sections)
 
 
 def main() -> None:
@@ -509,8 +586,8 @@ def main() -> None:
     parser.add_argument(
         "--cik",
         type=str,
-        default=BRIDGEWATER_CIK,
-        help=f"SEC CIK 號碼（預設：{BRIDGEWATER_CIK}）",
+        default=None,
+        help="指定單一 SEC CIK 號碼（預設：追蹤所有已註冊機構）",
     )
     parser.add_argument(
         "--tickers",
@@ -518,24 +595,47 @@ def main() -> None:
         default=",".join(TARGET_COMPANIES.keys()),
         help="逗號分隔的 ticker 列表（預設：TSM,MSFT,GOOGL,AMZN,NVDA）",
     )
+    parser.add_argument(
+        "--list-institutions",
+        action="store_true",
+        help="列出所有已註冊的機構法人",
+    )
     args = parser.parse_args()
 
-    agent = InstitutionalTrackerAgent()
+    if args.list_institutions:
+        print("=== 已註冊機構法人 ===")
+        for cik, info in INSTITUTION_REGISTRY.items():
+            print(f"  CIK {cik}: {info['name']}（{info.get('short_name', '')}）— {info.get('description', '')}")
+        return
+
     target_list = [t.strip().upper() for t in args.tickers.split(",")]
 
+    agent = InstitutionalTrackerAgent(tracked_ciks=[args.cik] if args.cik else None)
     print(f"=== {agent.name} ===")
-    print(f"目標 CIK: {args.cik}")
     print(f"目標持股: {', '.join(target_list)}")
     print()
 
-    data, report = agent.analyze_13f_holdings(cik=args.cik, target_tickers=target_list)
-    print(report)
+    if args.cik:
+        # 單一機構模式（向後相容）
+        print(f"目標 CIK: {args.cik}")
+        data, report = agent.analyze_13f_holdings(cik=args.cik, target_tickers=target_list)
+        print(report)
+        if "error" in data:
+            print(f"\n錯誤詳情: {data['error']}")
+            sys.exit(1)
+        print(f"\nTSMC 動向分數: {data.get('score', 'N/A')}/100")
+    else:
+        # 全部機構模式
+        agent = InstitutionalTrackerAgent()
+        all_data, combined_report = agent.analyze_all_institutions(target_tickers=target_list)
+        print(combined_report)
 
-    if "error" in data:
-        print(f"\n錯誤詳情: {data['error']}")
-        sys.exit(1)
-
-    print(f"\nTSMC 動向分數: {data.get('score', 'N/A')}/100")
+        has_error = any("error" in d for d in all_data)
+        if has_error:
+            errors = [d for d in all_data if "error" in d]
+            for err in errors:
+                print(f"\n⚠️ {err.get('institution_name', err.get('cik', 'N/A'))}: {err['error']}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":
