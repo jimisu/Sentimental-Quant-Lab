@@ -40,9 +40,9 @@
 
 ### 本次 session 完成（fix/findmind-return-error / 2026-06-12）
 - [x] **FINMIND_TOKEN 環境變數設定**：
-  - 已將 token 寫入 `~/.bashrc`（`export FINMIND_TOKEN="..."`），新 terminal session 自動載入
   - 已建立 `.env` 檔案（專案目錄下），並加入 `.gitignore` 避免 token 洩露
-  - **⚠️ Token 安全規範**：token 只存放於本機 `~/.bashrc` 與 `.env`，嚴禁上傳至任何外部服務或 API
+  - **跨平台 shell rc 檔案**：AI 必須根據偵測結果寫入正確的 rc 檔案（见下方 Lesson Learned #4）
+  - **⚠️ Token 安全規範**：token 只存放於本機 `.env` 與 shell rc 檔案，嚴禁上傳至任何外部服務或 API
 - [x] **FinMind API token 驗證**：帶 token 呼叫 `TaiwanStockMonthRevenue` API，成功回傳 200 與月營收數據，token 有效
 - [x] **完整儀表板執行驗證**：五大 Agent（財務、技術、籌碼、宏觀、大廠基本面）全部成功運行，綜合健康得分 89.0/100（綠燈）
 
@@ -61,18 +61,51 @@
 - **結論**：設定 `FINMIND_TOKEN` 是必要的，不能只依賴快取
 
 ### 3. Token 安全注意事項
-- Token 已存入 `~/.bashrc` 和 `.env`，`.env` 已加入 `.gitignore`
+- Token 已存入 `.env` 與對應的 shell rc 檔案，`.env` 已加入 `.gitignore`
 - **⛔ 禁止將 token 傳送至任何外部服務**（包括 AI API、遠端伺服器、第三方工具）
 - **⛔ 禁止將 token 寫入任何會被 git commit 的檔案**
 - Token 僅用於本機開發環境呼叫 FinMind API
 
-## ⏳ 未完成 / 待事項 (Pending Tasks)
-<<<<<<< HEAD
+### 4. 跨平台 shell 環境設定（Linux bash vs macOS zsh）
+- **問題**：本專案需要將 `FINMIND_TOKEN` 寫入 shell rc 檔案，但不同 OS 的 rc 檔案不同
+- **AI 必須自動偵測**：AI 在設定環境變數前，應先檢查以下檔案是否存在，再決定寫入哪個：
+  ```bash
+  # AI 執行環境偵測（pseudo-code）
+  if [[ -f ~/.zshrc ]]; then
+      # macOS / 使用 zsh 的系統
+      RC_FILE=~/.zshrc
+  elif [[ -f ~/.bashrc ]]; then
+      # Linux / 使用 bash 的系統
+      RC_FILE=~/.bashrc
+  else
+      # fallback：檢查 $SHELL 變數
+      case "$SHELL" in
+          */zsh)  RC_FILE=~/.zshrc ;;
+          */bash) RC_FILE=~/.bashrc ;;
+          *)      RC_FILE=~/.bashrc ;;  # 預設 fallback
+      esac
+  fi
+  ```
+- **常見路徑**：
+  - macOS（zsh）：`~/.zshrc`
+  - Linux（bash）：`~/.bashrc`
+  - Linux（若只有 `~/.bash_profile`）：優先用 `~/.bashrc`，無則用 `~/.bash_profile`
+- **寫入格式**（兩者相同）：
+  ```bash
+  echo '' >> "$RC_FILE"
+  echo '# Sentimental-Quant-Lab FinMind API Token' >> "$RC_FILE"
+  echo 'export FINMIND_TOKEN="<token>"' >> "$RC_FILE"
+  ```
+- **注意事項**：
+  - 寫入前檢查是否已存在相同設定，避免重複追加
+  - 開新 terminal 後才會自動生效，當前 session 需手動 `source` 或 `export`
+
+## ⏳ 未完成 / 待辦事項 (Pending Tasks)
 1. **[已完成]** ~~建立 PR 合併到 main~~：`feat/claude-refactor` 已通過 PR #15 合併至 main（2026-06-12）。
 2. **[優先級：低] 清除本地舊分支**：`feat/claude-refactor` 和 `feat/add-codex-ai-working-follow` 已合併，可本地刪除。
 3. **[優先級：低] 舊報告清理**：`reports/` 目錄會隨每次執行累積，已有 `.gitignore` 排除，可考慮定期清理機制。
 4. **[優先級：低] 修復 `--test` 自測模式 FinMind 422 假警報**：修改 `run_self_test()`，讓 FinMind 測試帶入 token 或將 422 視為連線成功。
-5. **[已完成]** `FINMIND_TOKEN` 設定：已寫入 `~/.bashrc` 和 `.env`，`.env` 已加入 `.gitignore`。
+5. **[已完成]** `FINMIND_TOKEN` 設定：已寫入 shell rc 檔案（依平台自動偵測）和 `.env`，`.env` 已加入 `.gitignore`。
 
 ---
 
