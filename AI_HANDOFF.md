@@ -38,9 +38,9 @@
 - [x] **報告數據交叉驗證**：財務、技術、籌碼、宏觀、估值各面向數據均與原始快取一致
 
 ## ⏳ 未完成 / 待辦事項 (Pending Tasks)
-1. **[優先級：高] 建立 PR 合併到 main**：`finetune/claude-owl-report-format` 分支包含 PR #15 (auto-report) + 匯率量化增強，可建立 PR 合併。
-2. **[優先級：中] 完整 pipeline 端到端測試**：API 暫時不可用，下一個 session 跑 `python tsmc_signal_dashboard.py` 驗證。
-3. **[優先級：中] 清除舊分支**：`feat/add-codex-ai-working-follow` 已合併，可刪除。
+1. **[優先級：高] 建立 PR 合併到 main**：`finetune/claude-owl-report-format` 分支包含 PR #15 (auto-report) + 匯率量化增強，端到端測試已通過，可建立 PR 合併。
+2. **[優先級：低] 清除舊分支**：`feat/add-codex-ai-working-follow` 已合併，可刪除。
+3. **[優先級：低] 缺口 1 & 3 後續**：製程收入佔比對照表（缺口 1）與預期差框架（缺口 3）尚未實作，可作為下一個 session 目標。
 
 ## 🆕 本次 Session 新增修改（2026-06-11 ~ 2026-06-12）
 ### Rebase & 匯率量化增強
