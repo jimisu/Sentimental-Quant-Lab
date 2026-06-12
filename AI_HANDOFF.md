@@ -7,7 +7,7 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `fix/findmind-return-error`
+- **目前所在分支 (Current Branch)**: `feat/bridgewater-13f-tracker`
 - **本次交接時間 (Timestamp)**: 2026-06-12 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
@@ -38,7 +38,21 @@
 - [x] **端到端測試驗證**：儀表板執行後自動產出格式化報告，數據正確無誤
 - [x] **報告數據交叉驗證**：財務、技術、籌碼、宏觀、估值各面向數據均與原始快取一致
 
-### 本次 session 完成（fix/findmind-return-error / 2026-06-12）
+### 本次 session 完成（feat/bridgewater-13f-tracker / 2026-06-12）
+- [x] **多機構法人 13F 追蹤**：
+  - `INSTITUTION_REGISTRY` 註冊表：BlackRock (0001364742) + Bridgewater (0001172661)
+  - `analyze_all_institutions()` 方法：循環追蹤所有機構，產生合併報告 + 跨機構比較表格
+  - `InstitutionalTrackerAgent(tracked_ciks=...)` 可自定追蹤清單
+  - Orchestrator 改用 `analyze_all_institutions()`，報告標題更新為「機構法人 13F 持倉追蹤」
+  - `--list-institutions` CLI 參數：列出所有已註冊機構
+  - 42 新增測試，總計 236 測試全部通過
+- [x] **完整測試套件建立**：
+  - `test_config.py` (42 tests)、`test_data_cache.py` (58 tests)、`test_signal_engine.py` (94 tests)、`test_institutional_tracker.py` (42 tests)
+  - `conftest.py` 共享 fixtures
+  - 總計 236 tests, 0.67s 全部通過
+  - 提交：`6d1c93c`
+
+### 歷史已完成（fix/findmind-return-error / 2026-06-12）
 - [x] **FINMIND_TOKEN 環境變數設定**：
   - 已建立 `.env` 檔案（專案目錄下），並加入 `.gitignore` 避免 token 洩露
   - **跨平台 shell rc 檔案**：AI 必須根據偵測結果寫入正確的 rc 檔案（见下方 Lesson Learned #4）
@@ -90,11 +104,11 @@
   直接在命令前加 `export FINMIND_TOKEN="..."` 即可，開新 terminal 才需要 rc 檔案
 
 ## ⏳ 未完成 / 待辦事項 (Pending Tasks)
-1. **[已完成]** ~~建立 PR 合併到 main~~：`feat/claude-refactor` 已通過 PR #15 合併至 main（2026-06-12）。
-2. **[優先級：低] 清除本地舊分支**：`feat/claude-refactor` 和 `feat/add-codex-ai-working-follow` 已合併，可本地刪除。
-3. **[優先級：低] 舊報告清理**：`reports/` 目錄會隨每次執行累積，已有 `.gitignore` 排除，可考慮定期清理機制。
-4. **[優先級：低] 修復 `--test` 自測模式 FinMind 422 假警報**：修改 `run_self_test()`，讓 FinMind 測試帶入 token 或將 422 視為連線成功。
-5. **[已完成]** `FINMIND_TOKEN` 設定：人類工程師已手動寫入 shell rc 檔案，`.env` 已加入 `.gitignore`。
+1. **[優先級：低] 清除本地舊分支**：`feat/claude-refactor` 和 `feat/add-codex-ai-working-follow` 已合併，可本地刪除。
+2. **[優先級：低] 舊報告清理**：`reports/` 目錄會隨每次執行累積，已有 `.gitignore` 排除，可考慮定期清理機制。
+3. **[優先級：低] 修復 `--test` 自測模式 FinMind 422 假警報**：修改 `run_self_test()`，讓 FinMind 測試帶入 token 或將 422 視為連線成功。
+4. **[優先級：中] 建立 PR 合併到 main**：`feat/bridgewater-13f-tracker` 已提交 `6d1c93c`，可建立 PR 合併。
+5. **[優先級：低] 更多機構法人**：可考慮在 `INSTITUTION_REGISTRY` 加入 Vanguard、State Street 等。
 
 ---
 
@@ -111,6 +125,9 @@
 > 10. 本次 session 發現的 bug：f-string 中不可混用 `.format()` 變數名稱（已修復）
 > 11. `Orchestrator._append_to_log()` 成功寫入後，自動呼叫 `_generate_formatted_report()` 產出 `reports/tsmc_report_*.md`
 > 12. `scripts/format_tsmc_report.py` 仍保留為獨立 CLI 工具，可手動執行 `python scripts/format_tsmc_report.py --output reports/tsmc_report.md`
+> 13. `INSTITUTION_REGISTRY` 註冊表：以 CIK 為 key 的字典，新增機構只需在此加入一筆
+> 14. `InstitutionalTrackerAgent(tracked_ciks=...)` 可自定追蹤清單，None 表示全部
+> 15. `analyze_all_institutions()` 回傳 `(all_data, combined_report)`，combined_report 含跨機構比較表格
 
 ## 🚀 給下一個 AI 建議
 1. **新分支開發**：目前已在 `main`，新功能請開新分支開發。
