@@ -6,8 +6,8 @@
 -->
 
 ## 📌 基本資訊
-- **目前所在分支 (Current Branch)**: `feat/claude-refactor`
-- **本次交接時間 (Timestamp)**: 2026-06-11 16:30 (UTC+8)
+- **目前所在分支 (Current Branch)**: `finetune/claude-owl-report-format`
+- **本次交接時間 (Timestamp)**: 2026-06-12 08:00 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
@@ -38,9 +38,20 @@
 - [x] **報告數據交叉驗證**：財務、技術、籌碼、宏觀、估值各面向數據均與原始快取一致
 
 ## ⏳ 未完成 / 待辦事項 (Pending Tasks)
-1. **[優先級：高] 建立 PR 合併到 main**：`feat/claude-refactor` 分支的格式化報告自動生成已完成，可建立 PR 合併。
-2. **[優先級：中] 清除舊分支**：`feat/add-codex-ai-working-follow` 已合併，可刪除。
-3. **[優先級：低] 舊報告清理**：`reports/` 目錄會隨每次執行累積，可考慮加入 `.gitignore` 或定期清理機制。
+1. **[優先級：高] 建立 PR 合併到 main**：`finetune/claude-owl-report-format` 分支包含 PR #15 (auto-report) + 匯率量化增強，可建立 PR 合併。
+2. **[優先級：中] 完整 pipeline 端到端測試**：API 暫時不可用，下一個 session 跑 `python tsmc_signal_dashboard.py` 驗證。
+3. **[優先級：中] 清除舊分支**：`feat/add-codex-ai-working-follow` 已合併，可刪除。
+
+## 🆕 本次 Session 新增修改（2026-06-11 ~ 2026-06-12）
+### Rebase & 匯率量化增強
+- **Rebase**：`git rebase origin/main` 解決與 PR #15 (feat/claude-refactor) 的衝突，2 個 commit 成功疊上
+- **缺口 2 實作**：EPS 與匯率敏感度量化
+  - `analyze_eps_quality()` 新增 `latest_gross_margin` 參數、`fx_direction`/`fx_margin_impact`/`fx_eps_impact`/`fx_adjusted_gm` 欄位
+  - `analyze_margin_driver()` 新增匯率因子判斷（`fx_bonus` 機制）
+  - `build_structured_report()` 新增「匯率敏感度分析」段落 + 動態結論
+  - `Orchestrator._get_quarterly_fx_averages()` 從 Yahoo Finance 取得季度匯率均值
+  - `_build_industry_analysis_section()` 加入匯率逆風量化分析
+- **遠端差異**：local 領先 origin/main 2 個 commit（117 + 194 行變更）
 
 ---
 
