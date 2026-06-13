@@ -7,7 +7,7 @@ Amazon (AMZN)、NVIDIA (NVDA) 的持股變化。
 
 目前追蹤：
   - BlackRock, Inc.（貝萊德）CIK: 0001086364（BlackRock Advisors LLC，13F-NT）
-  - Bridgewater Associates, LP（橋水基金）CIK: 0002011169（GC Wealth Management，13F-HR）
+  - Bridgewater Associates, LP（橋水基金）CIK: 0001350694（Ray Dalio 創立，13F-HR）
 
 SEC 13F 報告在每個季度結束後 45 天內提交。
 數據源：SEC EDGAR Form 13F-NT / 13F-HR（infotable.xml）
@@ -55,10 +55,10 @@ INSTITUTION_REGISTRY: Dict[str, Dict[str, str]] = {
         "short_name": "BlackRock",
         "description": "全球最大資產管理機構（BlackRock Advisors LLC，13F-NT）",
     },
-    "0002011169": {
+    "0001350694": {
         "name": "Bridgewater Associates, LP",
         "short_name": "Bridgewater",
-        "description": "全球最大避險基金（橋水基金，透過 GC Wealth Management 代理申報 13F-HR）",
+        "description": "全球最大避險基金（橋水基金，Ray Dalio 創立，直接申報 13F-HR）",
     },
 }
 
