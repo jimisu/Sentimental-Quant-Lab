@@ -1575,7 +1575,8 @@ class Orchestrator:
 
     def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict],
                           styled_df: pd.DataFrame,
-                          market_sentiment_red: bool = False) -> str:
+                          market_sentiment_red: bool = False,
+                          revenue_by_date: Optional[Dict[str, float]] = None) -> str:
         """
         執行完整分析並回傳 dashboard_summary 字串。
         綜合得分燈號邏輯統一由 signal_engine 處理。
@@ -1852,6 +1853,7 @@ class Orchestrator:
             result=result,
             tw_price=tw_price,
             fx_averages=fx_averages,
+            revenue_by_date=revenue_by_date or {},
         )
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
@@ -2369,6 +2371,7 @@ class Orchestrator:
                        result = None,
                        tw_price: float = 0,
                        fx_averages: Optional[Dict[str, float]] = None,
+                       revenue_by_date: Optional[Dict[str, float]] = None,
                        ) -> None:
         """將分析結果以 Markdown 格式附加到檔案（重構版：直接產出結構化報告）"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2379,6 +2382,7 @@ class Orchestrator:
         tech_scores = tech_scores or {}
         bigtech_data = bigtech_data or {}
         fx_averages = fx_averages or {}
+        revenue_by_date = revenue_by_date or {}
 
         # ── 輔助函式 ──────────────────────────────────────────────────
         def _fmt_num(v, d=1, s=""):
@@ -2397,6 +2401,72 @@ class Orchestrator:
             for row in rows:
                 out += "\n| " + " | ".join(str(c) if str(c) else "N/A" for c in row) + " |"
             return out
+
+        def _build_3month_cumulative_table():
+            """建立近 N 組 3 個月累計營收 vs. 去年同期的比較表格。"""
+            if not revenue_by_date:
+                return "> ⚠️ 營收金額資料不足，無法計算累計比較。"
+
+            from datetime import date as _date
+            today = _date.today()
+
+            # 收集所有可用的月份（排序）
+            available_months = sorted(revenue_by_date.keys())
+
+            # 從最新月份往前，每 3 個月一組，最多取 4 組
+            groups = []
+            cur_year = today.year
+            cur_month = today.month
+
+            for _ in range(4):
+                # 計算這組的 3 個月
+                group_months = []
+                y, m = cur_year, cur_month
+                for _ in range(3):
+                    group_months.append(f"{y:04d}-{m:02d}")
+                    m -= 1
+                    if m <= 0:
+                        m = 12
+                        y -= 1
+                group_months.reverse()  # 由遠到近
+
+                # 去年同期
+                prev_group_months = []
+                for ym in group_months:
+                    py = int(ym[:4]) - 1
+                    prev_group_months.append(f"{py:04d}-{ym[5:7]}")
+
+                # 檢查資料是否齊全
+                cur_sum = sum(revenue_by_date.get(ym, 0) for ym in group_months)
+                prev_sum = sum(revenue_by_date.get(ym, 0) for ym in prev_group_months)
+                has_cur = all(ym in revenue_by_date for ym in group_months)
+                has_prev = all(ym in revenue_by_date for ym in prev_group_months)
+
+                if has_cur and has_prev and prev_sum > 0:
+                    yoy_pct = (cur_sum - prev_sum) / prev_sum * 100
+                    label = f"{group_months[0]} ~ {group_months[-1]}"
+                    groups.append([
+                        label,
+                        f"{cur_sum / 1e8:.1f}",
+                        f"{prev_sum / 1e8:.1f}",
+                        f"{yoy_pct:+.1f}%",
+                        "🟢" if yoy_pct > 15 else ("🟡" if yoy_pct > 0 else "🔴"),
+                    ])
+
+                # 往前推 3 個月
+                cur_month -= 3
+                while cur_month <= 0:
+                    cur_month += 12
+                    cur_year -= 1
+
+            if not groups:
+                return "> ⚠️ 營收金額資料不足，無法計算累計比較。"
+
+            table_rows = groups[:4]  # 最多 4 組
+            return _md_table(
+                ["期間", "當期累計（億元）", "去年同期（億元）", "YoY", ""],
+                table_rows,
+            )
 
         # ── 基本數據計算 ──────────────────────────────────────────────
         # 本益比
@@ -2550,7 +2620,11 @@ class Orchestrator:
             + _md_table(["月份", "YoY (%)", "備註"],
                        month_rows if month_rows else [["N/A", "N/A", "N/A"]])
             + "\n\n"
-            + f"> 🔍 高 YoY 需留意基期效應。建議以「近 3 個月累計營收 vs. 去年同期」消除單月雜訊。"
+            "### 近 3 個月累計營收 vs. 去年同期\n\n"
+            + "> 消除單月基期雜訊，以近 3 個月累計金額與去年同期累計比較，更能反映真實需求趨勢。\n\n"
+            + _build_3month_cumulative_table()
+            + "\n\n"
+            + f"> 🔍 高 YoY 月份需留意基期效應。累計 3 個月 YoY 可消除單月雜訊，更能反映真實需求趨勢。"
             + eps_decomp
         )
 

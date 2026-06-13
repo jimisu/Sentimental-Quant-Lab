@@ -262,38 +262,42 @@ def _fetch_monthly_revenue_records(token: Optional[str] = None) -> List[Dict]:
     )
 
 
-def get_monthly_revenue_yoy(token: Optional[str] = None) -> List[Dict]:
+def get_monthly_revenue_by_date(token: Optional[str] = None) -> Dict[str, float]:
     """
-    取得最近 12 個月的月營收年增率（YoY）。
-    回傳 list of dict，每筆包含 date (YYYY-MM) 和 revenue_yoy (百分比)。
+    取得月營收原始金額，以 YYYY-MM 為 key 的 dict。
     使用 24 小時快取，避免每日重複抓取。
     """
-    # 透過統一快取層取得月營收原始記錄（24 小時 TTL）
     records = fetch_with_cache(
         policy_name="monthly_revenue",
         cache_key="tsmc_monthly_revenue_24m",
         fetch_fn=lambda: _fetch_monthly_revenue_records(token),
     )
-    # 將 records 轉換為以日期為 key 的字典，值為 revenue
-    revenue_by_date = {}
+    revenue_by_date: Dict[str, float] = {}
     for r in records:
         date_str = r.get("date")  # 格式: YYYY-MM-DD
         if not date_str:
             continue
-        # 只取年月部分 (YYYY-MM)
         year_month = date_str[:7]  # YYYY-MM
         try:
             revenue = float(r.get("revenue", 0))
         except (ValueError, TypeError):
             continue
         revenue_by_date[year_month] = revenue
+    return revenue_by_date
+
+
+def get_monthly_revenue_yoy(token: Optional[str] = None) -> List[Dict]:
+    """
+    取得最近 12 個月的月營收年增率（YoY）。
+    回傳 list of dict，每筆包含 date (YYYY-MM) 和 revenue_yoy (百分比)。
+    """
+    revenue_by_date = get_monthly_revenue_by_date(token)
 
     # 產生最近 12 個月的年月列表（從當前月往前推 11 個月，共 12 個月）
     months_yoy = []
     year = TODAY.year
     month = TODAY.month
     for i in range(12):
-        # 計算當前月往前 i 個月
         m = month - i
         y = year
         while m <= 0:
@@ -305,13 +309,10 @@ def get_monthly_revenue_yoy(token: Optional[str] = None) -> List[Dict]:
     result = []
     for ym in months_yoy:
         if ym not in revenue_by_date:
-            # 若當月資料缺失，則跳過（或設為 None）
             continue
-        # 計算去年同月的年月
         prev_year = int(ym[:4]) - 1
         prev_ym = f"{prev_year:04d}-{ym[5:7]}"
         if prev_ym not in revenue_by_date:
-            # 若去年同月資料缺失，則無法計算 YoY
             continue
         cur_rev = revenue_by_date[ym]
         prev_rev = revenue_by_date[prev_ym]
@@ -1103,6 +1104,7 @@ def main():
     )
 
     # Tier 2: 低頻變化資料 — 使用 TTL 快取（月營收 24h、季報 7d）
+    revenue_by_date = get_monthly_revenue_by_date(token)
     revenue_yoy = get_monthly_revenue_yoy(token)
     quarterly_margins = get_quarterly_margins(token)
 
@@ -1131,7 +1133,8 @@ def main():
     # 執行 Agent 深度分析（統一由 signal_engine 計算綜合燈號）
     dashboard_summary = orchestrator.run_full_analysis(
         quarterly_margins, value_df, chip_data, styled_df,
-        market_sentiment_red=market_sentiment_red
+        market_sentiment_red=market_sentiment_red,
+        revenue_by_date=revenue_by_date,
     )
 
     print(f"\n{dashboard_summary}")
