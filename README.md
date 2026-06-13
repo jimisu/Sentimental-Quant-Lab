@@ -10,6 +10,7 @@ This repository provides tools to:
 - Analyze technical indicators (Bollinger Bands, RSI, KD, MACD, moving averages)
 - Track institutional investor (foreign/trust/dealer) buy-sell dynamics
 - Monitor ADR premium/discount and big-tech CAPEX trends from SEC filings
+- Track SEC 13F institutional holdings (BlackRock, Bridgewater) with quarterly analysis
 - Display a colour-coded dashboard in the terminal using the `rich` library
 - Generate 4-panel technical charts (price/volume/RSI+KD/MACD)
 
@@ -36,6 +37,12 @@ python tsmc_signal_dashboard.py
 export FINMIND_TOKEN=your_token_here
 ```
 
+*For SEC 13F institutional holdings tracking (requires `curl_cffi`):*
+```bash
+pip install curl_cffi
+python scripts/fetch_13f_research.py
+```
+
 ## 📖 Architecture
 
 ### Data Sources
@@ -45,6 +52,7 @@ export FINMIND_TOKEN=your_token_here
 | TWSE API | Daily OHLCV (STOCK_DAY), market trading value (FMTQIK) | 24h for past months |
 | Yahoo Finance | TSM ADR price, USD/TWD rate | 1h |
 | SEC EDGAR XBRL | Big-tech CAPEX (AMZN, MSFT, NVDA, AAPL, TSLA, GOOGL, META) | 7d |
+| SEC EDGAR 13F | Institutional holdings (BlackRock, Bridgewater) | 90d |
 
 ### AI Agent System
 Four specialized agents collaborate via an Orchestrator:
@@ -55,6 +63,24 @@ Four specialized agents collaborate via an Orchestrator:
 | **Technical Agent** | Market dynamics | Bollinger Bands, RSI, KD, MACD, MA alignment, support/resistance |
 | **Chip Agent** | Institutional flow | Foreign/trust/dealer 5-day cumulative, 3-institution resonance |
 | **Macro Agent** | Global trends | ADR premium, big-tech CAPEX trends |
+
+### SEC 13F Institutional Holdings Tracker
+
+Tracks quarterly 13F filings from major institutional investors:
+
+| Institution | CIK | Form | Notes |
+|-------------|-----|------|-------|
+| **BlackRock, Inc.** | 0001086364 | 13F-NT | BlackRock Advisors LLC, direct filing |
+| **Bridgewater Associates, LP** | 0002011169 | 13F-HR | Filed via GC Wealth Management RIA, LLC (COMBINATION REPORT) |
+
+**Key findings (2026-06-13)**:
+- **TSMC divergence**: BlackRock trimmed -4.6% vs Bridgewater added +10.7%
+- **7 common top-10 holdings**: MSFT, NVDA, AAPL, GOOGL, AMZN, META, ISHARES TR
+- **Data access**: SEC Archives (`www.sec.gov/Archives/edgar/data/`) blocks standard Python requests (HTTP 403); use `curl_cffi` with `impersonate='chrome'` to bypass TLS fingerprinting
+- **Holdings data**: Located in `xslForm13F_X02/infotable.xml` (not `primary_doc.xml` which is the cover page)
+- **Cache TTL**: 90 days (2160 hours), sufficient for quarterly updates
+
+Reports are generated to `reports/13f_research_YYYYMMDD.md`.
 
 ### Composite Scoring
 ```
