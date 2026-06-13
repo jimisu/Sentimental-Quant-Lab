@@ -6,14 +6,21 @@ TSMC 機構法人 13F 持倉追蹤 Agent
 Amazon (AMZN)、NVIDIA (NVDA) 的持股變化。
 
 目前追蹤：
-  - BlackRock, Inc.（貝萊德）CIK: 0001364742
-  - Bridgewater Associates, LP（橋水基金）CIK: 0001172661
+  - BlackRock, Inc.（貝萊德）CIK: 0001086364（BlackRock Advisors LLC，13F-NT）
+  - Bridgewater Associates, LP（橋水基金）CIK: 0002011169（GC Wealth Management，13F-HR）
 
 SEC 13F 報告在每個季度結束後 45 天內提交。
-數據源：SEC EDGAR Form 13F-HR（form13fInfoTable.xml）
+數據源：SEC EDGAR Form 13F-NT / 13F-HR（infotable.xml）
+
+注意：SEC Archives 端點需要 curl_cffi（TLS 指紋偽裝）才能存取。
+      持股明細在 infotable.xml（非 primary_doc.xml，後者是封面頁）。
+      BlackRock Q1 2026 的 13F-NT 為 Notice 形式，無完整持股明細。
 """
 
 import argparse
+import json
+import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Tuple
@@ -23,6 +30,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from data_cache import fetch_with_cache
+
+# curl_cffi for bypassing SEC TLS fingerprint blocking
+try:
+    from curl_cffi import requests as cffi_requests
+    _HAS_CURL_CFFI = True
+except ImportError:
+    _HAS_CURL_CFFI = False
 
 SEC_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -144,8 +158,16 @@ class InstitutionalTrackerAgent:
             fetch_fn=lambda: self._http_get_json(url),
         )
 
-    def _find_13f_filings(self, submissions: Dict, count: int = 2) -> List[Dict]:
-        """從 submission 索引中找出最近的 13F filings（含 13F-HR 和 13F-NT）"""
+    def _find_13f_filings(self, submissions: Dict, count: int = 2,
+                          skip_notice: bool = False) -> List[Dict]:
+        """
+        從 submission 索引中找出最近的 13F filings。
+
+        Args:
+            submissions: SEC submission API 回應
+            count: 返回幾個 filing
+            skip_notice: 若為 True，跳過 13F-NT（Notice 形式，無完整持股明細）
+        """
         recent = submissions.get("filings", {}).get("recent", {})
         if not recent:
             return []
@@ -159,6 +181,9 @@ class InstitutionalTrackerAgent:
         filings = []
         for i, form in enumerate(forms):
             if not form.startswith("13F"):
+                continue
+            if skip_notice and form == "13F-NT":
+                # 13F-NT 為 Notice 形式，無完整持股明細（BlackRock 2024-12-31 起使用）
                 continue
             filings.append({
                 "accessionNumber": accession_numbers[i] if i < len(accession_numbers) else "",
@@ -174,46 +199,106 @@ class InstitutionalTrackerAgent:
 
     def _fetch_13f_info_table(self, cik: str, accession: str) -> str:
         """
-        抓取 13F 報告的持股明細 XML。
+        抓取 13F 報告的持股明細。
 
         URL 格式（for xslForm13F_X02 子目錄）：
-        - BlackRock: https://www.sec.gov/Archives/edgar/data/1086364/{acc}/xslForm13F_X02/primary_doc.xml
-        - Bridgewater: https://www.sec.gov/Archives/edgar/data/2011169/{acc}/xslForm13F_X02/primary_doc.xml
+        - BlackRock: https://www.sec.gov/Archives/edgar/data/1086364/{acc}/xslForm13F_X02/infotable.xml
+        - Bridgewater: https://www.sec.gov/Archives/edgar/data/2011169/{acc}/xslForm13F_X02/infotable.xml
 
-        注意：www.sec.gov/Archives 已被 SEC 封鎖（對非瀏覽器 UA）。
-        此方法依賴 fetch_with_cache 先檢查 local_cache；若無快取則嘗試 HTTP 請求。
-        HTTP 請求僅在特殊情況（如 curl-like UA）下成功。
+        注意：
+        - 持股明細在 infotable.xml（非 primary_doc.xml，後者是封面頁）
+        - SEC Archives 封鎖標準 Python requests（HTTP 403），需用 curl_cffi 繞過
+        - 若 local_cache 已有快取，fetch_with_cache 會直接返回快取資料
+        - 相容舊版 cache key（sec_13f_info_{accession}），避免重複抓取
         """
         accession_clean = accession.replace("-", "")
         cik_no = str(int(cik))
-        url = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/xslForm13F_X02/primary_doc.xml"
-        cache_key = f"sec_13f_info_{accession}"
+        url = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/xslForm13F_X02/infotable.xml"
+        cache_key_new = f"sec_13f_infotable_{accession}"
+        cache_key_old = f"sec_13f_info_{accession}"
+
+        def _fetch_from_sec():
+            """使用 curl_cffi 繞過 SEC TLS 指紋封鎖"""
+            if not _HAS_CURL_CFFI:
+                raise RuntimeError(
+                    "需要 curl_cffi 才能存取 SEC Archives。"
+                    "請安裝：pip install curl_cffi"
+                )
+            headers = {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+            resp = cffi_requests.get(url, headers=headers, impersonate='chrome', timeout=60)
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"SEC Archives 回傳 HTTP {resp.status_code}：{url}"
+                )
+            return resp.text
+
+        # 優先嘗試新版 cache key，若無則嘗試舊版
+        # read_cache 回傳的是資料內容字串（非 dict）
+        from data_cache import read_cache as _read_cache
+        cached = _read_cache(cache_key_new, max_age_hours=2160)
+        if cached is not None:
+            return cached
+        cached = _read_cache(cache_key_old, max_age_hours=2160)
+        if cached is not None:
+            return cached
+
+        # 無快取，從 SEC 抓取
         return fetch_with_cache(
             policy_name="sec_13f",
-            cache_key=cache_key,
-            fetch_fn=lambda: self._http_get_text(url),
+            cache_key=cache_key_new,
+            fetch_fn=_fetch_from_sec,
         )
+
+    def _load_cached_holdings(self, cik: str, exclude_acc: str = None) -> List[Dict]:
+        """
+        從 local_cache 載入所有可用的舊版 sec_13f_info_{cik}_{accession} 快取。
+        回傳: [(accession, holdings_dict), ...] 按 accession 降序排列
+        """
+        import glob
+        cache_dir = "local_cache"
+        cik_no = str(int(cik))
+        pattern = os.path.join(cache_dir, f"sec_13f_info_*{cik_no}*.json")
+        results = []
+        for fpath in sorted(glob.glob(pattern), reverse=True):
+            try:
+                with open(fpath) as fh:
+                    cached = json.load(fh)
+                xml_data = cached.get("data", "")
+                if not xml_data:
+                    continue
+                holdings = self._parse_holdings(xml_data)
+                # 從檔名提取 accession
+                fname = os.path.basename(fpath)
+                acc = fname.replace("sec_13f_info_", "").split("_")[0]
+                if acc != exclude_acc and holdings:
+                    results.append((acc, holdings))
+            except Exception:
+                continue
+        return results
 
     def _parse_holdings(self, xml_text: str) -> Dict[str, Dict]:
         """
-        解析 form13fInfoTable.xml，提取目標持股。
+        解析 13F 持股明細，提取目標持股。
         回傳: {ticker: {"shares": int, "value_k": float, "name": str}}
 
-        XML 結構（含 namespace）：
-        <informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
-          <infoTable>
-            <nameOfIssuer>...</nameOfIssuer>
-            <titleOfClass>...</titleOfClass>
-            <cusip>...</cusip>
-            <value>...</value>  （單位：美元，非千美元）
-            <shrsOrPrnAmt>
-              <sshPrnamt>...</sshPrnamt>
-              <sshPrnamtType>...</sshPrnamtType>
-            </shrsOrPrnAmt>
-            ...
-          </infoTable>
-        </informationTable>
+        支援兩種格式：
+        1. XML 格式（BlackRock）：<infoTable> 帶 namespace
+        2. HTML 格式（Bridgewater）：<tr><td> 表格
         """
+        # 先嘗試 XML 格式
+        if "<infoTable>" in xml_text or "<n2:infoTable>" in xml_text:
+            return self._parse_holdings_xml(xml_text)
+        # 再嘗試 HTML 格式
+        elif "<tr>" in xml_text:
+            return self._parse_holdings_html(xml_text)
+        else:
+            raise RuntimeError("無法識別的 13F 持股明細格式")
+
+    def _parse_holdings_xml(self, xml_text: str) -> Dict[str, Dict]:
+        """解析 XML 格式的 13F 持股（BlackRock）"""
         holdings = {}
 
         try:
@@ -223,11 +308,9 @@ class InstitutionalTrackerAgent:
 
         info_tables = root.findall(f"{{{NS}}}infoTable")
         if not info_tables:
-            # 嘗試不帶 namespace
             info_tables = root.findall(".//infoTable")
 
         for table in info_tables:
-            # 提取 issuer name
             name_el = table.find(f"{{{NS}}}nameOfIssuer")
             if name_el is None:
                 name_el = table.find("nameOfIssuer")
@@ -235,24 +318,20 @@ class InstitutionalTrackerAgent:
                 continue
             issuer_name = (name_el.text or "").strip()
 
-            # 檢查是否匹配目標公司
             matched_ticker = None
             for ticker, meta in TARGET_COMPANIES.items():
                 if _match_name(issuer_name, meta["match_names"]):
                     matched_ticker = ticker
                     break
-
             if matched_ticker is None:
                 continue
 
-            # 提取 value（SEC 13F 的 value 單位是美元）
             value_el = table.find(f"{{{NS}}}value")
             if value_el is None:
                 value_el = table.find("value")
             if value_el is None:
                 continue
 
-            # 提取 shares
             shares = 0
             shrs_el = table.find(f"{{{NS}}}shrsOrPrnAmt")
             if shrs_el is None:
@@ -272,14 +351,72 @@ class InstitutionalTrackerAgent:
             except (ValueError, TypeError):
                 continue
 
-            # 累加同名持倉（可能有多筆，如 Call/Put/不同 class）
             if matched_ticker in holdings:
                 holdings[matched_ticker]["shares"] += shares
-                holdings[matched_ticker]["value_k"] += value / 1000  # 轉換為千美元
+                holdings[matched_ticker]["value_k"] += value / 1000
             else:
                 holdings[matched_ticker] = {
                     "shares": shares,
-                    "value_k": value / 1000,  # 轉換為千美元
+                    "value_k": value / 1000,
+                    "name": issuer_name,
+                }
+
+        return holdings
+
+    def _parse_holdings_html(self, html_text: str) -> Dict[str, Dict]:
+        """解析 HTML 格式的 13F 持股（Bridgewater）"""
+        holdings = {}
+
+        rows = re.findall(r'<tr>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+        for row in rows:
+            cols = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row, re.DOTALL | re.IGNORECASE)
+            if len(cols) < 5:
+                continue
+            clean_cols = [re.sub(r'<[^>]+>', ' ', c).strip() for c in cols]
+            issuer_name = clean_cols[0]
+            if not issuer_name:
+                continue
+
+            matched_ticker = None
+            for ticker, meta in TARGET_COMPANIES.items():
+                if _match_name(issuer_name, meta["match_names"]):
+                    matched_ticker = ticker
+                    break
+            if matched_ticker is None:
+                continue
+
+            # 從欄位中找出 value（>100K）和 shares（>1K）
+            value = 0.0
+            shares = 0
+            for ci in range(3, min(len(clean_cols), 7)):
+                val_str = clean_cols[ci].replace(',', '').replace('$', '').strip()
+                try:
+                    val = float(val_str)
+                    if val > 100000 and value == 0:  # value in dollars
+                        value = val
+                        # shares 通常在下一欄
+                        if ci + 1 < len(clean_cols):
+                            sh_str = clean_cols[ci + 1].replace(',', '').strip()
+                            try:
+                                sh = int(float(sh_str))
+                                if sh > 100:
+                                    shares = sh
+                            except ValueError:
+                                pass
+                        break
+                except ValueError:
+                    pass
+
+            if value == 0:
+                continue
+
+            if matched_ticker in holdings:
+                holdings[matched_ticker]["shares"] += shares
+                holdings[matched_ticker]["value_k"] += value / 1000
+            else:
+                holdings[matched_ticker] = {
+                    "shares": shares,
+                    "value_k": value / 1000,
                     "name": issuer_name,
                 }
 
@@ -311,7 +448,7 @@ class InstitutionalTrackerAgent:
         try:
             # Step 1: 取得 filing 索引
             submissions = self._fetch_submission_index(cik)
-            filings = self._find_13f_filings(submissions, count=2)
+            filings = self._find_13f_filings(submissions, count=4)
 
             if len(filings) == 0:
                 return {"error": "找不到 13F 報告", "cik": cik}, (
@@ -319,8 +456,36 @@ class InstitutionalTrackerAgent:
                     f"可能 SEC 資料尚未更新或 CIK 不正確。"
                 )
 
-            current = filings[0]
-            previous = filings[1] if len(filings) >= 2 else None
+            # 找出最近有完整持股明細的季度（跳過 13F-NT Notice 形式）
+            # BlackRock 從 2024-12-31 起全面使用 13F-NT，無完整持股明細
+            current = None
+            previous = None
+            notice_skipped = []
+
+            for f in filings:
+                if f["form"] == "13F-NT":
+                    notice_skipped.append(f["reportDate"])
+                    continue
+                if current is None:
+                    current = f
+                elif previous is None:
+                    previous = f
+                    break
+
+            # 如果前4季全是 Notice，降級使用最新兩季（嘗試從舊快取讀取）
+            if current is None:
+                filings_all = self._find_13f_filings(submissions, count=2)
+                current = filings_all[0]
+                previous = filings_all[1] if len(filings_all) >= 2 else None
+                notice_skipped = [current["reportDate"]]
+
+            if notice_skipped:
+                report_lines.append(
+                    f"⚠️ **注意**: {inst_name} 近期 13F 為 Notice 形式"
+                    f"（{', '.join(notice_skipped)}），無完整持股明細。"
+                    f"退回使用 {current['reportDate']} 資料。"
+                )
+                report_lines.append("")
 
             report_lines.append(
                 f"**最新 13F:** {current['reportDate']}（申報日: {current['filingDate']}）"
@@ -331,9 +496,40 @@ class InstitutionalTrackerAgent:
                 )
             report_lines.append("")
 
-            # Step 2: 抓取持股明細
-            current_xml = self._fetch_13f_info_table(cik, current["accessionNumber"])
-            current_holdings = self._parse_holdings(current_xml)
+            # Step 2: 抓取持股明細（含 fallback）
+            current_holdings = {}
+            previous_holdings = {}
+
+            # 嘗試抓取最新季的持股明細
+            try:
+                xml = self._fetch_13f_info_table(cik, current["accessionNumber"])
+                current_holdings = self._parse_holdings(xml)
+            except Exception:
+                pass
+
+            # 若最新季無持股（Notice 形式），從舊快取載入
+            if not current_holdings:
+                cached_list = self._load_cached_holdings(cik)
+                if cached_list:
+                    acc, current_holdings = cached_list[0]
+                    note = (f"⚠️ {inst_name} 近期 13F 為 Notice 形式"
+                            f"，使用本地快取（{acc}，{len(current_holdings)} 檔持股）。")
+                    report_lines.append(note)
+                    report_lines.append("")
+                    # 嘗試找前一期作為比較基準
+                    if len(cached_list) >= 2:
+                        _, previous_holdings = cached_list[1]
+                        previous = {"accessionNumber": cached_list[1][0],
+                                    "filingDate": "N/A", "reportDate": "N/A",
+                                    "form": "13F", "primaryDocument": ""}
+                    current = {"accessionNumber": acc,
+                               "filingDate": "N/A", "reportDate": "N/A",
+                               "form": "13F", "primaryDocument": ""}
+                else:
+                    raise RuntimeError(
+                        f"無法取得 {inst_name} 的持股明細"
+                        f"（最新幾季皆為 13F-NT Notice 形式，且無本地快取）。"
+                    )
 
             previous_holdings = {}
             if previous:
@@ -341,7 +537,50 @@ class InstitutionalTrackerAgent:
                     prev_xml = self._fetch_13f_info_table(cik, previous["accessionNumber"])
                     previous_holdings = self._parse_holdings(prev_xml)
                 except Exception:
-                    previous = None
+                    # 嘗試從 local_cache 找舊快取作為 previous
+                    import os as _os
+                    cache_dir = "local_cache"
+                    cik_no = str(int(cik))
+                    prefix = "sec_13f_info_"
+                    if _os.path.isdir(cache_dir):
+                        matching_files = sorted(
+                            [fn for fn in _os.listdir(cache_dir)
+                             if fn.startswith(prefix) and cik_no in fn and fn.endswith(".json")],
+                            reverse=True
+                        )
+                        # 跳過已經用作 current 的檔案
+                        used_fn = None
+                        if current and current.get("accessionNumber"):
+                            used_acc = current["accessionNumber"]
+                            for _fn in matching_files:
+                                if used_acc in _fn:
+                                    used_fn = _fn
+                                    break
+                        for fn in matching_files:
+                            if fn == used_fn:
+                                continue
+                            try:
+                                cache_path = _os.path.join(cache_dir, fn)
+                                with open(cache_path) as _fh:
+                                    import json as _json
+                                    _cached = _json.load(_fh)
+                                xml_data = _cached.get("data", "")
+                                if xml_data:
+                                    parsed = self._parse_holdings(xml_data)
+                                    if parsed:
+                                        previous_holdings = parsed
+                                        acc_part = fn[len(prefix):].split("_")[0]
+                                        # 更新 previous 的日期資訊
+                                        previous = {"accessionNumber": acc_part,
+                                                    "filingDate": "N/A",
+                                                    "reportDate": "N/A",
+                                                    "form": "13F",
+                                                    "primaryDocument": ""}
+                                        break
+                            except Exception:
+                                continue
+                    if not previous_holdings:
+                        previous = None
 
             # Step 3: 比較持股變化
             data = {
@@ -545,7 +784,7 @@ class InstitutionalTrackerAgent:
         all_data = []
         report_sections = [
             "# 機構法人 13F 持倉追蹤",
-            f"數據來源: SEC EDGAR Form 13F-HR (form13fInfoTable.xml)",
+            f"數據來源: SEC EDGAR Form 13F-NT / 13F-HR (infotable.xml)",
             f"分析邏輯: 比較最近兩季 13F 報告中目標持股的股數與價值變化",
             f"追蹤機構: {', '.join(INSTITUTION_REGISTRY[cik]['name'] for cik in self.tracked_ciks)}",
             "",
