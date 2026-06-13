@@ -102,6 +102,10 @@ def read_cache(cache_key: str, max_age_hours: float,
             cached_dt = datetime.fromisoformat(cached_at)
         except ValueError:
             return None
+        # 處理帶 timezone 的 timestamp：統一轉為 naive UTC
+        if cached_dt.tzinfo is not None:
+            from datetime import timezone as _tz
+            cached_dt = cached_dt.astimezone(_tz.utc).replace(tzinfo=None)
         age = datetime.now() - cached_dt
         if age > timedelta(hours=max_age_hours):
             return None

@@ -305,23 +305,31 @@ class InstitutionalTrackerAgent:
         }
 
         def _fetch_from_sec():
-            """從 SEC Archives 抓取（統一 URL 格式）"""
+            """從 SEC Archives 抓取
+
+            優先嘗試 infotable.xml（Bridgewater 等 HTML 表格格式）
+            若 404，fallback 到 .txt（BlackRock 等 XML 格式）
+            """
+            # 嘗試 infotable.xml
             url = (f"https://www.sec.gov/Archives/edgar/data/{cik_path}"
                    f"/{accession_clean}/xslForm13F_X02/infotable.xml")
             resp = cffi_requests.get(url, headers=headers, impersonate='chrome', timeout=120)
 
-            if resp.status_code != 200:
-                raise RuntimeError(
-                    f"SEC Archives HTTP {resp.status_code}: CIK {cik} Acc {accession}"
-                )
+            if resp.status_code == 200 and len(resp.text) > 100:
+                return resp.text
 
-            # 驗證內容非空（有些 infotable.xml 是空 HTML）
-            if len(resp.text) < 100:
-                raise RuntimeError(
-                    f"SEC Archives 內容過短 ({len(resp.text)} chars): CIK {cik} Acc {accession}"
-                )
+            # Fallback：嘗試 .txt（BlackRock 等）
+            url_txt = (f"https://www.sec.gov/Archives/edgar/data/{cik_path}"
+                       f"/{accession_clean}/{accession}.txt")
+            resp_txt = cffi_requests.get(url_txt, headers=headers, impersonate='chrome', timeout=120)
 
-            return resp.text
+            if resp_txt.status_code == 200 and len(resp_txt.text) > 100:
+                return resp_txt.text
+
+            raise RuntimeError(
+                f"SEC Archives 無法取得持股明細：CIK {cik} Acc {accession} "
+                f"(infotable.xml: {resp.status_code}, .txt: {resp_txt.status_code})"
+            )
 
         try:
             return fetch_with_cache(
