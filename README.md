@@ -70,7 +70,7 @@ Tracks quarterly 13F filings from major institutional investors:
 
 | Institution | CIK | Form | Notes |
 |-------------|-----|------|-------|
-| **BlackRock, Inc.** | 0001086364 | 13F-NT | BlackRock Advisors LLC, direct filing |
+| **BlackRock, Inc.** | 0001364742 | 13F-HR | BlackRock Finance, Inc., core corporate CIK (holdings in .txt) |
 | **Bridgewater Associates, LP** | 0001350694 | 13F-HR | Ray Dalio founded, direct filing (82 13F-HR filings) |
 
 **Key findings (2026-06-13)**:
