@@ -2607,7 +2607,8 @@ class Orchestrator:
             ])
             + "\n\n"
             f"**均線結構：** {ma_order}\n\n"
-            f"**趨勢判斷：** 短期{short_trend} ｜ 中期{mid_trend} ｜ 長期{long_trend}"
+            f"**趨勢判斷：** 短期{short_trend} ｜ 中期{mid_trend} ｜ 長期{long_trend}\n\n"
+            + tech_report
         )
 
         # ═══ 四、籌碼面分析 ═══
