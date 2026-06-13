@@ -2341,15 +2341,6 @@ class Orchestrator:
         lines.append("ADR 溢價（需過濾匯率因子）")
         lines.append("```")
         lines.append("")
-        lines.append("**操作建議總結：**")
-        lines.append("")
-        lines.append("| 時間框架 | 建議 | 核心邏輯 |")
-        lines.append("|----------|------|----------|")
-        lines.append("| **法說會前** | 不追高、不追空 | 等待法說會內容確認方向 |")
-        lines.append("| **法說會後** | 依指引方向操作 | 上修 → 回補；下修 → 減碼 |")
-        lines.append("| **中期** | 拉回至支撐區分批佈局 | AI 結構性成長邏輯不變 |")
-        lines.append("| **止損** | 跌破 20MA 減碼 30-50% | 短期趨勢轉弱確認 |")
-
         return "\n".join(lines)
 
     def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str,
