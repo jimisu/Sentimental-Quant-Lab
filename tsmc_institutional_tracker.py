@@ -6,7 +6,7 @@ TSMC 機構法人 13F 持倉追蹤 Agent
 Amazon (AMZN)、NVIDIA (NVDA) 的持股變化。
 
 目前追蹤：
-  - BlackRock, Inc.（貝萊德）CIK: 0001086364（BlackRock Advisors LLC，13F-NT）
+  - BlackRock, Inc.（貝萊德）CIK: 0001364742（BlackRock Finance, Inc.，核心法人，13F-HR）
   - Bridgewater Associates, LP（橋水基金）CIK: 0001350694（Ray Dalio 創立，13F-HR）
 
 SEC 13F 報告在每個季度結束後 45 天內提交。
@@ -50,10 +50,10 @@ NS = "http://www.sec.gov/edgar/document/thirteenf/informationtable"
 # 每個機構以 cik 為 key，包含名稱與可選說明。
 # 新增追蹤對象只需在此字典新增一筆即可。
 INSTITUTION_REGISTRY: Dict[str, Dict[str, str]] = {
-    "0001086364": {
+    "0001364742": {
         "name": "BlackRock, Inc.",
         "short_name": "BlackRock",
-        "description": "全球最大資產管理機構（BlackRock Advisors LLC，13F-NT）",
+        "description": "全球最大資產管理機構（BlackRock Finance, Inc.，核心法人，13F-HR）",
     },
     "0001350694": {
         "name": "Bridgewater Associates, LP",
@@ -201,42 +201,21 @@ class InstitutionalTrackerAgent:
         """
         抓取 13F 報告的持股明細。
 
-        URL 格式（for xslForm13F_X02 子目錄）：
-        - BlackRock: https://www.sec.gov/Archives/edgar/data/1086364/{acc}/xslForm13F_X02/infotable.xml
-        - Bridgewater: https://www.sec.gov/Archives/edgar/data/2011169/{acc}/xslForm13F_X02/infotable.xml
+        URL 優先順序：
+        1. infotable.xml（Bridgewater 等 HTML 格式）
+        2. {accession}.txt（BlackRock Finance 等完整 XML 格式）
+        3. primary_doc.xml（封面頁，無持股明細）
 
         注意：
-        - 持股明細在 infotable.xml（非 primary_doc.xml，後者是封面頁）
         - SEC Archives 封鎖標準 Python requests（HTTP 403），需用 curl_cffi 繞過
-        - 若 local_cache 已有快取，fetch_with_cache 會直接返回快取資料
         - 相容舊版 cache key（sec_13f_info_{accession}），避免重複抓取
         """
         accession_clean = accession.replace("-", "")
         cik_no = str(int(cik))
-        url = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/xslForm13F_X02/infotable.xml"
         cache_key_new = f"sec_13f_infotable_{accession}"
         cache_key_old = f"sec_13f_info_{accession}"
 
-        def _fetch_from_sec():
-            """使用 curl_cffi 繞過 SEC TLS 指紋封鎖"""
-            if not _HAS_CURL_CFFI:
-                raise RuntimeError(
-                    "需要 curl_cffi 才能存取 SEC Archives。"
-                    "請安裝：pip install curl_cffi"
-                )
-            headers = {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-            }
-            resp = cffi_requests.get(url, headers=headers, impersonate='chrome', timeout=60)
-            if resp.status_code != 200:
-                raise RuntimeError(
-                    f"SEC Archives 回傳 HTTP {resp.status_code}：{url}"
-                )
-            return resp.text
-
-        # 優先嘗試新版 cache key，若無則嘗試舊版
-        # read_cache 回傳的是資料內容字串（非 dict）
+        # 優先嘗試新舊 cache key
         from data_cache import read_cache as _read_cache
         cached = _read_cache(cache_key_new, max_age_hours=2160)
         if cached is not None:
@@ -246,22 +225,56 @@ class InstitutionalTrackerAgent:
             return cached
 
         # 無快取，從 SEC 抓取
-        return fetch_with_cache(
-            policy_name="sec_13f",
-            cache_key=cache_key_new,
-            fetch_fn=_fetch_from_sec,
+        if not _HAS_CURL_CFFI:
+            raise RuntimeError(
+                "需要 curl_cffi 才能存取 SEC Archives。請安裝：pip install curl_cffi"
+            )
+
+        headers = {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+
+        # 嘗試 infotable.xml
+        url_infotable = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/xslForm13F_X02/infotable.xml"
+        resp = cffi_requests.get(url_infotable, headers=headers, impersonate='chrome', timeout=60)
+        if resp.status_code == 200 and '<infoTable>' in resp.text[:5000]:
+            return self._save_to_cache(cache_key_new, resp.text)
+
+        # 嘗試 .txt 完整檔案（BlackRock Finance 等）
+        url_txt = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/{accession}.txt"
+        resp2 = cffi_requests.get(url_txt, headers=headers, impersonate='chrome', timeout=120)
+        if resp2.status_code == 200 and '<infoTable>' in resp2.text:
+            return self._save_to_cache(cache_key_new, resp2.text)
+
+        raise RuntimeError(
+            f"無法取得持股明細：CIK {cik} Acc {accession} "
+            f"(infotable.xml: {resp.status_code}, .txt: {resp2.status_code})"
         )
+
+    def _save_to_cache(self, cache_key: str, data: str) -> str:
+        """儲存快取並返回資料"""
+        import json as _json
+        cache_path = os.path.join("local_cache", f"{cache_key}.json")
+        with open(cache_path, 'w') as fh:
+            _json.dump({"cached_at": None, "data": data}, fh)
+        return data
 
     def _load_cached_holdings(self, cik: str, exclude_acc: str = None) -> List[Dict]:
         """
-        從 local_cache 載入所有可用的舊版 sec_13f_info_{cik}_{accession} 快取。
+        從 local_cache 載入所有可用的舊版 sec_13f_info_{accession} 快取。
+
+        注意：BlackRock 舊快取檔名包含的是 BlackRock Advisors 的 accession
+        （sec_13f_info_0001086364-24-008417_...），但 CIK 路徑用 BlackRock Finance
+        (1364742)。因此搜尋時使用 accession 前綴而非 CIK。
+
         回傳: [(accession, holdings_dict), ...] 按 accession 降序排列
         """
         import glob
         cache_dir = "local_cache"
-        cik_no = str(int(cik))
-        pattern = os.path.join(cache_dir, f"sec_13f_info_*{cik_no}*.json")
         results = []
+        # 搜尋所有 sec_13f_info_ 前綴檔案（相容新舊格式）
+        pattern = os.path.join(cache_dir, "sec_13f_info_*.json")
         for fpath in sorted(glob.glob(pattern), reverse=True):
             try:
                 with open(fpath) as fh:
@@ -270,8 +283,8 @@ class InstitutionalTrackerAgent:
                 if not xml_data:
                     continue
                 holdings = self._parse_holdings(xml_data)
-                # 從檔名提取 accession
                 fname = os.path.basename(fpath)
+                # 從檔名提取 accession（格式：sec_13f_info_{accession}_{timestamp}.json）
                 acc = fname.replace("sec_13f_info_", "").split("_")[0]
                 if acc != exclude_acc and holdings:
                     results.append((acc, holdings))
