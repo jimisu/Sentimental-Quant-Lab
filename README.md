@@ -71,10 +71,10 @@ Tracks quarterly 13F filings from major institutional investors:
 | Institution | CIK | Form | Notes |
 |-------------|-----|------|-------|
 | **BlackRock, Inc.** | 0001086364 | 13F-NT | BlackRock Advisors LLC, direct filing |
-| **Bridgewater Associates, LP** | 0002011169 | 13F-HR | Filed via GC Wealth Management RIA, LLC (COMBINATION REPORT) |
+| **Bridgewater Associates, LP** | 0001350694 | 13F-HR | Ray Dalio founded, direct filing (82 13F-HR filings) |
 
 **Key findings (2026-06-13)**:
-- **TSMC divergence**: BlackRock trimmed -4.6% vs Bridgewater added +10.7%
+- **TSMC divergence**: BlackRock trimmed -4.6% vs Bridgewater new position +1,077,079 shares ($364M)
 - **7 common top-10 holdings**: MSFT, NVDA, AAPL, GOOGL, AMZN, META, ISHARES TR
 - **Data access**: SEC Archives (`www.sec.gov/Archives/edgar/data/`) blocks standard Python requests (HTTP 403); use `curl_cffi` with `impersonate='chrome'` to bypass TLS fingerprinting
 - **Holdings data**: Located in `xslForm13F_X02/infotable.xml` (not `primary_doc.xml` which is the cover page)
