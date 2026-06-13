@@ -1048,17 +1048,24 @@ def run_self_test():
     console.print(f"🔑 環境變數 - FINMIND_TOKEN: {token_status}")
 
     # 3. 測試網路連線與 API 狀態
+    token = os.getenv("FINMIND_TOKEN")
     targets = [
-        ("FinMind API", API_URL),
-        ("TWSE API", f"{TWSE_AFTER_TRADING_URL}/STOCK_DAY"),
-        ("Yahoo Finance", "https://query1.finance.yahoo.com/v8/finance/chart/TSM")
+        ("FinMind API", API_URL, {"dataset": "TaiwanStockMonthRevenue", "data_id": "2330", "start_date": "2026-05-01", "end_date": "2026-06-12", **({"token": token} if token else {})}),
+        ("TWSE API", f"{TWSE_AFTER_TRADING_URL}/STOCK_DAY", None),
+        ("Yahoo Finance", "https://query1.finance.yahoo.com/v8/finance/chart/TSM", None),
     ]
-    
-    for name, url in targets:
+
+    for name, url, params in targets:
         try:
-            resp = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=10)
-            # 200 代表完全成功，400/401 代表服務有反應但未帶正確參數，皆視為連線成功
-            status_color = "green" if resp.status_code in [200, 400, 401] else "yellow"
+            resp = requests.get(url, params=params, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=10)
+            # 200 代表完全成功，400/401/422 代表服務有反應（未帶完整參數），皆視為連線成功
+            # 429 = rate limit（服務有反應但要求降速）
+            if resp.status_code == 200:
+                status_color = "green"
+            elif resp.status_code in (400, 401, 422, 429):
+                status_color = "yellow"
+            else:
+                status_color = "red"
             console.print(f"🌐 網路連線 - {name}: [{status_color}]回傳狀態 {resp.status_code}[/{status_color}]")
         except Exception as e:
             console.print(f"🌐 網路連線 - {name}: [red]連線失敗 ({str(e)})[/red]")

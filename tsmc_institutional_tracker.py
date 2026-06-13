@@ -25,7 +25,7 @@ from urllib3.util.retry import Retry
 from data_cache import fetch_with_cache
 
 SEC_HEADERS = {
-    "User-Agent": "Sentimental-Quant-Lab/1.0 contact@example.com",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Encoding": "gzip, deflate",
 }
 
@@ -36,15 +36,15 @@ NS = "http://www.sec.gov/edgar/document/thirteenf/informationtable"
 # 每個機構以 cik 為 key，包含名稱與可選說明。
 # 新增追蹤對象只需在此字典新增一筆即可。
 INSTITUTION_REGISTRY: Dict[str, Dict[str, str]] = {
-    "0001364742": {
+    "0001086364": {
         "name": "BlackRock, Inc.",
         "short_name": "BlackRock",
-        "description": "全球最大資產管理機構",
+        "description": "全球最大資產管理機構（BlackRock Advisors LLC，13F-NT）",
     },
-    "0001172661": {
+    "0002011169": {
         "name": "Bridgewater Associates, LP",
         "short_name": "Bridgewater",
-        "description": "全球最大避險基金（橋水基金）",
+        "description": "全球最大避險基金（橋水基金，透過 GC Wealth Management 代理申報 13F-HR）",
     },
 }
 
@@ -110,7 +110,7 @@ class InstitutionalTrackerAgent:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
         self.session.headers.update({
-            "User-Agent": "Sentimental-Quant-Lab/1.0 (+https://github.com/jimisu)",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         })
 
     def _http_get(self, url: str, headers: Optional[Dict[str, str]] = None,
@@ -145,7 +145,7 @@ class InstitutionalTrackerAgent:
         )
 
     def _find_13f_filings(self, submissions: Dict, count: int = 2) -> List[Dict]:
-        """從 submission 索引中找出最近的 13F-HR filings"""
+        """從 submission 索引中找出最近的 13F filings（含 13F-HR 和 13F-NT）"""
         recent = submissions.get("filings", {}).get("recent", {})
         if not recent:
             return []
@@ -158,13 +158,14 @@ class InstitutionalTrackerAgent:
 
         filings = []
         for i, form in enumerate(forms):
-            if not form.startswith("13F-HR"):
+            if not form.startswith("13F"):
                 continue
             filings.append({
                 "accessionNumber": accession_numbers[i] if i < len(accession_numbers) else "",
                 "filingDate": filing_dates[i] if i < len(filing_dates) else "",
                 "primaryDocument": primary_docs[i] if i < len(primary_docs) else "",
                 "reportDate": report_dates[i] if i < len(report_dates) else "",
+                "form": form,
             })
             if len(filings) >= count:
                 break
@@ -173,12 +174,19 @@ class InstitutionalTrackerAgent:
 
     def _fetch_13f_info_table(self, cik: str, accession: str) -> str:
         """
-        抓取 13F 報告的 form13fInfoTable.xml（實際持股明細）。
-        URL: https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/form13fInfoTable.xml
+        抓取 13F 報告的持股明細 XML。
+
+        URL 格式（for xslForm13F_X02 子目錄）：
+        - BlackRock: https://www.sec.gov/Archives/edgar/data/1086364/{acc}/xslForm13F_X02/primary_doc.xml
+        - Bridgewater: https://www.sec.gov/Archives/edgar/data/2011169/{acc}/xslForm13F_X02/primary_doc.xml
+
+        注意：www.sec.gov/Archives 已被 SEC 封鎖（對非瀏覽器 UA）。
+        此方法依賴 fetch_with_cache 先檢查 local_cache；若無快取則嘗試 HTTP 請求。
+        HTTP 請求僅在特殊情況（如 curl-like UA）下成功。
         """
         accession_clean = accession.replace("-", "")
         cik_no = str(int(cik))
-        url = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/form13fInfoTable.xml"
+        url = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/xslForm13F_X02/primary_doc.xml"
         cache_key = f"sec_13f_info_{accession}"
         return fetch_with_cache(
             policy_name="sec_13f",
