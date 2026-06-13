@@ -8,7 +8,7 @@
 ## 📌 基本資訊
 
 - **目前所在分支 (Current Branch)**: `feat/bridgewater-13f-tracker`
-- **本次交接時間 (Timestamp)**: 2026-06-13 00:30 (UTC+8)
+- **本次交接時間 (Timestamp)**: 2026-06-13 01:00 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
@@ -71,6 +71,13 @@
   - Bridgewater Q1 2026 vs Q4 2025：TSMC 增持 10.7%
   - 兩機構 7 家共同前十大持股
   - 跨機構 TSMC 分歧分析
+- [x] **tsmc_institutional_tracker.py 全面修復**（提交 `474d3a1`）：
+  - 根本原因：使用 `primary_doc.xml`（封面頁）而非 `infotable.xml`（持股明細）+ 標準 requests（SEC 403）
+  - 加入 `curl_cffi` + `impersonate='chrome'` 繞過 TLS 指紋封鎖
+  - 加入 HTML 格式解析器（Bridgewater）+ XML/HTML 自動偵測
+  - 加入 `skip_notice` 跳過 13F-NT（BlackRock 2024-12-31 起全面使用 Notice）
+  - 加入 `_load_cached_holdings` 舊版 cache key fallback
+  - 兩機構完整資料驗證通過：BlackRock TSMC -4.6%、Bridgewater TSMC +10.7%
 - [x] **完整測試套件建立**：
   - `test_config.py` (42 tests)、`test_data_cache.py` (58 tests)、`test_signal_engine.py` (94 tests)、`test_institutional_tracker.py` (42 tests)
   - `conftest.py` 共享 fixtures
