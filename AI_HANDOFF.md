@@ -132,8 +132,9 @@
 1. **[優先級：低] 清除本地舊分支**：`feat/claude-refactor` 和 `feat/add-codex-ai-working-follow` 已合併，可本地刪除。
 2. **[優先級：低] 舊報告清理**：`reports/` 目錄會隨每次執行累積，已有 `.gitignore` 排除，可考慮定期清理機制。
 3. **[優先級：低] 修復 `--test` 自測模式 FinMind 422 假警報**：修改 `run_self_test()`，讓 FinMind 測試帶入 token 或將 422 視為連線成功。
-4. **[優先級：中] 建立 PR 合併到 main**：`feat/bridgewater-13f-tracker` 已提交 `6d1c93c`，可建立 PR 合併。
+4. **[優先級：中] 建立 PR 合併到 main**：`feat/bridgewater-13f-tracker` 已有 5 個提交（`352e549`～`ed38477`），可建立 PR 合併。
 5. **[優先級：低] 更多機構法人**：可考慮在 `INSTITUTION_REGISTRY` 加入 Vanguard、State Street 等。
+6. **[優先級：低] BlackRock Q1 2026 完整持股**：13F-NT 為 Notice 形式無完整持股，可研究是否有其他 BlackRock 子實體（如 BlackRock Finance CIK 0001364742）的 13F-HR 包含更完整資料。
 
 ---
 
