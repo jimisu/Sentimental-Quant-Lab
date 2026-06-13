@@ -8,7 +8,7 @@
 ## 📌 基本資訊
 
 - **目前所在分支 (Current Branch)**: `feat/bridgewater-13f-tracker`
-- **本次交接時間 (Timestamp)**: 2026-06-13 01:00 (UTC+8)
+- **本次交接時間 (Timestamp)**: 2026-06-13 12:00 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
@@ -40,7 +40,7 @@
 
 ### 本次 session 完成（feat/bridgewater-13f-tracker / 2026-06-12~13）
 - [x] **多機構法人 13F 追蹤**：
-  - `INSTITUTION_REGISTRY` 註冊表：BlackRock (0001364742) + Bridgewater (0001172661)
+  - `INSTITUTION_REGISTRY` 註冊表：BlackRock (0002012383) + Bridgewater (0001350694)
   - `analyze_all_institutions()` 方法：循環追蹤所有機構，產生合併報告 + 跨機構比較表格
   - `InstitutionalTrackerAgent(tracked_ciks=...)` 可自定追蹤清單
   - Orchestrator 改用 `analyze_all_institutions()`，報告標題更新為「機構法人 13F 持倉追蹤」
@@ -48,7 +48,14 @@
   - 42 新增測試，總計 236 測試全部通過
   - 提交：`6d1c93c`
 
-### 本次 session 完成（feat/bridgewater-13f-tracker / 2026-06-13）
+### 本次 session 完成（feat/bridgewater-13f-tracker / 2026-06-13 持續）
+- [x] **BlackRock CIK 再次修正 — 0002012383（真正核心母公司）**：
+  - 用戶從 SEC EDGAR 查到正確 CIK：https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0002012383
+  - 舊 CIK 0001364742（BlackRock Finance, Inc.）總持倉僅 $571M，小了 **10,000 倍**
+  - 新 CIK 0002012383（BlackRock, Inc.）總持倉 ~$5,723B，50,651 筆持股，SIC 6211
+  - Q1 2026 TSMC：18,224,186 股（$61.6B），較 Q4 2025 增持 **+10.6%**
+  - 持股明細在 `{accession}.txt`（非 infotable.xml），全部為 13F-HR 無 Notice 問題
+  - 更新：`tsmc_institutional_tracker.py`、`README.md`、`sec-13f-researcher.md`、memory
 - [x] **curl_cffi 突破 SEC Archives 403 封鎖**：
   - 使用 `curl_cffi` + `impersonate='chrome'` 繞過 SEC TLS 指紋封鎖
   - 成功存取 `www.sec.gov/Archives/edgar/data/` 端點
@@ -141,7 +148,7 @@
 3. **[優先級：低] 修復 `--test` 自測模式 FinMind 422 假警報**：修改 `run_self_test()`，讓 FinMind 測試帶入 token 或將 422 視為連線成功。
 4. **[優先級：中] 建立 PR 合併到 main**：`feat/bridgewater-13f-tracker` 已有 5 個提交（`352e549`～`ed38477`），可建立 PR 合併。
 5. **[優先級：低] 更多機構法人**：可考慮在 `INSTITUTION_REGISTRY` 加入 Vanguard、State Street 等。
-6. **[優先級：低] BlackRock Q1 2026 完整持股**：13F-NT 為 Notice 形式無完整持股，可研究是否有其他 BlackRock 子實體（如 BlackRock Finance CIK 0001364742）的 13F-HR 包含更完整資料。
+6. **[優先級：低] 舊快取清理**：`local_cache/` 中仍有舊 CIK（0001086364、0001364742）的快取檔案，可清理。
 
 ---
 

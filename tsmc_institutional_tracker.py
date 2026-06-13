@@ -6,15 +6,15 @@ TSMC 機構法人 13F 持倉追蹤 Agent
 Amazon (AMZN)、NVIDIA (NVDA) 的持股變化。
 
 目前追蹤：
-  - BlackRock, Inc.（貝萊德）CIK: 0001364742（BlackRock Finance, Inc.，核心法人，13F-HR）
+  - BlackRock, Inc.（貝萊德）CIK: 0002012383（BlackRock, Inc.，核心母公司，13F-HR，50,000+ holdings）
   - Bridgewater Associates, LP（橋水基金）CIK: 0001350694（Ray Dalio 創立，13F-HR）
 
 SEC 13F 報告在每個季度結束後 45 天內提交。
-數據源：SEC EDGAR Form 13F-NT / 13F-HR（infotable.xml）
+數據源：SEC EDGAR Form 13F-HR（infotable.xml / .txt）
 
 注意：SEC Archives 端點需要 curl_cffi（TLS 指紋偽裝）才能存取。
       持股明細在 infotable.xml（非 primary_doc.xml，後者是封面頁）。
-      BlackRock Q1 2026 的 13F-NT 為 Notice 形式，無完整持股明細。
+      BlackRock 的 holdings 在 .txt 檔案（非 infotable.xml，後者是 404）。
 """
 
 import argparse
@@ -50,10 +50,10 @@ NS = "http://www.sec.gov/edgar/document/thirteenf/informationtable"
 # 每個機構以 cik 為 key，包含名稱與可選說明。
 # 新增追蹤對象只需在此字典新增一筆即可。
 INSTITUTION_REGISTRY: Dict[str, Dict[str, str]] = {
-    "0001364742": {
+    "0002012383": {
         "name": "BlackRock, Inc.",
         "short_name": "BlackRock",
-        "description": "全球最大資產管理機構（BlackRock Finance, Inc.，核心法人，13F-HR）",
+        "description": "全球最大資產管理機構（BlackRock, Inc.，核心母公司 CIK，13F-HR，50,000+ holdings，總持倉 ~$5.7T）",
     },
     "0001350694": {
         "name": "Bridgewater Associates, LP",
@@ -203,19 +203,19 @@ class InstitutionalTrackerAgent:
 
         URL 優先順序：
         1. infotable.xml（Bridgewater 等 HTML 格式）
-        2. {accession}.txt（BlackRock Finance 等完整 XML 格式）
-        3. primary_doc.xml（封面頁，無持股明細）
+        2. {accession}.txt（BlackRock 等完整 XML 格式，50,000+ holdings）
 
         注意：
         - SEC Archives 封鎖標準 Python requests（HTTP 403），需用 curl_cffi 繞過
         - 相容舊版 cache key（sec_13f_info_{accession}），避免重複抓取
+        - 優先從 local_cache 讀取（速度快），若無則從 SEC 抓取
         """
         accession_clean = accession.replace("-", "")
         cik_no = str(int(cik))
         cache_key_new = f"sec_13f_infotable_{accession}"
         cache_key_old = f"sec_13f_info_{accession}"
 
-        # 優先嘗試新舊 cache key
+        # 優先從本地快取讀取（測試中可被 patch）
         from data_cache import read_cache as _read_cache
         cached = _read_cache(cache_key_new, max_age_hours=2160)
         if cached is not None:
@@ -224,7 +224,7 @@ class InstitutionalTrackerAgent:
         if cached is not None:
             return cached
 
-        # 無快取，從 SEC 抓取
+        # 無快取，從 SEC 抓取（使用 curl_cffi 繞過 TLS 指紋封鎖）
         if not _HAS_CURL_CFFI:
             raise RuntimeError(
                 "需要 curl_cffi 才能存取 SEC Archives。請安裝：pip install curl_cffi"
@@ -235,29 +235,42 @@ class InstitutionalTrackerAgent:
             'Accept-Language': 'en-US,en;q=0.9',
         }
 
-        # 嘗試 infotable.xml
-        url_infotable = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/xslForm13F_X02/infotable.xml"
-        resp = cffi_requests.get(url_infotable, headers=headers, impersonate='chrome', timeout=60)
-        if resp.status_code == 200 and '<infoTable>' in resp.text[:5000]:
-            return self._save_to_cache(cache_key_new, resp.text)
+        def _fetch_from_sec():
+            """實際從 SEC Archives 抓取持股明細"""
+            # 嘗試 infotable.xml（Bridgewater 等 HTML 格式）
+            url_infotable = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/xslForm13F_X02/infotable.xml"
+            resp = cffi_requests.get(url_infotable, headers=headers, impersonate='chrome', timeout=60)
+            if resp.status_code == 200 and '<infoTable>' in resp.text[:5000]:
+                return resp.text
 
-        # 嘗試 .txt 完整檔案（BlackRock Finance 等）
-        url_txt = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/{accession}.txt"
-        resp2 = cffi_requests.get(url_txt, headers=headers, impersonate='chrome', timeout=120)
-        if resp2.status_code == 200 and '<infoTable>' in resp2.text:
-            return self._save_to_cache(cache_key_new, resp2.text)
+            # 嘗試 .txt 完整檔案（BlackRock 等 50,000+ holdings）
+            url_txt = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/{accession}.txt"
+            resp2 = cffi_requests.get(url_txt, headers=headers, impersonate='chrome', timeout=120)
+            if resp2.status_code == 200 and '<infoTable>' in resp2.text:
+                return resp2.text
 
-        raise RuntimeError(
-            f"無法取得持股明細：CIK {cik} Acc {accession} "
-            f"(infotable.xml: {resp.status_code}, .txt: {resp2.status_code})"
+            raise RuntimeError(
+                f"無法取得持股明細：CIK {cik} Acc {accession} "
+                f"(infotable.xml: {resp.status_code}, .txt: {resp2.status_code})"
+            )
+
+        return fetch_with_cache(
+            policy_name="sec_13f",
+            cache_key=cache_key_new,
+            fetch_fn=_fetch_from_sec,
         )
 
     def _save_to_cache(self, cache_key: str, data: str) -> str:
-        """儲存快取並返回資料"""
+        """儲存快取並返回資料（使用 data_cache.py 相容格式）"""
         import json as _json
-        cache_path = os.path.join("local_cache", f"{cache_key}.json")
+        from datetime import datetime as _dt
+        now = _dt.now()
+        ts = now.strftime("%Y%m%d_%H%M%S")
+        ms = f"{now.microsecond:06d}"
+        cache_path = os.path.join("local_cache", f"{cache_key}_{ts}_{ms}.json")
+        payload = {"cached_at": now.isoformat(), "data": data}
         with open(cache_path, 'w') as fh:
-            _json.dump({"cached_at": None, "data": data}, fh)
+            _json.dump(payload, fh)
         return data
 
     def _load_cached_holdings(self, cik: str, exclude_acc: str = None) -> List[Dict]:
@@ -311,17 +324,36 @@ class InstitutionalTrackerAgent:
             raise RuntimeError("無法識別的 13F 持股明細格式")
 
     def _parse_holdings_xml(self, xml_text: str) -> Dict[str, Dict]:
-        """解析 XML 格式的 13F 持股（BlackRock）"""
+        """解析 XML 格式的 13F 持股（BlackRock CIK 0002012383，.txt 格式）
+
+        注意：BlackRock 的 .txt 檔案包含 SEC-DOCUMENT 包裝（非純 XML），
+        ET.fromstring() 可能因 HTML 實體（&amp; 等）而失敗。
+        若 XML 解析失敗，自動 fallback 到 regex 解析。
+        """
         holdings = {}
 
+        # 嘗試用 XML parser 解析（Bridgewater infotable.xml XML 格式）
+        root = None
         try:
             root = ET.fromstring(xml_text)
-        except ET.ParseError as exc:
-            raise RuntimeError(f"XML 解析失敗: {exc}")
+        except ET.ParseError:
+            pass  # fallback to regex below
 
-        info_tables = root.findall(f"{{{NS}}}infoTable")
+        if root is not None:
+            info_tables = root.findall(f"{{{NS}}}infoTable")
+            if not info_tables:
+                info_tables = root.findall(".//infoTable")
+            use_regex = False
+        else:
+            info_tables = None
+            use_regex = True
+
+        # 若 XML parser 找不到 infoTable，用 regex fallback
         if not info_tables:
-            info_tables = root.findall(".//infoTable")
+            use_regex = True
+
+        if use_regex:
+            return self._parse_holdings_regex(xml_text)
 
         for table in info_tables:
             name_el = table.find(f"{{{NS}}}nameOfIssuer")
@@ -363,6 +395,43 @@ class InstitutionalTrackerAgent:
                 value = float(value_el.text or 0)
             except (ValueError, TypeError):
                 continue
+
+            if matched_ticker in holdings:
+                holdings[matched_ticker]["shares"] += shares
+                holdings[matched_ticker]["value_k"] += value / 1000
+            else:
+                holdings[matched_ticker] = {
+                    "shares": shares,
+                    "value_k": value / 1000,
+                    "name": issuer_name,
+                }
+
+        return holdings
+
+    def _parse_holdings_regex(self, text: str) -> Dict[str, Dict]:
+        """用 regex 解析 13F 持股（處理非標準 XML，如 BlackRock .txt 中的 &amp; 等實體）"""
+        holdings = {}
+
+        entries = re.findall(r'<infoTable>(.*?)</infoTable>', text, re.DOTALL)
+        for e in entries:
+            name_m = re.search(r'<nameOfIssuer>(.*?)</nameOfIssuer>', e)
+            if not name_m:
+                continue
+            issuer_name = name_m.group(1).strip()
+
+            matched_ticker = None
+            for ticker, meta in TARGET_COMPANIES.items():
+                if _match_name(issuer_name, meta["match_names"]):
+                    matched_ticker = ticker
+                    break
+            if matched_ticker is None:
+                continue
+
+            shares_m = re.search(r'<sshPrnamt>(.*?)</sshPrnamt>', e)
+            value_m = re.search(r'<value>(.*?)</value>', e)
+
+            shares = int(shares_m.group(1)) if shares_m else 0
+            value = float(value_m.group(1)) if value_m else 0.0
 
             if matched_ticker in holdings:
                 holdings[matched_ticker]["shares"] += shares
@@ -470,7 +539,7 @@ class InstitutionalTrackerAgent:
                 )
 
             # 找出最近有完整持股明細的季度（跳過 13F-NT Notice 形式）
-            # BlackRock 從 2024-12-31 起全面使用 13F-NT，無完整持股明細
+            # 注意：BlackRock (CIK 0002012383) 全部為 13F-HR，無 Notice 問題
             current = None
             previous = None
             notice_skipped = []

@@ -70,14 +70,15 @@ Tracks quarterly 13F filings from major institutional investors:
 
 | Institution | CIK | Form | Notes |
 |-------------|-----|------|-------|
-| **BlackRock, Inc.** | 0001364742 | 13F-HR | BlackRock Finance, Inc., core corporate CIK (holdings in .txt) |
+| **BlackRock, Inc.** | 0002012383 | 13F-HR | BlackRock, Inc. (core parent, SIC 6211); holdings in `.txt` (50,651 entries, ~$5.7T AUM) |
 | **Bridgewater Associates, LP** | 0001350694 | 13F-HR | Ray Dalio founded, direct filing (82 13F-HR filings) |
 
 **Key findings (2026-06-13)**:
-- **TSMC divergence**: BlackRock trimmed -4.6% vs Bridgewater new position +1,077,079 shares ($364M)
-- **7 common top-10 holdings**: MSFT, NVDA, AAPL, GOOGL, AMZN, META, ISHARES TR
+- **BlackRock Q1 2026**: TSMC 18,224,186 shares ($61.6B), **增持 +10.6%** vs Q4 2025; total AUM ~$5,723B
+- **Bridgewater Q1 2026**: TSMC 1,077,079 shares ($364M), new position
+- **Top holdings alignment**: Both hold NVDA, AAPL, MSFT, GOOGL, AMZN, META in top 10
 - **Data access**: SEC Archives (`www.sec.gov/Archives/edgar/data/`) blocks standard Python requests (HTTP 403); use `curl_cffi` with `impersonate='chrome'` to bypass TLS fingerprinting
-- **Holdings data**: Located in `xslForm13F_X02/infotable.xml` (not `primary_doc.xml` which is the cover page)
+- **Holdings data**: BlackRock in `{accession}.txt`; Bridgewater in `xslForm13F_X02/infotable.xml` (HTML table format)
 - **Cache TTL**: 90 days (2160 hours), sufficient for quarterly updates
 
 Reports are generated to `reports/13f_research_YYYYMMDD.md`.

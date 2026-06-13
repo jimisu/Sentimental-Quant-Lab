@@ -28,14 +28,14 @@ from tsmc_institutional_tracker import (
 
 class TestInstitutionRegistry:
     def test_blackrock_registered(self):
-        assert "0001364742" in INSTITUTION_REGISTRY
-        assert INSTITUTION_REGISTRY["0001364742"]["name"] == "BlackRock, Inc."
-        assert INSTITUTION_REGISTRY["0001364742"]["short_name"] == "BlackRock"
+        assert "0002012383" in INSTITUTION_REGISTRY
+        assert INSTITUTION_REGISTRY["0002012383"]["name"] == "BlackRock, Inc."
+        assert INSTITUTION_REGISTRY["0002012383"]["short_name"] == "BlackRock"
 
     def test_bridgewater_registered(self):
-        assert "0001172661" in INSTITUTION_REGISTRY
-        assert INSTITUTION_REGISTRY["0001172661"]["name"] == "Bridgewater Associates, LP"
-        assert INSTITUTION_REGISTRY["0001172661"]["short_name"] == "Bridgewater"
+        assert "0001350694" in INSTITUTION_REGISTRY
+        assert INSTITUTION_REGISTRY["0001350694"]["name"] == "Bridgewater Associates, LP"
+        assert INSTITUTION_REGISTRY["0001350694"]["short_name"] == "Bridgewater"
 
     def test_at_least_two_institutions(self):
         assert len(INSTITUTION_REGISTRY) >= 2
@@ -49,10 +49,10 @@ class TestInstitutionRegistry:
         assert set(DEFAULT_TRACKED_CIKs) == set(INSTITUTION_REGISTRY.keys())
 
     def test_default_tracked_ciks_includes_blackrock(self):
-        assert "0001364742" in DEFAULT_TRACKED_CIKs
+        assert "0002012383" in DEFAULT_TRACKED_CIKs
 
     def test_default_tracked_ciks_includes_bridgewater(self):
-        assert "0001172661" in DEFAULT_TRACKED_CIKs
+        assert "0001350694" in DEFAULT_TRACKED_CIKs
 
 
 # ══════════════════════════════════════════════════════════════
@@ -115,8 +115,8 @@ class TestAgentInit:
         assert agent.tracked_ciks == DEFAULT_TRACKED_CIKs
 
     def test_custom_tracked_ciks(self):
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
-        assert agent.tracked_ciks == ["0001364742"]
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
+        assert agent.tracked_ciks == ["0002012383"]
 
     def test_none_tracked_ciks_uses_default(self):
         agent = InstitutionalTrackerAgent(tracked_ciks=None)
@@ -186,39 +186,42 @@ SAMPLE_XML_NO_NS = """<?xml version="1.0" encoding="UTF-8"?>
 
 class TestParseHoldings:
     def test_parses_tsm_holding(self):
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
         holdings = agent._parse_holdings(SAMPLE_XML)
         assert "TSM" in holdings
         assert holdings["TSM"]["shares"] == 10000000
         assert holdings["TSM"]["value_k"] == 1500000.0  # 1.5B / 1000
 
     def test_parses_msft_holding(self):
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
         holdings = agent._parse_holdings(SAMPLE_XML)
         assert "MSFT" in holdings
         assert holdings["MSFT"]["shares"] == 5000000
 
     def test_ignores_non_target_companies(self):
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
         holdings = agent._parse_holdings(SAMPLE_XML)
         # APPLE is not in TARGET_COMPANIES
         assert len(holdings) == 2  # Only TSM and MSFT
 
     def test_namespace_fallback(self):
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
         holdings = agent._parse_holdings(SAMPLE_XML_NO_NS)
         assert "NVDA" in holdings
         assert holdings["NVDA"]["shares"] == 2000000
 
     def test_empty_xml(self):
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
-        empty_xml = '<?xml version="1.0"?><informationTable xmlns="' + NS + '"></informationTable>'
+        """XML with infoTable tag but no entries should return empty dict."""
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
+        empty_xml = '<?xml version="1.0"?><informationTable xmlns="' + NS + '"><infoTable></infoTable></informationTable>'
         holdings = agent._parse_holdings(empty_xml)
         assert holdings == {}
 
-    def test_invalid_xml_raises_runtime_error(self):
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
-        with pytest.raises(RuntimeError, match="XML 解析失敗"):
+    def test_unrecognized_format_raises_error(self):
+        """Text with no <infoTable> or <tr> tags should raise RuntimeError."""
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
+        import pytest
+        with pytest.raises(RuntimeError, match="無法識別的 13F 持股明細格式"):
             agent._parse_holdings("not valid xml")
 
     def test_accumulates_multiple_entries_for_same_ticker(self):
@@ -236,7 +239,7 @@ class TestParseHoldings:
     <shrsOrPrnAmt><sshPrnamt>3000000</sshPrnamt></shrsOrPrnAmt>
   </infoTable>
 </informationTable>"""
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
         holdings = agent._parse_holdings(xml)
         assert "TSM" in holdings
         assert holdings["TSM"]["shares"] == 8000000  # 5M + 3M
@@ -250,12 +253,20 @@ class TestParseHoldings:
 class TestAnalyze13fHoldings:
     """Test single-institution analysis with mocked HTTP calls."""
 
+    def setup_method(self):
+        """Clear local cache before each test to prevent real cache interference."""
+        import glob as _glob, os as _os
+        for pattern in ["local_cache/sec_13f_infotable_0002012383*.json",
+                        "local_cache/sec_13f_info_0002012383*.json"]:
+            for fpath in _glob.glob(pattern):
+                _os.remove(fpath)
+
     def _make_submission_response(self):
         return {
             "filings": {
                 "recent": {
                     "form": ["13F-HR", "13F-HR", "10-K"],
-                    "accessionNumber": ["0001364742-24-000001", "0001364742-23-000001", "other"],
+                    "accessionNumber": ["0002012383-24-000001", "0002012383-23-000001", "other"],
                     "filingDate": ["2024-02-14", "2023-11-14", "2024-01-30"],
                     "primaryDocument": ["infotable.xml", "infotable.xml", ""],
                     "reportDate": ["2023-12-31", "2023-09-30", ""],
@@ -278,7 +289,7 @@ class TestAnalyze13fHoldings:
     @patch("tsmc_institutional_tracker.fetch_with_cache")
     def test_single_institution_tsm_increased(self, mock_fetch):
         """TSM shares increased → score should be 80."""
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
 
         # Track call count to distinguish current (1st info call) vs previous (2nd)
         call_count = {"info": 0}
@@ -286,7 +297,7 @@ class TestAnalyze13fHoldings:
         def side_effect(policy_name, cache_key, fetch_fn, directory="local_cache"):
             if "submissions" in cache_key:
                 return self._make_submission_response()
-            elif "info_" in cache_key:
+            elif "infotable_" in cache_key:
                 call_count["info"] += 1
                 if call_count["info"] == 1:  # current quarter
                     return self._make_info_table_xml([
@@ -300,9 +311,9 @@ class TestAnalyze13fHoldings:
 
         mock_fetch.side_effect = side_effect
 
-        data, report = agent.analyze_13f_holdings(cik="0001364742")
+        data, report = agent.analyze_13f_holdings(cik="0002012383")
         assert data["score"] == 80
-        assert data["cik"] == "0001364742"
+        assert data["cik"] == "0002012383"
         assert data["institution_name"] == "BlackRock, Inc."
         assert "TSM" in data["holdings"]
         assert data["holdings"]["TSM"]["status"] == "increased"
@@ -311,14 +322,14 @@ class TestAnalyze13fHoldings:
     @patch("tsmc_institutional_tracker.fetch_with_cache")
     def test_single_institution_tsm_decreased(self, mock_fetch):
         """TSM shares decreased → score should be 40."""
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
 
         call_count = {"info": 0}
 
         def side_effect(policy_name, cache_key, fetch_fn, directory="local_cache"):
             if "submissions" in cache_key:
                 return self._make_submission_response()
-            elif "info_" in cache_key:
+            elif "infotable_" in cache_key:
                 call_count["info"] += 1
                 if call_count["info"] == 1:  # current quarter (fewer shares)
                     return self._make_info_table_xml([
@@ -332,21 +343,21 @@ class TestAnalyze13fHoldings:
 
         mock_fetch.side_effect = side_effect
 
-        data, report = agent.analyze_13f_holdings(cik="0001364742")
+        data, report = agent.analyze_13f_holdings(cik="0002012383")
         assert data["score"] == 40
         assert data["holdings"]["TSM"]["status"] == "decreased"
 
     @patch("tsmc_institutional_tracker.fetch_with_cache")
     def test_single_institution_tsm_exited(self, mock_fetch):
         """TSM fully exited → score should be 20."""
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
 
         call_count = {"info": 0}
 
         def side_effect(policy_name, cache_key, fetch_fn, directory="local_cache"):
             if "submissions" in cache_key:
                 return self._make_submission_response()
-            elif "info_" in cache_key:
+            elif "infotable_" in cache_key:
                 call_count["info"] += 1
                 if call_count["info"] == 1:  # current quarter (no TSM)
                     return self._make_info_table_xml([
@@ -360,25 +371,25 @@ class TestAnalyze13fHoldings:
 
         mock_fetch.side_effect = side_effect
 
-        data, report = agent.analyze_13f_holdings(cik="0001364742")
+        data, report = agent.analyze_13f_holdings(cik="0002012383")
         assert data["score"] == 20
         assert data["holdings"]["TSM"]["status"] == "exited"
 
     @patch("tsmc_institutional_tracker.fetch_with_cache")
     def test_single_institution_error_handling(self, mock_fetch):
         """If SEC API fails, should return error data."""
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
         mock_fetch.side_effect = RuntimeError("SEC API unavailable")
 
-        data, report = agent.analyze_13f_holdings(cik="0001364742")
+        data, report = agent.analyze_13f_holdings(cik="0002012383")
         assert "error" in data
-        assert data["cik"] == "0001364742"
+        assert data["cik"] == "0002012383"
         assert "SEC API unavailable" in report
 
     @patch("tsmc_institutional_tracker.fetch_with_cache")
     def test_no_13f_filings_returns_error(self, mock_fetch):
         """If no 13F filings found, should return error."""
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
 
         def side_effect(policy_name, cache_key, fetch_fn, directory="local_cache"):
             if "submissions" in cache_key:
@@ -388,7 +399,7 @@ class TestAnalyze13fHoldings:
 
         mock_fetch.side_effect = side_effect
 
-        data, report = agent.analyze_13f_holdings(cik="0001364742")
+        data, report = agent.analyze_13f_holdings(cik="0002012383")
         assert "error" in data
 
 
@@ -404,7 +415,7 @@ class TestAnalyzeAllInstitutions:
             "filings": {
                 "recent": {
                     "form": ["13F-HR", "13F-HR"],
-                    "accessionNumber": ["0001364742-24-000001", "0001364742-23-000001"],
+                    "accessionNumber": ["0002012383-24-000001", "0002012383-23-000001"],
                     "filingDate": ["2024-02-14", "2023-11-14"],
                     "primaryDocument": ["infotable.xml", "infotable.xml"],
                     "reportDate": ["2023-12-31", "2023-09-30"],
@@ -431,7 +442,7 @@ class TestAnalyzeAllInstitutions:
         def side_effect(policy_name, cache_key, fetch_fn, directory="local_cache"):
             if "submissions" in cache_key:
                 return self._make_submission_response()
-            elif "info_" in cache_key:
+            elif "infotable_" in cache_key:
                 return self._make_info_table_xml([
                     ("TAIWAN SEMICONDUCTOR MFG CO LTD", 10000000, 1500000000),
                     ("MICROSOFT CORP", 5000000, 2000000000),
@@ -457,7 +468,7 @@ class TestAnalyzeAllInstitutions:
         def side_effect(policy_name, cache_key, fetch_fn, directory="local_cache"):
             if "submissions" in cache_key:
                 return self._make_submission_response()
-            elif "info_" in cache_key:
+            elif "infotable_" in cache_key:
                 return self._make_info_table_xml([
                     ("TAIWAN SEMICONDUCTOR MFG CO LTD", 10000000, 1500000000),
                 ])
@@ -480,7 +491,7 @@ class TestAnalyzeAllInstitutions:
         def side_effect(policy_name, cache_key, fetch_fn, directory="local_cache"):
             if "submissions" in cache_key:
                 return self._make_submission_response()
-            elif "info_" in cache_key:
+            elif "infotable_" in cache_key:
                 return self._make_info_table_xml([
                     ("TAIWAN SEMICONDUCTOR MFG CO LTD", 10000000, 1500000000),
                 ])
@@ -502,7 +513,7 @@ class TestAnalyzeAllInstitutions:
         def side_effect(policy_name, cache_key, fetch_fn, directory="local_cache"):
             if "submissions" in cache_key:
                 return self._make_submission_response()
-            elif "info_" in cache_key:
+            elif "infotable_" in cache_key:
                 return self._make_info_table_xml([
                     ("TAIWAN SEMICONDUCTOR MFG CO LTD", 10000000, 1500000000),
                 ])
@@ -525,7 +536,7 @@ class TestAnalyzeAllInstitutions:
                     return self._make_submission_response()
                 else:
                     raise RuntimeError("Bridgewater data unavailable")
-            elif "info_" in cache_key:
+            elif "infotable_" in cache_key:
                 return self._make_info_table_xml([
                     ("TAIWAN SEMICONDUCTOR MFG CO LTD", 10000000, 1500000000),
                 ])
@@ -544,12 +555,12 @@ class TestAnalyzeAllInstitutions:
     @patch("tsmc_institutional_tracker.fetch_with_cache")
     def test_custom_ciks_subset(self, mock_fetch):
         """Agent with custom tracked_ciks should only analyze those."""
-        agent = InstitutionalTrackerAgent(tracked_ciks=["0001364742"])
+        agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
 
         def side_effect(policy_name, cache_key, fetch_fn, directory="local_cache"):
             if "submissions" in cache_key:
                 return self._make_submission_response()
-            elif "info_" in cache_key:
+            elif "infotable_" in cache_key:
                 return self._make_info_table_xml([
                     ("TAIWAN SEMICONDUCTOR MFG CO LTD", 10000000, 1500000000),
                 ])
@@ -560,4 +571,4 @@ class TestAnalyzeAllInstitutions:
         all_data, combined_report = agent.analyze_all_institutions()
 
         assert len(all_data) == 1
-        assert all_data[0]["cik"] == "0001364742"
+        assert all_data[0]["cik"] == "0002012383"
