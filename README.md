@@ -10,6 +10,7 @@ This repository provides tools to:
 - Analyze technical indicators (Bollinger Bands, RSI, KD, MACD, moving averages)
 - Track institutional investor (foreign/trust/dealer) buy-sell dynamics
 - Monitor ADR premium/discount and big-tech CAPEX trends from SEC filings
+- Track SEC 13F institutional holdings (BlackRock, Bridgewater) with quarterly analysis
 - Display a colour-coded dashboard in the terminal using the `rich` library
 - Generate 4-panel technical charts (price/volume/RSI+KD/MACD)
 
@@ -36,6 +37,12 @@ python tsmc_signal_dashboard.py
 export FINMIND_TOKEN=your_token_here
 ```
 
+*For SEC 13F institutional holdings tracking (requires `curl_cffi`):*
+```bash
+pip install curl_cffi
+python scripts/fetch_13f_research.py
+```
+
 ## 📖 Architecture
 
 ### Data Sources
@@ -45,6 +52,7 @@ export FINMIND_TOKEN=your_token_here
 | TWSE API | Daily OHLCV (STOCK_DAY), market trading value (FMTQIK) | 24h for past months |
 | Yahoo Finance | TSM ADR price, USD/TWD rate | 1h |
 | SEC EDGAR XBRL | Big-tech CAPEX (AMZN, MSFT, NVDA, AAPL, TSLA, GOOGL, META) | 7d |
+| SEC EDGAR 13F | Institutional holdings (BlackRock, Bridgewater) | 90d |
 
 ### AI Agent System
 Four specialized agents collaborate via an Orchestrator:
@@ -55,6 +63,29 @@ Four specialized agents collaborate via an Orchestrator:
 | **Technical Agent** | Market dynamics | Bollinger Bands, RSI, KD, MACD, MA alignment, support/resistance |
 | **Chip Agent** | Institutional flow | Foreign/trust/dealer 5-day cumulative, 3-institution resonance |
 | **Macro Agent** | Global trends | ADR premium, big-tech CAPEX trends |
+
+### SEC 13F Institutional Holdings Tracker
+
+Tracks quarterly 13F filings from major institutional investors:
+
+| Institution | CIK | Form | Notes |
+|-------------|-----|------|-------|
+| **BlackRock, Inc.** | 0002012383 | 13F-HR | BlackRock, Inc. (core parent, SIC 6211); holdings in `.txt` (50,651 entries, ~$5.7T AUM) |
+| **Bridgewater Associates, LP** | 0001350694 | 13F-HR | Ray Dalio founded, direct filing (82 13F-HR filings) |
+
+**Key findings (2026-06-13)**:
+- **BlackRock Q1 2026**: TSMC 18,224,186 shares ($61.6B), **增持 +10.6%** vs Q4 2025; total AUM ~$5,723B
+- **Bridgewater Q1 2026**: TSMC 1,077,079 shares ($364M), new position
+- **Top holdings alignment**: Both hold NVDA, AAPL, MSFT, GOOGL, AMZN, META in top 10
+
+**統一抓取架構（2026-06-14 更新）**:
+- **相同 URL 格式**：兩機構都用 `infotable.xml`，統一使用 `curl_cffi` + `impersonate='chrome'`
+- **排程（美東時間）**：固定抓取日 2/15, 5/15, 8/15, 11/15；失敗後 24 小時重試；其餘時間用 local cache
+- **URL 路徑**：用 accession number 前綴（非 CIK），正確處理 accession 前綴變化
+- **Data access**: SEC Archives 封鎖標準 Python requests (HTTP 403)；使用 `curl_cffi` + `impersonate='chrome'` 繞過 TLS 指紋封鎖
+- **Cache TTL**: 90 天（2,160 小時），抓取日後自動更新
+
+Reports are generated to `reports/13f_research_YYYYMMDD.md`.
 
 ### Composite Scoring
 ```

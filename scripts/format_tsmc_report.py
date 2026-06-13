@@ -683,6 +683,28 @@ def build_score_section(block: str) -> str:
     ])
 
 
+def build_13f_section(block: str) -> str:
+    """從 analysis_log.md 的 block 中提取橋水 13F 持倉追蹤章節並格式化。"""
+    # 提取橋水 13F 章節
+    pattern = r"### 🏛 橋水 13F 持倉追蹤\s*\n(.*?)(?=\n---|\n## |\Z)"
+    match = re.search(pattern, block, re.DOTALL)
+    if not match:
+        return ""
+
+    content = match.group(1).strip()
+    if not content or "⚠️" in content:
+        # 如果有錯誤訊息，直接返回原始內容
+        return f"## 機構法人動向\n\n{content}"
+
+    lines = [
+        "## 🏛 機構法人動向：橋水基金 13F 持倉追蹤",
+        "",
+        content,
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def build_report(input_path: Path, cache_dir: Path) -> str:
     content = input_path.read_text(encoding="utf-8")
     block = get_latest_block(content)
@@ -709,6 +731,8 @@ def build_report(input_path: Path, cache_dir: Path) -> str:
         build_technical_section(block),
         "",
         build_chip_section(block, cache_dir, days_to_earnings),
+        "---",
+        build_13f_section(block),
         "---",
         build_customer_risk_section(),
         "---",

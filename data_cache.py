@@ -41,6 +41,8 @@ DATA_POLICIES: Dict[str, CachePolicy] = {
     "macro_capex":       CachePolicy(ttl_hours=168,  keep_count=3),
     # NVDA 營收（季報級別）→ 7 天快取
     "nvda_revenue":      CachePolicy(ttl_hours=168,  keep_count=3),
+    # SEC 13F 每季更新（季末後 45 天內提交）→ 90 天快取
+    "sec_13f":           CachePolicy(ttl_hours=2160, keep_count=3),
 }
 
 
@@ -100,6 +102,10 @@ def read_cache(cache_key: str, max_age_hours: float,
             cached_dt = datetime.fromisoformat(cached_at)
         except ValueError:
             return None
+        # 處理帶 timezone 的 timestamp：統一轉為 naive UTC
+        if cached_dt.tzinfo is not None:
+            from datetime import timezone as _tz
+            cached_dt = cached_dt.astimezone(_tz.utc).replace(tzinfo=None)
         age = datetime.now() - cached_dt
         if age > timedelta(hours=max_age_hours):
             return None

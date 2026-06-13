@@ -1,0 +1,2 @@
+- [test-suite-overview.md](test-suite-overview.md) — Summary of the 194-test suite and what each file covers
+- [testing-patterns.md](testing-patterns.md) — Mocking strategies, common pitfalls, module-specific quirks
