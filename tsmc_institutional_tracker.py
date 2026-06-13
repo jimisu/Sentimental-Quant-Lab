@@ -12,9 +12,15 @@ Amazon (AMZN)、NVIDIA (NVDA) 的持股變化。
 SEC 13F 報告在每個季度結束後 45 天內提交。
 數據源：SEC EDGAR Form 13F-HR（infotable.xml / .txt）
 
+抓取排程（美東時間）：
+  - 固定抓取日：2/15, 5/15, 8/15, 11/15（季度結束後 ~45 天）
+  - 重試機制：抓取失敗後 24 小時重試一次
+  - 其餘時間：使用 local_cache（TTL 90 天）
+
 注意：SEC Archives 端點需要 curl_cffi（TLS 指紋偽裝）才能存取。
       持股明細在 infotable.xml（非 primary_doc.xml，後者是封面頁）。
-      BlackRock 的 holdings 在 .txt 檔案（非 infotable.xml，後者是 404）。
+      BlackRock 的 holdings 在 .txt 檔案（非 infotable.xml）。
+      Bridgewater 的 holdings 在 infotable.xml（HTML 表格格式）。
 """
 
 import argparse
@@ -30,6 +36,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from data_cache import fetch_with_cache
+from datetime import datetime, timedelta, timezone
 
 # curl_cffi for bypassing SEC TLS fingerprint blocking
 try:
@@ -42,6 +49,15 @@ SEC_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Encoding": "gzip, deflate",
 }
+
+# ── 13F 抓取排程常數 ──
+# 美東時間固定抓取日（季度結束後 ~45 天）
+# Q4→2/15, Q1→5/15, Q2→8/15, Q3→11/15
+FETCH_MONTHS = {2, 5, 8, 11}      # 月份
+FETCH_DAY = 15                     # 日
+FETCH_TZ = timezone(timedelta(hours=-5))  # 美東時間 (EST, UTC-5)
+FETCH_RETRY_HOURS = 24             # 失敗後重試間隔（小時）
+CACHE_TTL_HOURS = 2160             # 90 天
 
 # SEC 13F XML namespace
 NS = "http://www.sec.gov/edgar/document/thirteenf/informationtable"
@@ -64,6 +80,55 @@ INSTITUTION_REGISTRY: Dict[str, Dict[str, str]] = {
 
 # 預設追蹤所有已註冊機構
 DEFAULT_TRACKED_CIKs = list(INSTITUTION_REGISTRY.keys())
+
+
+# ── 排程輔助函數 ──
+
+def _today_eastern() -> datetime:
+    """取得目前美東時間"""
+    return datetime.now(tz=FETCH_TZ)
+
+
+def is_fetch_day() -> bool:
+    """
+    判斷今天是否為 13F 固定抓取日（美東時間 2/15, 5/15, 8/15, 11/15）
+    """
+    today = _today_eastern()
+    return today.month in FETCH_MONTHS and today.day == FETCH_DAY
+
+
+def should_fetch_from_sec(cache_key: str) -> bool:
+    """
+    判斷是否應該從 SEC 抓取新資料（而非使用 local cache）
+
+    規則：
+    1. 固定抓取日（美東 2/15, 5/15, 8/15, 11/15）→ 抓取
+    2. 抓取日後 24 小時內（重試窗口）→ 抓取
+    3. 其餘時間 → 使用 cache（不抓取）
+    """
+    from data_cache import read_cache as _read_cache
+
+    # 固定抓取日：強制重新抓取
+    if is_fetch_day():
+        return True
+
+    # 檢查是否有「抓取失敗標記」（24 小時重試窗口）
+    retry_flag_key = f"sec_13f_retry_{cache_key}"
+    retry_flag = _read_cache(retry_flag_key, max_age_hours=FETCH_RETRY_HOURS)
+    if retry_flag is not None:
+        return True  # 24 小時內重試
+
+    # 其餘時間：使用 cache
+    return False
+
+
+def mark_fetch_failed(cache_key: str) -> None:
+    """標記抓取失敗，觸發 24 小時重試窗口"""
+    import json as _json
+    flag_key = f"sec_13f_retry_{cache_key}"
+    cache_path = os.path.join("local_cache", f"{flag_key}_{_today_eastern().strftime('%Y%m%d_%H%M%S')}.json")
+    with open(cache_path, 'w') as fh:
+        _json.dump({"cached_at": _today_eastern().isoformat(), "data": "retry"}, fh)
 
 # ── 目標持股（使用名稱匹配，比 CUSIP 更可靠）──
 TARGET_COMPANIES = {
@@ -199,32 +264,36 @@ class InstitutionalTrackerAgent:
 
     def _fetch_13f_info_table(self, cik: str, accession: str) -> str:
         """
-        抓取 13F 報告的持股明細。
+        統一抓取 13F 持股明細（兩機構相同邏輯）
 
-        URL 優先順序：
-        1. infotable.xml（Bridgewater 等 HTML 格式）
-        2. {accession}.txt（BlackRock 等完整 XML 格式，50,000+ holdings）
+        資料來源：SEC EDGAR Archives
+        - URL 格式：https://www.sec.gov/Archives/edgar/data/{cik_path}/{acc_clean}/xslForm13F_X02/infotable.xml
+        - cik_path 從 accession number 前綴取得（非 CIK 本身，因 accession 前綴可能不同）
+        - 兩機構都用相同 URL 格式，統一使用 curl_cffi + impersonate='chrome'
 
-        注意：
-        - SEC Archives 封鎖標準 Python requests（HTTP 403），需用 curl_cffi 繞過
-        - 相容舊版 cache key（sec_13f_info_{accession}），避免重複抓取
-        - 優先從 local_cache 讀取（速度快），若無則從 SEC 抓取
+        排程邏輯：
+        - 固定抓取日（美東 2/15, 5/15, 8/15, 11/15）→ 強制重新抓取
+        - 抓取失敗後 24 小時內 → 重試
+        - 其餘時間 → 使用 local cache（TTL 90 天）
         """
         accession_clean = accession.replace("-", "")
-        cik_no = str(int(cik))
-        cache_key_new = f"sec_13f_infotable_{accession}"
-        cache_key_old = f"sec_13f_info_{accession}"
+        # URL 路徑用 accession 前綴（可能與 CIK 不同，如 Bridgewater 早期 accession 用不同前綴）
+        cik_path = accession.split("-")[0]
+        cache_key = f"sec_13f_infotable_{accession}"
 
-        # 優先從本地快取讀取（測試中可被 patch）
-        from data_cache import read_cache as _read_cache
-        cached = _read_cache(cache_key_new, max_age_hours=2160)
-        if cached is not None:
-            return cached
-        cached = _read_cache(cache_key_old, max_age_hours=2160)
-        if cached is not None:
-            return cached
+        # ── 排程判斷：是否應從 SEC 抓取 ──
+        if not should_fetch_from_sec(cache_key):
+            # 非抓取日：使用 local cache
+            from data_cache import read_cache as _read_cache
+            cached = _read_cache(cache_key, max_age_hours=CACHE_TTL_HOURS)
+            if cached is not None:
+                return cached
+            # cache 過期但非抓取日：仍然使用 cache（不抓取）
+            cached_any = _read_cache(cache_key, max_age_hours=0)
+            if cached_any is not None:
+                return cached_any
 
-        # 無快取，從 SEC 抓取（使用 curl_cffi 繞過 TLS 指紋封鎖）
+        # ── 從 SEC 抓取 ──
         if not _HAS_CURL_CFFI:
             raise RuntimeError(
                 "需要 curl_cffi 才能存取 SEC Archives。請安裝：pip install curl_cffi"
@@ -236,29 +305,34 @@ class InstitutionalTrackerAgent:
         }
 
         def _fetch_from_sec():
-            """實際從 SEC Archives 抓取持股明細"""
-            # 嘗試 infotable.xml（Bridgewater 等 HTML 格式）
-            url_infotable = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/xslForm13F_X02/infotable.xml"
-            resp = cffi_requests.get(url_infotable, headers=headers, impersonate='chrome', timeout=60)
-            if resp.status_code == 200 and '<infoTable>' in resp.text[:5000]:
-                return resp.text
+            """從 SEC Archives 抓取（統一 URL 格式）"""
+            url = (f"https://www.sec.gov/Archives/edgar/data/{cik_path}"
+                   f"/{accession_clean}/xslForm13F_X02/infotable.xml")
+            resp = cffi_requests.get(url, headers=headers, impersonate='chrome', timeout=120)
 
-            # 嘗試 .txt 完整檔案（BlackRock 等 50,000+ holdings）
-            url_txt = f"https://www.sec.gov/Archives/edgar/data/{cik_no}/{accession_clean}/{accession}.txt"
-            resp2 = cffi_requests.get(url_txt, headers=headers, impersonate='chrome', timeout=120)
-            if resp2.status_code == 200 and '<infoTable>' in resp2.text:
-                return resp2.text
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"SEC Archives HTTP {resp.status_code}: CIK {cik} Acc {accession}"
+                )
 
-            raise RuntimeError(
-                f"無法取得持股明細：CIK {cik} Acc {accession} "
-                f"(infotable.xml: {resp.status_code}, .txt: {resp2.status_code})"
+            # 驗證內容非空（有些 infotable.xml 是空 HTML）
+            if len(resp.text) < 100:
+                raise RuntimeError(
+                    f"SEC Archives 內容過短 ({len(resp.text)} chars): CIK {cik} Acc {accession}"
+                )
+
+            return resp.text
+
+        try:
+            return fetch_with_cache(
+                policy_name="sec_13f",
+                cache_key=cache_key,
+                fetch_fn=_fetch_from_sec,
             )
-
-        return fetch_with_cache(
-            policy_name="sec_13f",
-            cache_key=cache_key_new,
-            fetch_fn=_fetch_from_sec,
-        )
+        except Exception:
+            # 標記抓取失敗，觸發 24 小時重試
+            mark_fetch_failed(cache_key)
+            raise
 
     def _save_to_cache(self, cache_key: str, data: str) -> str:
         """儲存快取並返回資料（使用 data_cache.py 相容格式）"""

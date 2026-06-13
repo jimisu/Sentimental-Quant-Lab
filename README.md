@@ -77,9 +77,13 @@ Tracks quarterly 13F filings from major institutional investors:
 - **BlackRock Q1 2026**: TSMC 18,224,186 shares ($61.6B), **增持 +10.6%** vs Q4 2025; total AUM ~$5,723B
 - **Bridgewater Q1 2026**: TSMC 1,077,079 shares ($364M), new position
 - **Top holdings alignment**: Both hold NVDA, AAPL, MSFT, GOOGL, AMZN, META in top 10
-- **Data access**: SEC Archives (`www.sec.gov/Archives/edgar/data/`) blocks standard Python requests (HTTP 403); use `curl_cffi` with `impersonate='chrome'` to bypass TLS fingerprinting
-- **Holdings data**: BlackRock in `{accession}.txt`; Bridgewater in `xslForm13F_X02/infotable.xml` (HTML table format)
-- **Cache TTL**: 90 days (2160 hours), sufficient for quarterly updates
+
+**統一抓取架構（2026-06-14 更新）**:
+- **相同 URL 格式**：兩機構都用 `infotable.xml`，統一使用 `curl_cffi` + `impersonate='chrome'`
+- **排程（美東時間）**：固定抓取日 2/15, 5/15, 8/15, 11/15；失敗後 24 小時重試；其餘時間用 local cache
+- **URL 路徑**：用 accession number 前綴（非 CIK），正確處理 accession 前綴變化
+- **Data access**: SEC Archives 封鎖標準 Python requests (HTTP 403)；使用 `curl_cffi` + `impersonate='chrome'` 繞過 TLS 指紋封鎖
+- **Cache TTL**: 90 天（2,160 小時），抓取日後自動更新
 
 Reports are generated to `reports/13f_research_YYYYMMDD.md`.
 
