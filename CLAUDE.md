@@ -66,7 +66,7 @@ python test.py                      # Yahoo Finance 即時價格
 | `AI_COLLABORATION_RULES.md` | 多 AI 協作共同規範（必讀） |
 | `AI_HANDOFF.md` | 當前交接狀態與待辦 |
 | `PROJECT_ARCHITECTURE.md` | 完整架構、數據流、指標詳解 |
-| `DEVELOPMENT_FLOW.md` | 開發流程、Git 策略、交接協議 |
+| `DEVELOPMENT_FLOW.md` | CLI 指令速查 + Git 分支策略 |
 | `CHANGELOG.md` | 演進歷史 |
 | `CODEX_RULES.md` | Codex / Copilot 入口規範 |
 | `GEMINI_RULES.md` | Gemini Code Assist 入口規範 |

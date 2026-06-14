@@ -84,12 +84,15 @@
 - 若兩份入口文件與本文件衝突，以本文件為準；若 `AI_HANDOFF.md` 提供更新的分支上下文，以 `AI_HANDOFF.md` 為當前任務上下文。
 
 ## 8. 參考文件
-執行任務時，依需要參考：
-- `AI_HANDOFF.md`：目前交接狀態與待辦。
-- `DEVELOPMENT_FLOW.md`：多 AI 協作流程規範。
-- `PROJECT_ARCHITECTURE.md`：專案架構與檔案職責。
-- `CLAUDE.md`：Claude Code 入口規範（輕量化入口，技術細節見 `PROJECT_ARCHITECTURE.md`）。
-- `CHANGELOG.md`：專案演進歷史。
+
+| 檔案 | 用途 | 職責 |
+|------|------|------|
+| `AI_COLLABORATION_RULES.md` | 本文件 | 協作規則**唯一真相源**（Pre-flight、架構防禦、提交規則、交接、多 Agent 併發） |
+| `DEVELOPMENT_FLOW.md` | CLI 指令 + Git 分支策略 | 開發流程操作細節，規則引用本文件 |
+| `PROJECT_ARCHITECTURE.md` | 專案結構 + 數據流 + Agent 詳解 | 架構面內容，協作規則引用本文件 |
+| `AI_HANDOFF.md` | 當前交接狀態與待辦 | 每次交接時更新 |
+| `CLAUDE.md` | Claude Code 入口規範 | 輕量化入口，技術細節見 `PROJECT_ARCHITECTURE.md` |
+| `CHANGELOG.md` | 專案演進歷史 | — |
 
 ---
 
