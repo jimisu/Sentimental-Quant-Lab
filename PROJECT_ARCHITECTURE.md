@@ -281,28 +281,12 @@ SEC EDGAR XBRL ──→ 大型科技公司 CAPEX 數據 (4-7 家)
 
 ## 🔧 開發與維護
 
-### 常用命令
-```bash
-# 執行儀表板
-python tsmc_signal_dashboard.py
-
-# 執行系統自測
-python tsmc_signal_dashboard.py --test
-
-# 獨立財務分析
-python tsmc_financial_agent.py
-
-# 獨立宏觀分析
-python tsmc_macro_agent.py [--tw-price PRICE]
-
-# 安裝依賴
-pip install -r requirements.txt
-```
+> 完整 CLI 指令見 [`DEVELOPMENT_FLOW.md`](./DEVELOPMENT_FLOW.md) §0。
 
 ### 日誌與快取維護
-- 日誌檔案: `analysis_log.md` (自動追加，同日保留最新3筆)
-- 快取目錄: `local_cache/` (自動管理，無需手動清理)
-- 圖表目錄: `charts/` (自動管理，同日每種圖保留最新1張)
+- 日誌檔案: `analysis_log.md` (自動追加，同日保留最新 3 筆)
+- 快取目錄: `local_cache/` (環形快取，每 key 保留 3 份，自動管理)
+- 圖表目錄: `charts/` (時間戳檔名，自動管理)
 
 ## 🤖 多 AI 代理程式協同開發指南
 
