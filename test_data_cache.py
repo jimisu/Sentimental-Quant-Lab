@@ -55,14 +55,14 @@ class TestCachePolicy:
 # ══════════════════════════════════════════════════════════════
 
 class TestDataPolicies:
-    def test_eight_policies_defined(self):
-        assert len(DATA_POLICIES) == 8
+    def test_nine_policies_defined(self):
+        assert len(DATA_POLICIES) == 9
 
     def test_all_required_keys_present(self):
         required = {
             "twse_daily", "institutional", "monthly_revenue",
             "quarterly_margins", "macro_adr", "macro_capex",
-            "nvda_revenue", "sec_13f",
+            "nvda_revenue", "sec_13f", "macro_inflation",
         }
         assert set(DATA_POLICIES.keys()) == required
 
@@ -89,6 +89,9 @@ class TestDataPolicies:
 
     def test_sec_13f_ttl(self):
         assert DATA_POLICIES["sec_13f"].ttl_hours == 2160
+
+    def test_macro_inflation_ttl(self):
+        assert DATA_POLICIES["macro_inflation"].ttl_hours == 24
 
     def test_all_policies_have_keep_count_3(self):
         for name, policy in DATA_POLICIES.items():

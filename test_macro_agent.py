@@ -18,6 +18,7 @@ Covers the GlobalMacroAgent class:
 - _extract_recent_capex_quarters (via _derive + consecutive)
 """
 
+import os
 import pytest
 from unittest.mock import patch, MagicMock, call
 from datetime import date
@@ -1067,3 +1068,313 @@ class TestModuleConstants:
 
     def test_nvda_ticker_correct(self):
         assert NVDA_TICKER == "NVDA"
+
+
+# ══════════════════════════════════════════════════════════════
+# US Inflation Data (FRED API) — fetch_inflation_report
+# ══════════════════════════════════════════════════════════════
+
+class TestFetchInflationReport:
+    @patch("tsmc_macro_agent.requests.Session")
+    def test_no_api_key_returns_empty(self, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FRED_API_KEY", None)
+            result = agent.fetch_inflation_report()
+            assert result == ""
+
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_with_api_key_cpi_only(self, mock_fetch_cache, mock_session_cls):
+        """Only CPIAUCSL returns valid data; other series return empty observations."""
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        def fake_fetch(policy_name, cache_key, fetch_fn):
+            if "fred_CPIAUCSL" in cache_key:
+                return {
+                    "observations": [
+                        {"date": f"2024-{m:02d}-01", "value": str(300.0 + i * 0.8)}
+                        for i, m in enumerate(range(1, 14))
+                    ]
+                }
+            return {"observations": []}
+
+        mock_fetch_cache.side_effect = fake_fetch
+
+        with patch.dict(os.environ, {"FRED_API_KEY": "test_key"}):
+            result = agent.fetch_inflation_report()
+
+        assert "US Inflation Data" in result
+        assert "CPI (All Items)" in result
+        assert "FRED" in result
+
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_all_series_fail_returns_empty(self, mock_fetch_cache, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        mock_fetch_cache.side_effect = RuntimeError("FRED down")
+        agent = GlobalMacroAgent()
+        with patch.dict(os.environ, {"FRED_API_KEY": "test_key"}):
+            result = agent.fetch_inflation_report()
+        assert result == ""
+
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_three_series_all_succeed(self, mock_fetch_cache, mock_session_cls):
+        """All three series (CPI, Core CPI, PCE) return valid data."""
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        def fake_fetch(policy_name, cache_key, fetch_fn):
+            base_values = {
+                "fred_CPIAUCSL": 300.0,
+                "fred_CPILFESL": 305.0,
+                "fred_PCEPI": 280.0,
+            }
+            base = None
+            for key, val in base_values.items():
+                if key in cache_key:
+                    base = val
+                    break
+            if base is None:
+                return {"observations": []}
+            return {
+                "observations": [
+                    {"date": f"2024-{m:02d}-01", "value": str(base + i * 0.5)}
+                    for i, m in enumerate(range(1, 14))
+                ]
+            }
+
+        mock_fetch_cache.side_effect = fake_fetch
+
+        with patch.dict(os.environ, {"FRED_API_KEY": "test_key"}):
+            result = agent.fetch_inflation_report()
+
+        assert "CPI (All Items)" in result
+        assert "Core CPI (ex Food & Energy)" in result
+        assert "PCE Price Index (Fed's preferred gauge)" in result
+        assert "YoY:" in result
+
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_dot_values_skipped(self, mock_fetch_cache, mock_session_cls):
+        """FRED returns '.' for unpublished observations — should be skipped."""
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        def fake_fetch(policy_name, cache_key, fetch_fn):
+            if "fred_CPIAUCSL" in cache_key:
+                obs = []
+                for i in range(12):
+                    obs.append({"date": f"2024-{i+1:02d}-01", "value": str(300.0 + i * 0.5)})
+                obs.append({"date": "2025-01-01", "value": "."})   # unpublished, skipped
+                obs.append({"date": "2025-02-01", "value": "310.0"})
+                return {"observations": obs}
+            return {"observations": []}
+
+        mock_fetch_cache.side_effect = fake_fetch
+
+        with patch.dict(os.environ, {"FRED_API_KEY": "test_key"}):
+            result = agent.fetch_inflation_report()
+
+        # Should still work, skipping the "." value; 12 valid + 1 dot = 13 valid after skip
+        assert "CPI (All Items)" in result
+
+
+# ══════════════════════════════════════════════════════════════
+# _fetch_fred_series
+# ══════════════════════════════════════════════════════════════
+
+class TestFetchFredSeries:
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_returns_sorted_ascending(self, mock_fetch_cache, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        mock_fetch_cache.return_value = {
+            "observations": [
+                {"date": "2025-03-01", "value": "310.0"},
+                {"date": "2025-01-01", "value": "300.0"},
+                {"date": "2025-02-01", "value": "305.0"},
+            ]
+        }
+
+        with patch.dict(os.environ, {"FRED_API_KEY": "test_key"}):
+            result = agent._fetch_fred_series("CPIAUCSL", limit=3)
+
+        assert len(result) == 3
+        assert result[0]["date"] == "2025-01-01"
+        assert result[-1]["date"] == "2025-03-01"
+        assert result[0]["value"] == 300.0
+
+    @patch("tsmc_macro_agent.requests.Session")
+    def test_no_api_key_raises_runtime(self, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FRED_API_KEY", None)
+            with pytest.raises(RuntimeError, match="FRED_API_KEY"):
+                agent._fetch_fred_series("CPIAUCSL")
+
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_empty_observations_raises_runtime(self, mock_fetch_cache, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        mock_fetch_cache.return_value = {"observations": []}
+        agent = GlobalMacroAgent()
+        with patch.dict(os.environ, {"FRED_API_KEY": "test_key"}):
+            with pytest.raises(RuntimeError, match="no observations"):
+                agent._fetch_fred_series("CPIAUCSL")
+
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_dot_values_excluded(self, mock_fetch_cache, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        mock_fetch_cache.return_value = {
+            "observations": [
+                {"date": "2025-01-01", "value": "."},
+                {"date": "2025-02-01", "value": "300.0"},
+                {"date": "2025-03-01", "value": "305.0"},
+            ]
+        }
+
+        with patch.dict(os.environ, {"FRED_API_KEY": "test_key"}):
+            result = agent._fetch_fred_series("CPIAUCSL")
+
+        assert len(result) == 2
+        assert all(o["value"] != "." for o in result)
+
+
+# ══════════════════════════════════════════════════════════════
+# _compute_inflation_yoy
+# ══════════════════════════════════════════════════════════════
+
+class TestComputeInflationYoy:
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_yoy_calculation(self, mock_fetch_cache, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        # 13 observations: 300.0 (oldest) -> 312.0 (latest) = 4.0% YoY
+        mock_fetch_cache.return_value = {
+            "observations": [
+                {"date": f"2024-{m:02d}-01", "value": str(300.0 + i)}
+                for i, m in enumerate(range(1, 14))
+            ]
+        }
+
+        with patch.dict(os.environ, {"FRED_API_KEY": "test_key"}):
+            result = agent._compute_inflation_yoy("CPIAUCSL", "CPI (All Items)")
+
+        assert result is not None
+        assert "CPI (All Items) YoY: 4.0%" in result
+        assert "312.0" in result
+        assert "300.0" in result
+
+    @patch("tsmc_macro_agent.requests.Session")
+    def test_insufficient_data_returns_none(self, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        with patch("tsmc_macro_agent.GlobalMacroAgent._fetch_fred_series") as mock_fetch:
+            mock_fetch.return_value = [{"date": "2025-01-01", "value": 300.0}]  # only 1
+            result = agent._compute_inflation_yoy("CPIAUCSL", "CPI")
+        assert result is None
+
+    @patch("tsmc_macro_agent.requests.Session")
+    def test_fetch_failure_returns_none(self, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        with patch("tsmc_macro_agent.GlobalMacroAgent._fetch_fred_series") as mock_fetch:
+            mock_fetch.side_effect = RuntimeError("FRED down")
+            result = agent._compute_inflation_yoy("CPIAUCSL", "CPI")
+        assert result is None
+
+
+# ══════════════════════════════════════════════════════════════
+# analyze_global_risk with inflation
+# ══════════════════════════════════════════════════════════════
+
+class TestAnalyzeGlobalRiskWithInflation:
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_inflation_appended_when_key_set(self, mock_fetch_cache, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        call_count = 0
+        def fake_fetch(policy_name, cache_key, fetch_fn):
+            nonlocal call_count
+            call_count += 1
+            if "TSM" in cache_key:
+                return {"chart": {"result": [{"meta": {"regularMarketPrice": 180.0}}]}}
+            elif "TWD" in cache_key:
+                return {"chart": {"result": [{"meta": {"regularMarketPrice": 32.0}}]}}
+            elif "fred_" in cache_key:
+                base = 300.0
+                return {
+                    "observations": [
+                        {"date": f"2024-{m:02d}-01", "value": str(base + i * 0.5)}
+                        for i, m in enumerate(range(1, 14))
+                    ]
+                }
+            return {}
+
+        mock_fetch_cache.side_effect = fake_fetch
+
+        with patch.dict(os.environ, {"FRED_API_KEY": "test_key"}):
+            report, score = agent.analyze_global_risk(1100.0)
+
+        assert "US Inflation Data" in report
+        assert "CPI (All Items)" in report
+        assert "溢價" in report  # ADR part still works
+
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_no_inflation_when_key_missing(self, mock_fetch_cache, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        def fake_fetch(policy_name, cache_key, fetch_fn):
+            if "TSM" in cache_key:
+                return {"chart": {"result": [{"meta": {"regularMarketPrice": 180.0}}]}}
+            elif "TWD" in cache_key:
+                return {"chart": {"result": [{"meta": {"regularMarketPrice": 32.0}}]}}
+            return {}
+
+        mock_fetch_cache.side_effect = fake_fetch
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FRED_API_KEY", None)
+            report, score = agent.analyze_global_risk(1100.0)
+
+        assert "US Inflation Data" not in report
+        assert "溢價" in report  # ADR part still works
+
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_inflation_failure_does_not_break_adr(self, mock_fetch_cache, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+
+        def fake_fetch(policy_name, cache_key, fetch_fn):
+            if "TSM" in cache_key:
+                return {"chart": {"result": [{"meta": {"regularMarketPrice": 180.0}}]}}
+            elif "TWD" in cache_key:
+                return {"chart": {"result": [{"meta": {"regularMarketPrice": 32.0}}]}}
+            raise RuntimeError("FRED down")
+
+        mock_fetch_cache.side_effect = fake_fetch
+
+        with patch.dict(os.environ, {"FRED_API_KEY": "test_key"}):
+            report, score = agent.analyze_global_risk(1100.0)
+
+        assert "溢價" in report  # ADR still works
+        assert "US Inflation Data" not in report  # inflation gracefully skipped
