@@ -356,12 +356,20 @@ class AlertLevelDetector:
 
     燈號規則：
     - 🔴 紅燈：綜合分數 < 50，或觸發進階轉折訊號，或基本面 + 技術面同時黃燈以下
-    - 🟡 黃燈：綜合分數 < 70，或觸發基礎轉折訊號
+    - 🟡 黃燈：綜合分數 < 70，或觸發基礎轉折訊號，或結構性警示（籌碼 + 情緒同步惡化）
     - 🟢 綠燈：綜合分數 ≥ 70 且無特殊訊號
+
+    結構性警示（不影響分數，僅升級燈號）：
+    - 籌碼面 < 50 且 市場情緒 < 50 → 強制至少黃燈
+    - 籌碼面 < 30 → 強制至少黃燈
     """
 
     RED_THRESHOLD: float = 50.0
     YELLOW_THRESHOLD: float = 70.0
+
+    # 結構性警示閾值：任一關鍵面向低於此值視為嚴重惡化
+    CHIP_WARNING_THRESHOLD: float = 50.0
+    SENTIMENT_WARNING_THRESHOLD: float = 50.0
 
     def detect(
         self,
@@ -371,10 +379,16 @@ class AlertLevelDetector:
         chip_flags: Dict,
         reversal_basic: bool = False,
         reversal_advanced: bool = False,
+        chip_score: float = 100.0,
+        market_sentiment_score: float = 100.0,
     ) -> Tuple[str, str, str, str]:
         """
         偵測燈號。
         回傳：(alert_level, alert_label, alert_emoji, alert_message)
+
+        結構性警示規則：
+        - 籌碼面 + 市場情緒同時惡化（各自 < 50）→ 強制至少黃燈
+        - 籌碼面單項嚴重惡化（< 30）→ 強制至少黃燈
         """
         messages = []
 
@@ -395,6 +409,16 @@ class AlertLevelDetector:
         if has_finacial_warning and tech_weak:
             messages.append("⚠️ 基本面與技術面同時轉弱，出現雙重預警")
 
+        # ── 結構性警示：籌碼 + 情緒同步惡化 ──
+        chip_critical = chip_score < self.CHIP_WARNING_THRESHOLD
+        sentiment_critical = market_sentiment_score < self.SENTIMENT_WARNING_THRESHOLD
+        if chip_critical and sentiment_critical:
+            messages.append(
+                f"⚠️ 結構性警示：籌碼面（{chip_score:.0f} 分）與市場情緒（{market_sentiment_score:.0f} 分）同步惡化"
+            )
+        elif chip_score < 30:
+            messages.append(f"⚠️ 籌碼面嚴重惡化（{chip_score:.0f} 分），外資持續撤退")
+
         # ── 根據綜合分數判定 ──
         if comprehensive_score < self.RED_THRESHOLD:
             level, label, emoji = "red", "紅燈", "🔴"
@@ -411,6 +435,10 @@ class AlertLevelDetector:
             # 有轉折訊號時，黃燈升為紅燈
             if reversal_basic and level == "yellow":
                 level, label, emoji = "red", "紅燈", "🔴"
+            # 結構性警示：綠燈強制升為黃燈
+            if (chip_critical and sentiment_critical) or chip_score < 30:
+                if level == "green":
+                    level, label, emoji = "yellow", "黃燈", "🟡"
         else:
             full_msg = base_msg
 
@@ -497,6 +525,8 @@ class SignalEngine:
             comp_score, fin_warnings, tech_signals.flags, chip_signals.flags,
             reversal_basic=reversal_basic,
             reversal_advanced=reversal_advanced,
+            chip_score=chip_signals.score,
+            market_sentiment_score=market_sentiment_signals.score,
         )
         result.alert_level = level
         result.alert_label = label

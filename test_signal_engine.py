@@ -703,3 +703,108 @@ class TestSignalEngine:
         )
         bd = result.details["breakdown"]
         assert set(bd.keys()) == {"financial", "bigtech", "tech", "chip", "market_sentiment"}
+
+
+# ══════════════════════════════════════════════════════════════
+# 結構性警示：籌碼 + 情緒同步惡化強制升級燈號
+# ══════════════════════════════════════════════════════════════
+
+class TestStructuralWarning:
+    """測試結構性警示規則：籌碼面與市場情緒同步惡化時強制升級燈號。"""
+
+    def test_chip_and_sentiment_both_below_50_upgrades_green_to_yellow(self):
+        """籌碼 45 + 情緒 40 + 總分 80+ → 應從綠燈升為黃燈。"""
+        detector = AlertLevelDetector()
+        level, label, emoji, msg = detector.detect(
+            comprehensive_score=82.0,
+            financial_warnings=[],
+            tech_flags={},
+            chip_flags={},
+            chip_score=45.0,
+            market_sentiment_score=40.0,
+        )
+        assert level == "yellow"
+        assert "結構性警示" in msg
+
+    def test_chip_below_30_upgrades_green_to_yellow(self):
+        """籌碼單項 < 30 → 強制至少黃燈，即使總分很高。"""
+        detector = AlertLevelDetector()
+        level, label, emoji, msg = detector.detect(
+            comprehensive_score=85.0,
+            financial_warnings=[],
+            tech_flags={},
+            chip_flags={},
+            chip_score=25.0,
+            market_sentiment_score=80.0,
+        )
+        assert level == "yellow"
+        assert "籌碼面嚴重惡化" in msg
+
+    def test_only_chip_low_does_not_trigger_structural_warning(self):
+        """只有籌碼低、情緒正常 → 不觸發結構性警示（除非籌碼 < 30）。"""
+        detector = AlertLevelDetector()
+        level, label, emoji, msg = detector.detect(
+            comprehensive_score=82.0,
+            financial_warnings=[],
+            tech_flags={},
+            chip_flags={},
+            chip_score=45.0,
+            market_sentiment_score=80.0,
+        )
+        # 只有籌碼低但情緒正常，且籌碼 > 30 → 維持綠燈
+        assert level == "green"
+
+    def test_chip_50_exact_does_not_trigger(self):
+        """籌碼剛好 50（等於閾值）→ 不觸發。"""
+        detector = AlertLevelDetector()
+        level, label, emoji, msg = detector.detect(
+            comprehensive_score=82.0,
+            financial_warnings=[],
+            tech_flags={},
+            chip_flags={},
+            chip_score=50.0,
+            market_sentiment_score=50.0,
+        )
+        assert level == "green"
+
+    def test_structural_warning_does_not_override_existing_yellow(self):
+        """已經是黃燈時，結構性警示不降級。"""
+        detector = AlertLevelDetector()
+        level, label, emoji, msg = detector.detect(
+            comprehensive_score=65.0,
+            financial_warnings=[],
+            tech_flags={},
+            chip_flags={},
+            chip_score=40.0,
+            market_sentiment_score=35.0,
+        )
+        assert level == "yellow"
+
+    def test_structural_warning_does_not_override_red(self):
+        """已經是紅燈時，結構性警示不影響。"""
+        detector = AlertLevelDetector()
+        level, label, emoji, msg = detector.detect(
+            comprehensive_score=45.0,
+            financial_warnings=[],
+            tech_flags={},
+            chip_flags={},
+            chip_score=20.0,
+            market_sentiment_score=15.0,
+        )
+        assert level == "red"
+
+    def test_full_pipeline_structural_warning(self):
+        """完整 pipeline：chip=40, sentiment=30, 總分高 → 黃燈。"""
+        engine = SignalEngine()
+        result = engine.analyze(
+            financial_signals=FinancialSignals(latest_revenue_yoy=30.0),
+            bigtech_signals=BigTechSignals(
+                capex_growing_count=4, capex_valid_count=4,
+                nvda_revenue_yoy=50.0,
+            ),
+            tech_signals=TechnicalSignals(),
+            chip_signals=ChipSignals(score=40),
+            market_sentiment_signals=MarketSentimentSignals(score=30),
+        )
+        assert result.alert_level == "yellow"
+        assert "結構性警示" in result.alert_message
