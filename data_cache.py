@@ -43,6 +43,8 @@ DATA_POLICIES: Dict[str, CachePolicy] = {
     "nvda_revenue":      CachePolicy(ttl_hours=168,  keep_count=3),
     # SEC 13F 每季更新（季末後 45 天內提交）→ 90 天快取
     "sec_13f":           CachePolicy(ttl_hours=2160, keep_count=3),
+    # US CPI/PPI 月度數據 → 24 小時快取
+    "macro_inflation":   CachePolicy(ttl_hours=24,   keep_count=3),
 }
 
 

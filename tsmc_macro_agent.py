@@ -97,6 +97,115 @@ class GlobalMacroAgent:
             fetch_fn=lambda: self._http_get_json(url, headers=headers, params=params, timeout=timeout),
         )
 
+    def _fetch_fred_series(self, series_id: str, limit: int = 13) -> list:
+        """
+        從 FRED API 取得指定 series 的 observations。
+        回傳 sorted ascending by date 的 [{"date": str, "value": float}] list。
+        """
+        api_key = os.getenv("FRED_API_KEY")
+        if not api_key:
+            raise RuntimeError("FRED_API_KEY environment variable not set")
+
+        url = "https://api.stlouisfed.org/fred/series/observations"
+        params = {
+            "series_id": series_id,
+            "api_key": api_key,
+            "file_type": "json",
+            "limit": str(limit),
+            "sort_order": "desc",
+        }
+        data = self._fetch_json_with_cache(
+            cache_key=f"fred_{series_id}",
+            url=url,
+            policy_name="macro_inflation",
+            params=params,
+            timeout=20,
+        )
+        observations = data.get("observations", [])
+        if not observations:
+            raise RuntimeError(f"FRED series {series_id}: no observations returned")
+
+        # 解析並跳過未發布值（FRED 以 "." 表示）
+        parsed = []
+        for obs in observations:
+            val_str = obs.get("value", "")
+            if not val_str or val_str == ".":
+                continue
+            try:
+                parsed.append({"date": obs["date"], "value": float(val_str)})
+            except (ValueError, TypeError):
+                continue
+
+        parsed.sort(key=lambda x: x["date"])
+        return parsed
+
+    def _compute_inflation_yoy(self, series_id: str, label: str) -> Optional[str]:
+        """
+        計算 FRED series 最新 YoY% 變化。
+        需要 13 筆觀測值（最新 vs 12 月前）。
+        回傳格式："CPI (All Items) YoY: 2.9% (Dec 2024: 315.6 vs Dec 2023: 306.7)"
+        """
+        try:
+            observations = self._fetch_fred_series(series_id, limit=13)
+        except Exception:
+            return None
+
+        if len(observations) < 13:
+            return None
+
+        current = observations[-1]
+        year_ago = observations[0]
+
+        if year_ago["value"] == 0:
+            return None
+
+        yoy_pct = (current["value"] - year_ago["value"]) / year_ago["value"] * 100
+
+        try:
+            dt = datetime.strptime(current["date"], "%Y-%m-%d")
+            date_label = dt.strftime("%b %Y")
+        except ValueError:
+            date_label = current["date"]
+
+        return (
+            f"{label} YoY: {yoy_pct:.1f}% "
+            f"({date_label}: {current['value']:.1f} vs {year_ago['value']:.1f})"
+        )
+
+    def fetch_inflation_report(self) -> str:
+        """
+        建立 US 通膨摘要段落，納入 CPIAUCSL、CPILFESL、PPIACO。
+        若無 FRED_API_KEY 或全部失敗則回傳空字串。
+        """
+        api_key = os.getenv("FRED_API_KEY")
+        if not api_key:
+            return ""
+
+        lines = []
+        series_map = [
+            ("CPIAUCSL", "CPI (All Items)"),
+            ("CPILFESL", "Core CPI (ex Food & Energy)"),
+            ("PPIACO", "PPI (All Commodities)"),
+        ]
+
+        for series_id, label in series_map:
+            try:
+                result = self._compute_inflation_yoy(series_id, label)
+                if result:
+                    lines.append(f"- {result}")
+            except Exception:
+                continue
+
+        if not lines:
+            return ""
+
+        return (
+            "\n"
+            "【US Inflation Data】\n"
+            "Source: FRED (Federal Reserve Economic Data)\n"
+            + "\n".join(lines)
+        )
+
     def analyze_global_risk(self, tw_price: float) -> Tuple[str, int]:
         """分析 ADR 折溢價與匯率（純宏觀面，不含 CAPEX）"""
         if tw_price <= 0:
@@ -119,11 +228,19 @@ class GlobalMacroAgent:
             status = "溢價" if premium >= 0 else "折價"
             conclusion = f"{status} {abs(premium):.2f}% (ADR折算價: {adr_tw_equiv:.2f} / 台股現價: {tw_price:.2f})"
 
+            # 取得 US 通膨數據（無 FRED_API_KEY 時優雅的降級）
+            inflation_text = ""
+            try:
+                inflation_text = self.fetch_inflation_report()
+            except Exception:
+                pass
+
             report = (
                 f"數據來源: {self.source}\n"
                 f"分析邏輯: {self.logic}\n"
                 f"結論: {conclusion}\n"
                 f"匯率參考: {usdtwd:.2f}"
+                f"{inflation_text}"
             )
             return report, score
         except Exception as e:
