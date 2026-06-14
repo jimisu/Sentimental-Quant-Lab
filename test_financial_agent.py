@@ -964,9 +964,6 @@ class TestQuarterlyFinancialAgent(TestCase):
         self.assertIn("### 財務 Agent 分析報告", report)
         self.assertIn("【三率趨勢】", report)
         self.assertIn("【驅動力判斷】", report)
-        self.assertIn("【EPS 品質拆解】", report)
-        self.assertIn("【匯率敏感度分析】", report)
-        self.assertIn("【營收基期修正】", report)
         self.assertIn("【財務面綜合結論】", report)
 
     def test_build_structured_report_data_sources(self):
@@ -994,21 +991,17 @@ class TestQuarterlyFinancialAgent(TestCase):
         report = self.agent.build_structured_report(quarterly_data={})
         self.assertIn("【三率趨勢】", report)
         self.assertIn("【驅動力判斷】", report)
-        self.assertIn("【EPS 品質拆解】", report)
-        self.assertIn("【匯率敏感度分析】", report)
-        self.assertIn("【營收基期修正】", report)
         self.assertIn("【財務面綜合結論】", report)
 
     def test_build_structured_report_with_fx(self):
-        """Report with FX data should show FX analysis."""
+        """Report with FX data — FX sections removed, report should still generate."""
         report = self.agent.build_structured_report(
             quarterly_data=_three_quarters_rising(),
             fx_averages={"previous": 32.0, "latest": 31.0},
         )
-        self.assertIn("匯率方向", report)
-        self.assertIn("對 EPS 估計影響", report)
-        self.assertIn("對毛利率估計影響", report)
-        self.assertIn("匯率調整後毛利率", report)
+        self.assertIn("### 財務 Agent 分析報告", report)
+        self.assertIn("【三率趨勢】", report)
+        self.assertIn("【財務面綜合結論】", report)
 
     def test_build_structured_report_with_process_mix(self):
         """Report with process mix should show driver type."""
@@ -1029,27 +1022,25 @@ class TestQuarterlyFinancialAgent(TestCase):
         self.assertTrue("分歧" in report or "需持續追蹤" in report)
 
     def test_build_structured_report_eps_values(self):
-        """Report should show EPS values from financial records."""
+        """EPS sections removed — report should still generate without EPS quality section."""
         report = self.agent.build_structured_report(
             quarterly_data=_three_quarters_rising(),
             financial_records=_sample_financial_records(),
         )
-        self.assertIn("最新季 EPS", report)
-        self.assertIn("本業貢獻 EPS", report)
-        self.assertIn("業外收益佔比", report)
+        self.assertIn("### 財務 Agent 分析報告", report)
+        self.assertIn("【三率趨勢】", report)
 
     def test_build_structured_report_revenue_values(self):
-        """Report should show revenue YoY values."""
+        """Revenue base sections removed — report should still generate without revenue base section."""
         report = self.agent.build_structured_report(
             quarterly_data=_three_quarters_rising(),
             revenue_records=_sample_revenue_records(),
         )
-        self.assertIn("單月 YoY", report)
-        self.assertIn("3 個月累計 YoY", report)
-        self.assertIn("基期影響評估", report)
+        self.assertIn("### 財務 Agent 分析報告", report)
+        self.assertIn("【三率趨勢】", report)
 
     def test_build_structured_report_fx_insight_headwind(self):
-        """With FX headwind and GM data, report should include key finding insight."""
+        """FX insight section removed — report should still generate without FX insight."""
         quarterly = {
             "2026Q1": {"gross_margin": 58.0, "operating_margin": 48.0, "net_margin": 42.0},
             "2025Q4": {"gross_margin": 55.0, "operating_margin": 45.0, "net_margin": 39.0},

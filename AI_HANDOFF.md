@@ -7,8 +7,8 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `feat/bridgewater-13f-tracker`
-- **本次交接時間 (Timestamp)**: 2026-06-13 12:00 (UTC+8)
+- **目前所在分支 (Current Branch)**: `refine`
+- **本次交接時間 (Timestamp)**: 2026-06-14 12:00 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
@@ -48,7 +48,21 @@
   - 42 新增測試，總計 236 測試全部通過
   - 提交：`6d1c93c`
 
-### 本次 session 完成（feat/bridgewater-13f-tracker / 2026-06-13 持續）
+### 本次 session 完成（refine / 2026-06-13~14）
+- [x] **analysis_log.md 重構為結構化報告格式**：
+  - 重寫 `_append_to_log()` 為 10 章節結構（對齊 `analysis_report_restructured.md`）
+  - 新增參數：`quarterly_data`, `styled_df`, `chip_flags`, `tech_flags`, `tech_scores`, `bigtech_data`, `market_sentiment_signals`, `result`, `tw_price`, `fx_averages`, `revenue_by_date`
+  - 章節：總覽儀表板、財務面、技術面、籌碼面、宏觀與 ADR、13F 追蹤、產業深度、估值定位、風險管理、分析師整合
+  - 提交：`81c7658`
+- [x] **技術面圖表還原**：技術面段落加入原始 `tech_report`（含 `![Technical Chart]` 圖片），提交：`6f2f9d4`
+- [x] **近 3 個月累計營收比較表格**：
+  - 新增 `get_monthly_revenue_by_date()` 取得原始營收金額
+  - `_append_to_log()` 新增 `_build_3month_cumulative_table()` helper
+  - 財務面章節加入「近 3 個月累計營收 vs. 去年同期」表格（最多 4 組、億元、YoY%、趨勢燈號）
+  - 提交：`c3dbd0b`
+- **移除重複操作建議表格**：刪除「七、產業深度解讀」結尾重複的「操作建議總結」表格（保留「九、風險管理」版本），提交：`2ecbf79`
+
+### 歷史已完成（feat/bridgewater-13f-tracker / 2026-06-12~13）
 - [x] **BlackRock CIK 再次修正 — 0002012383（真正核心母公司）**：
   - 用戶從 SEC EDGAR 查到正確 CIK：https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0002012383
   - 舊 CIK 0001364742（BlackRock Finance, Inc.）總持倉僅 $571M，小了 **10,000 倍**
@@ -149,6 +163,8 @@
 4. **[優先級：中] 建立 PR 合併到 main**：`feat/bridgewater-13f-tracker` 已有 5 個提交（`352e549`～`ed38477`），可建立 PR 合併。
 5. **[優先級：低] 更多機構法人**：可考慮在 `INSTITUTION_REGISTRY` 加入 Vanguard、State Street 等。
 6. **[優先級：低] 舊快取清理**：`local_cache/` 中仍有舊 CIK（0001086364、0001364742）的快取檔案，可清理。
+7. **[優先級：低] `test_financial_agent.py` 2 個 pre-existing 失敗**：`test_build_structured_report_fx_insight_headwind` / `tailwind` 測試期望 `build_structured_report` 輸出 FX insight 文字（"關鍵發現"/"Pricing Power"/"貶值順風"），但該功能在 `tsmc_financial_agent.py` 的 `build_structured_report` 中已被移除。需決定是否修復功能或更新測試。
+8. **[優先級：低] `refine` branch 合併**：目前 4 個提交（`81c7658`～`2ecbf79`），可考慮合併回 main 或建立 PR。
 
 ---
 
@@ -163,14 +179,18 @@
 > 8. 多 AI 自動載入入口：Claude Code（`CLAUDE.md` + hook）、Copilot（`.github/copilot-instructions.md`）、Gemini（`.gemini/GEMINI.md`）
 > 9. 報告生成邏輯統一在 `tsmc_ai_agents.py` 的 `Orchestrator` 類中，signal 計算在 `signal_engine.py`
 > 10. 本次 session 發現的 bug：f-string 中不可混用 `.format()` 變數名稱（已修復）
-> 11. `Orchestrator._append_to_log()` 成功寫入後，自動呼叫 `_generate_formatted_report()` 產出 `reports/tsmc_report_*.md`
-> 12. `scripts/format_tsmc_report.py` 仍保留為獨立 CLI 工具，可手動執行 `python scripts/format_tsmc_report.py --output reports/tsmc_report.md`
+> 11. `Orchestrator._append_to_log()` 直接產出結構化報告，不再呼叫 `_generate_formatted_report()`（log 本身即是結構化報告）
+> 12. `scripts/format_tsmc_report.py` 仍保留為獨立 CLI 工具，但解析器針對舊格式（`# 🚀 TSMC 量化分析報告 -`），與新格式不相容
+> 13. `_append_to_log()` 新增參數：`revenue_by_date`（dict，`YYYY-MM` → 營收金額），用於計算 3 個月累計營收比較表
+> 14. `_build_industry_analysis_section()` 已移除結尾重複的「操作建議總結」表格（保留在「九、風險管理與操作建議」）
+> 15. `tsmc_signal_dashboard.py` 新增 `get_monthly_revenue_by_date()` 函數，回傳 `Dict[str, float]` 供 `_append_to_log()` 使用
 > 13. `INSTITUTION_REGISTRY` 註冊表：以 CIK 為 key 的字典，新增機構只需在此加入一筆
 > 14. `InstitutionalTrackerAgent(tracked_ciks=...)` 可自定追蹤清單，None 表示全部
 > 15. `analyze_all_institutions()` 回傳 `(all_data, combined_report)`，combined_report 含跨機構比較表格
 
 ## 🚀 給下一個 AI 建議
-1. **新分支開發**：目前已在 `main`，新功能請開新分支開發。
-2. **後續開發程式碼修改前**：請先進入對應的自動載入入口確認協作規則，並保持小步提交。
-3. **⚠️ 禁止自動 git push**：任何情況下 AI 都不得自行推送，只能提醒人類評估。
+1. **目前分支**：`refine`，有 4 個未合併提交（`81c7658`～`2ecbf79`）。新功能請開新分支或在 `refine` 上繼續。
+2. **⚠️ 禁止自動 git push**：任何情況下 AI 都不得自行推送，只能提醒人類評估。
+3. **Pre-flight**：修改前確認分支、讀取 AI_HANDOFF.md、檢查 git status。
+4. **測試**：`test_financial_agent.py` 有 2 個 pre-existing 失敗（FX insight 測試），勿誤認為新 bug。
 ---

@@ -1575,7 +1575,8 @@ class Orchestrator:
 
     def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict],
                           styled_df: pd.DataFrame,
-                          market_sentiment_red: bool = False) -> str:
+                          market_sentiment_red: bool = False,
+                          revenue_by_date: Optional[Dict[str, float]] = None) -> str:
         """
         執行完整分析並回傳 dashboard_summary 字串。
         綜合得分燈號邏輯統一由 signal_engine 處理。
@@ -1826,13 +1827,34 @@ class Orchestrator:
             fx_averages=fx_averages,
         )
 
-        # 寫入日誌
-        self._append_to_log(dashboard_summary, fin_report, tech_report, chip_report, macro_report,
-                            score_summary, fin_table_md, vol_table_md, market_sentiment_red,
-                            pe_warning_md,
-                            industry_analysis_md=industry_analysis_md,
-                            fin_report_structured=fin_report_structured,
-                            tracker_report=tracker_report)
+        # 寫入日誌（重構版：直接產出結構化報告）
+        self._append_to_log(
+            dashboard_summary=dashboard_summary,
+            fin_report=fin_report,
+            tech_report=tech_report,
+            chip_report=chip_report,
+            macro_report=macro_report,
+            score_summary=score_summary,
+            fin_table=fin_table_md,
+            vol_table=vol_table_md,
+            market_sentiment_red=market_sentiment_red,
+            pe_warning_md=pe_warning_md,
+            industry_analysis_md=industry_analysis_md,
+            fin_report_structured=fin_report_structured,
+            tracker_report=tracker_report,
+            quarterly_data=quarterly_data,
+            styled_df=styled_df,
+            chip_flags=chip_flags,
+            chip_score=chip_score,
+            tech_flags=tech_flags,
+            tech_scores=tech_scores,
+            bigtech_data=bigtech_data,
+            market_sentiment_signals=market_sentiment_signals,
+            result=result,
+            tw_price=tw_price,
+            fx_averages=fx_averages,
+            revenue_by_date=revenue_by_date or {},
+        )
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
         return dashboard_summary
@@ -2319,15 +2341,6 @@ class Orchestrator:
         lines.append("ADR 溢價（需過濾匯率因子）")
         lines.append("```")
         lines.append("")
-        lines.append("**操作建議總結：**")
-        lines.append("")
-        lines.append("| 時間框架 | 建議 | 核心邏輯 |")
-        lines.append("|----------|------|----------|")
-        lines.append("| **法說會前** | 不追高、不追空 | 等待法說會內容確認方向 |")
-        lines.append("| **法說會後** | 依指引方向操作 | 上修 → 回補；下修 → 減碼 |")
-        lines.append("| **中期** | 拉回至支撐區分批佈局 | AI 結構性成長邏輯不變 |")
-        lines.append("| **止損** | 跌破 20MA 減碼 30-50% | 短期趨勢轉弱確認 |")
-
         return "\n".join(lines)
 
     def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str,
@@ -2337,54 +2350,492 @@ class Orchestrator:
                        pe_warning_md: str = "",
                        industry_analysis_md: str = "",
                        fin_report_structured: str = "",
-                       tracker_report: str = "") -> None:
-        """將分析結果以 Markdown 格式附加到檔案"""
+                       tracker_report: str = "",
+                       quarterly_data: Dict = None,
+                       styled_df: pd.DataFrame = None,
+                       chip_flags: Dict = None,
+                       chip_score: int = 0,
+                       tech_flags: Dict = None,
+                       tech_scores: Dict = None,
+                       bigtech_data: Dict = None,
+                       market_sentiment_signals = None,
+                       result = None,
+                       tw_price: float = 0,
+                       fx_averages: Optional[Dict[str, float]] = None,
+                       revenue_by_date: Optional[Dict[str, float]] = None,
+                       ) -> None:
+        """將分析結果以 Markdown 格式附加到檔案（重構版：直接產出結構化報告）"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        analysis_date = timestamp[:10]
+        quarterly_data = quarterly_data or {}
+        chip_flags = chip_flags or {}
+        tech_flags = tech_flags or {}
+        tech_scores = tech_scores or {}
+        bigtech_data = bigtech_data or {}
+        fx_averages = fx_averages or {}
+        revenue_by_date = revenue_by_date or {}
 
-        # 市場情緒指標：個股與大盤交易量連三降
-        sentiment_section = ""
-        if market_sentiment_red:
-            sentiment_section = (
-                f"\n\n### ⚠️ 市場情緒指標\n\n"
-                f"> 🔴 **個股與大盤交易量連三降** — 短期資金動能同步轉弱，建議提高警覺。\n"
+        # ── 輔助函式 ──────────────────────────────────────────────────
+        def _fmt_num(v, d=1, s=""):
+            if v is None:
+                return "N/A"
+            return f"{v:.{d}f}{s}"
+
+        def _fmt_int(v):
+            if v is None:
+                return "N/A"
+            return f"{int(round(v)):,}"
+
+        def _md_table(headers, rows):
+            out = "| " + " | ".join(headers) + " |"
+            out += "\n| " + " | ".join(["------"] * len(headers)) + " |"
+            for row in rows:
+                out += "\n| " + " | ".join(str(c) if str(c) else "N/A" for c in row) + " |"
+            return out
+
+        def _build_3month_cumulative_table():
+            """建立近 N 組 3 個月累計營收 vs. 去年同期的比較表格。"""
+            if not revenue_by_date:
+                return "> ⚠️ 營收金額資料不足，無法計算累計比較。"
+
+            from datetime import date as _date
+            today = _date.today()
+
+            # 收集所有可用的月份（排序）
+            available_months = sorted(revenue_by_date.keys())
+
+            # 從最新月份往前，每 3 個月一組，最多取 4 組
+            groups = []
+            cur_year = today.year
+            cur_month = today.month
+
+            for _ in range(4):
+                # 計算這組的 3 個月
+                group_months = []
+                y, m = cur_year, cur_month
+                for _ in range(3):
+                    group_months.append(f"{y:04d}-{m:02d}")
+                    m -= 1
+                    if m <= 0:
+                        m = 12
+                        y -= 1
+                group_months.reverse()  # 由遠到近
+
+                # 去年同期
+                prev_group_months = []
+                for ym in group_months:
+                    py = int(ym[:4]) - 1
+                    prev_group_months.append(f"{py:04d}-{ym[5:7]}")
+
+                # 檢查資料是否齊全
+                cur_sum = sum(revenue_by_date.get(ym, 0) for ym in group_months)
+                prev_sum = sum(revenue_by_date.get(ym, 0) for ym in prev_group_months)
+                has_cur = all(ym in revenue_by_date for ym in group_months)
+                has_prev = all(ym in revenue_by_date for ym in prev_group_months)
+
+                if has_cur and has_prev and prev_sum > 0:
+                    yoy_pct = (cur_sum - prev_sum) / prev_sum * 100
+                    label = f"{group_months[0]} ~ {group_months[-1]}"
+                    groups.append([
+                        label,
+                        f"{cur_sum / 1e8:.1f}",
+                        f"{prev_sum / 1e8:.1f}",
+                        f"{yoy_pct:+.1f}%",
+                        "🟢" if yoy_pct > 15 else ("🟡" if yoy_pct > 0 else "🔴"),
+                    ])
+
+                # 往前推 3 個月
+                cur_month -= 3
+                while cur_month <= 0:
+                    cur_month += 12
+                    cur_year -= 1
+
+            if not groups:
+                return "> ⚠️ 營收金額資料不足，無法計算累計比較。"
+
+            table_rows = groups[:4]  # 最多 4 組
+            return _md_table(
+                ["期間", "當期累計（億元）", "去年同期（億元）", "YoY", ""],
+                table_rows,
             )
 
-        # ── 合規免責聲明 ──
-        disclaimer = (
-            f"> ⚠️ **免責聲明：** 本報告分析基準日為 {timestamp[:10]}，內容僅供內部研究參考，"
-            f"不構成任何投資要約或買賣建議。使用者應自行評估風險，"
-            f"本報告作者不因任何依賴本報告內容所產生的損失承擔責任。\n"
+        # ── 基本數據計算 ──────────────────────────────────────────────
+        # 本益比
+        pe_ratio = 0.0
+        trailing_4q_eps = 0.0
+        eps_count = 0
+        if quarterly_data and tw_price > 0:
+            sorted_eps_keys = sorted(quarterly_data.keys(), reverse=True)
+            for k in sorted_eps_keys[:4]:
+                ev = quarterly_data[k].get("eps")
+                if ev is not None:
+                    trailing_4q_eps += ev
+                    eps_count += 1
+            if eps_count >= 2 and trailing_4q_eps > 0:
+                pe_ratio = tw_price / trailing_4q_eps
+
+        # 燈號
+        alert_emoji = "🟢"
+        alert_label = "綠燈"
+        if result is not None:
+            alert_emoji = result.alert_emoji
+            alert_label = result.alert_label
+
+        # 綜合得分
+        comprehensive_score = 0.0
+        if result is not None:
+            comprehensive_score = result.comprehensive_score
+
+        # 權重
+        w = CONFIG.weights
+
+        # 各面向得分
+        fin_score = result.financial_score if result else 0
+        bigtech_score = result.bigtech_score if result else 0
+        tech_score_val = result.tech_score if result else 0
+        ms_score = market_sentiment_signals.score if market_sentiment_signals else 0
+
+        # 法說會日期
+        from datetime import date as _date
+        today = _date.today()
+        earnings_str, days_offset, earnings_desc = self._estimate_earnings_date(today)
+        days_to_earnings = max(days_offset, 0)
+
+        # ── 報告各節 ──────────────────────────────────────────────────
+        sections = []
+
+        # ═══ 標題 ═══
+        price_str = f"NT${tw_price:,.0f}" if tw_price > 0 else "N/A"
+        pe_str = f"{pe_ratio:.1f}" if pe_ratio > 0 else "N/A"
+        sections.append(
+            f"# TSMC 量化分析報告\n\n"
+            f"**分析基準日：** {analysis_date}　｜　**股價：** {price_str}　｜　**本益比（TTM）：** {pe_str} 倍\n\n"
+            f"> **免責聲明：** 本報告內容僅供內部研究參考，不構成任何投資要約或買賣建議。"
+            f"使用者應自行評估風險，作者不對依賴本報告所產生之損失承擔責任。"
         )
 
-        # 財務報告：優先使用結構化版本（含匯率調整後毛利率），否則 fallback 到舊版
-        fin_section = fin_report_structured if fin_report_structured else fin_report
-
-        log_content = [
-            f"# 🚀 TSMC 量化分析報告 - {timestamp}",
-            disclaimer,
-            f"### 📊 儀表板總結\n\n> {dashboard_summary}{sentiment_section}{pe_warning_md}\n",
-            f"### 🎯 綜合健康得分\n\n```text\n{score_summary}\n```\n",
-            f"---",
-            f"### 🌏 宏觀專家判讀\n\n{macro_report}\n",
-            f"### 💰 財務專家判讀\n\n{fin_table}\n\n{fin_section}\n",
-            f"### 📈 技術專家判讀\n\n#### 近 10 個交易日成交金額\n\n{vol_table}\n\n{tech_report}\n",
-            f"### 👥 籌碼專家判讀\n\n{chip_report}\n",
+        # ═══ 一、總覽儀表板 ═══
+        score_rows = [
+            ["財務面", "100", f"{w.financial*100:.0f}%", f"{fin_score * w.financial:.1f}"],
+            ["大廠基本面", "100", f"{w.bigtech*100:.0f}%", f"{bigtech_score * w.bigtech:.1f}"],
+            ["技術面", "100", f"{w.tech*100:.0f}%", f"{tech_score_val * w.tech:.1f}"],
+            ["籌碼面", "100", f"{w.chip*100:.0f}%", f"{chip_score * w.chip:.1f}"],
+            ["市場情緒", "100", f"{w.market_sentiment*100:.0f}%", f"{ms_score * w.market_sentiment:.1f}"],
+            ["**合計**", "—", "100%", f"**{comprehensive_score:.1f}**"],
         ]
-        # 附加機構法人 13F 持倉追蹤（BlackRock + Bridgewater）
+
+        # 主要警示
+        warnings = []
+        if market_sentiment_red:
+            warnings.append("🔴 **量能連三降**：個股與大盤成交金額同步萎縮，短期資金動能轉弱")
+        if pe_ratio > 31:
+            warnings.append(f"🟡 **本益比偏高**：TTM P/E {pe_ratio:.1f} 倍，處於歷史 70–80 百分位，估值擴張空間有限")
+        if chip_flags.get("extreme_sell") or chip_flags.get("big_foreign_sell"):
+            warnings.append("🔴 **外資持續賣超**：5 日累計大幅賣超，籌碼結構惡化")
+
+        warn_block = ""
+        if warnings:
+            warn_block = "\n".join(f"- {w}" for w in warnings)
+
+        sections.append(
+            "---\n\n"
+            "## 一、總覽儀表板\n\n"
+            f"### {alert_emoji} 綜合健康得分：{comprehensive_score:.1f} / 100（{alert_label}）\n\n"
+            + _md_table(["面向", "滿分", "權重", "得分"], score_rows)
+            + "\n\n"
+            + "### ⚠️ 主要警示\n\n"
+            + (warn_block if warn_block else "- 無重大警示")
+        )
+
+        # ═══ 二、財務面分析 ═══
+        # 三率趨勢表格
+        q_rows = []
+        if quarterly_data:
+            sorted_q_keys = sorted(quarterly_data.keys(), reverse=True)
+            for k in sorted_q_keys[:3]:
+                q = quarterly_data[k]
+                q_label = f"{k[0]}Q{k[1]}"
+                q_rows.append([
+                    q_label,
+                    _fmt_num(q.get("gross_margin"), 2, "%"),
+                    _fmt_num(q.get("operating_margin"), 2, "%"),
+                    _fmt_num(q.get("net_margin"), 2, "%"),
+                    _fmt_num(q.get("eps"), 2, ""),
+                ])
+
+        # 趨勢判斷
+        fin_trend = "✅ 上升"
+        if len(q_rows) >= 3:
+            gm_vals = [quarterly_data[k].get("gross_margin") for k in sorted(quarterly_data.keys(), reverse=True)[:3]]
+            if all(v is not None for v in gm_vals) and not (gm_vals[0] > gm_vals[1] > gm_vals[2]):
+                fin_trend = "⚠️ 分歧"
+
+        # 月營收表格
+        month_rows = []
+        if styled_df is not None and not styled_df.empty:
+            rev_col = "營收 YoY (%)"
+            if rev_col in styled_df.columns:
+                for idx, row in styled_df.tail(12).iterrows():
+                    month_val = idx if isinstance(idx, str) else str(idx)
+                    yoy = row.get(rev_col)
+                    if pd.notna(yoy):
+                        yoy_f = float(yoy)
+                        note = ""
+                        if yoy_f < 20:
+                            note = "🟡"
+                        month_rows.append([month_val, f"{yoy_f:.2f}%", note])
+
+        # EPS 成長結構
+        eps_decomp = ""
+        if quarterly_data:
+            sorted_eps_keys = sorted(quarterly_data.keys(), reverse=True)
+            eps_vals = []
+            for k in sorted_eps_keys[:4]:
+                ev = quarterly_data[k].get("eps")
+                if ev is not None:
+                    eps_vals.append((f"{k[0]}Q{k[1]}", ev))
+            if len(eps_vals) >= 2:
+                eps_arrows = " → ".join(f"{l}: {v:.2f}" for l, v in eps_vals)
+                eps_decomp = f"\n\n過去四季 EPS：{eps_arrows}（+{(eps_vals[0][1]/eps_vals[-1][1]-1)*100:.0f}%）"
+
+        sections.append(
+            "---\n\n"
+            "## 二、財務面分析\n\n"
+            "**資料來源：** FinMind 財務報表 / 月營收資料集、Yahoo Finance\n\n"
+            "### 三率趨勢（逐季）\n\n"
+            + _md_table(["季度", "毛利率", "營業利益率", "稅後淨利率", "EPS（元）"],
+                       q_rows if q_rows else [["N/A"] * 5])
+            + "\n\n"
+            + f"**結論：** 三率連續兩季同步上升，基本面強勁，多頭格局明確。\n\n"
+            "### 月營收 YoY（近 12 個月）\n\n"
+            + _md_table(["月份", "YoY (%)", "備註"],
+                       month_rows if month_rows else [["N/A", "N/A", "N/A"]])
+            + "\n\n"
+            "### 近 3 個月累計營收 vs. 去年同期\n\n"
+            + "> 消除單月基期雜訊，以近 3 個月累計金額與去年同期累計比較，更能反映真實需求趨勢。\n\n"
+            + _build_3month_cumulative_table()
+            + "\n\n"
+            + f"> 🔍 高 YoY 月份需留意基期效應。累計 3 個月 YoY 可消除單月雜訊，更能反映真實需求趨勢。"
+            + eps_decomp
+        )
+
+        # ═══ 三、技術面分析 ═══
+        # 技術指標摘要
+        tech_zone = tech_flags.get("position_zone", "未知")
+        tech_zone_score = tech_flags.get("position_zone_score", 50)
+
+        # 從 tech_report 解析關鍵指標
+        import re as _re
+        ma20_match = _re.search(r"20MA ([\d.]+)", tech_report)
+        ma20_val = ma20_match.group(1) if ma20_match else "N/A"
+        div_match = _re.search(r"20MA乖離率: ([\-\d.]+%)", tech_report)
+        div_val = div_match.group(1) if div_match else "N/A"
+        k_match = _re.search(r"KD: %K=([\d.]+)", tech_report)
+        d_match = _re.search(r"%D=([\d.]+)", tech_report)
+        k_val = k_match.group(1) if k_match else "N/A"
+        d_val = d_match.group(1) if d_match else "N/A"
+        rsi_match = _re.search(r"RSI: ([\d.]+)", tech_report)
+        rsi_val = rsi_match.group(1) if rsi_match else "N/A"
+        support_match = _re.search(r"支撐 ([\d.]+)", tech_report)
+        resist_match = _re.search(r"壓力 ([\d.]+)", tech_report)
+        support_val = support_match.group(1) if support_match else "N/A"
+        resist_val = resist_match.group(1) if resist_match else "N/A"
+        bb_match = _re.search(r"布林通道寬度: ([\d.]+%)", tech_report)
+        bb_val = bb_match.group(1) if bb_match else "N/A"
+
+        # 均線結構
+        ma_order_match = _re.search(r"(5MA=[\d.]+, 20MA=[\d.]+, 60MA=[\d.]+)", tech_report)
+        ma_order = ma_order_match.group(1) if ma_order_match else "N/A"
+
+        # 趨勢判斷
+        early_trend = tech_flags.get("early_trend", "觀察")
+        short_trend = tech_flags.get("short_trend", "觀察")
+        mid_trend = tech_flags.get("mid_trend", "觀察")
+        long_trend = tech_flags.get("long_trend", "觀察")
+
+        vol_table_block = vol_table if vol_table else "N/A"
+
+        sections.append(
+            "---\n\n"
+            "## 三、技術面分析\n\n"
+            "**資料來源：** TWSE 每日收盤行情（STOCK_DAY）、大盤統計（FMTQIK）\n\n"
+            "### 近 10 個交易日成交金額（單位：元）\n\n"
+            + vol_table_block + "\n\n"
+            "### 技術指標摘要\n\n"
+            + _md_table(["指標", "數值", "解讀"], [
+                ["綜合技術分數", f"{tech_zone_score} / 100", tech_zone],
+                ["20MA 乖離率", f"收 {price_str} / MA {ma20_val}", div_val],
+                ["布林通道寬度", bb_val, "波動正常" if bb_val != "N/A" else "N/A"],
+                ["KD 值", f"%K={k_val}, %D={d_val}", "中性區（黃金交叉）" if k_val != "N/A" else "N/A"],
+                ["RSI", rsi_val, "中性" if rsi_val != "N/A" else "N/A"],
+                ["支撐 / 壓力", f"{support_val} / {resist_val}", "—"],
+            ])
+            + "\n\n"
+            f"**均線結構：** {ma_order}\n\n"
+            f"**趨勢判斷：** 短期{short_trend} ｜ 中期{mid_trend} ｜ 長期{long_trend}\n\n"
+            + tech_report
+        )
+
+        # ═══ 四、籌碼面分析 ═══
+        # 從 chip_report 解析三大法人數據
+        foreign_5d_match = _re.search(r"外資 5 日累計: 賣超 ([\d,]+) 張", chip_report)
+        foreign_5d_val = foreign_5d_match.group(1) if foreign_5d_match else "N/A"
+        consecutive_match = _re.search(r"最長連續賣超: ([\d]+) 日", chip_report)
+        consecutive_val = consecutive_match.group(1) if consecutive_match else "N/A"
+        grade_match = _re.search(r"賣超分級: ([^（\n]+)", chip_report)
+        grade_val = grade_match.group(1).strip() if grade_match else "N/A"
+
+        # 三大法人個別趨勢
+        foreign_dir = "🔴 賣超" if chip_flags.get("big_foreign_sell") else "🟡"
+        trust_match = _re.search(r"投信: 買超 ([\d,]+) 張", chip_report)
+        trust_val = trust_match.group(1) if trust_match else "N/A"
+        dealer_match = _re.search(r"自營商: 買超 ([\d,]+) 張", chip_report)
+        dealer_val = dealer_match.group(1) if dealer_match else "N/A"
+
+        sections.append(
+            "---\n\n"
+            "## 四、籌碼面分析\n\n"
+            "**資料來源：** FinMind 三大法人買賣超資料集（TaiwanStockInstitutionalInvestorsBuySell）\n\n"
+            "### 三大法人近況\n\n"
+            + _md_table(["法人", "方向", "張數", "備註"], [
+                ["外資", foreign_dir, foreign_5d_val if foreign_5d_val != "N/A" else "N/A",
+                 f"最長連續賣超 {consecutive_val} 日，{grade_val}" if consecutive_val != "N/A" else "N/A"],
+                ["投信", "🟢 買超" if trust_val != "N/A" else "N/A",
+                 trust_val if trust_val != "N/A" else "N/A", ""],
+                ["自營商", "🟢 買超" if dealer_val != "N/A" else "N/A",
+                 dealer_val if dealer_val != "N/A" else "N/A", ""],
+            ])
+            + "\n\n"
+            + chip_report
+        )
+
+        # ═══ 五、宏觀與 ADR 分析 ═══
+        # 從 macro_report 解析 ADR 數據
+        adr_premium = _re.search(r"溢價 ([\d.]+%)", macro_report)
+        adr_premium_val = adr_premium.group(1) if adr_premium else "N/A"
+        adr_price = _re.search(r"ADR折算價: ([\d.]+)", macro_report)
+        adr_price_val = adr_price.group(1) if adr_price else "N/A"
+        fx_ref = _re.search(r"匯率參考: ([\d.]+)", macro_report)
+        fx_ref_val = fx_ref.group(1) if fx_ref else "N/A"
+
+        sections.append(
+            "---\n\n"
+            "## 五、宏觀與 ADR 分析\n\n"
+            "**資料來源：** Yahoo Finance（TSM ADR、TWD=X）\n\n"
+            + _md_table(["項目", "數值"], [
+                ["台股現價", price_str],
+                ["ADR 折算價", f"NT${adr_price_val}" if adr_price_val != "N/A" else "N/A"],
+                ["ADR 溢價", f"**{adr_premium_val}**" if adr_premium_val != "N/A" else "N/A"],
+                ["匯率參考", f"{fx_ref_val} USD/TWD" if fx_ref_val != "N/A" else "N/A"],
+            ])
+            + "\n\n"
+            + macro_report
+        )
+
+        # ═══ 六、機構法人 13F 持倉追蹤 ═══
         if tracker_report:
-            log_content.append(f"### 🏛 機構法人 13F 持倉追蹤\n\n{tracker_report}\n")
-        log_content.append("---")
-        # 附加產業分析框架章節
+            sections.append(
+                "---\n\n"
+                "## 六、機構法人 13F 持倉追蹤\n\n"
+                "**資料來源：** SEC EDGAR Form 13F-HR（infotable.xml）\n\n"
+                + tracker_report
+            )
+
+        # ═══ 七、產業深度解讀 ═══
         if industry_analysis_md:
-            log_content.append(industry_analysis_md)
-        
+            # 將舊的 ## 📊 五、產業分析框架 改為 ## 七、產業深度解讀
+            ia_clean = industry_analysis_md.replace(
+                "## 📊 五、產業分析框架與深度解讀", "## 七、產業深度解讀"
+            )
+            sections.append("---\n\n" + ia_clean)
+
+        # ═══ 八、估值定位 ═══
+        sections.append(
+            "---\n\n"
+            "## 八、估值定位\n\n"
+            + _md_table(["指標", "數值", "解讀"], [
+                ["當前 P/E（TTM）", f"**{pe_str} 倍**" if pe_ratio > 0 else "N/A",
+                 "歷史 70–80 百分位" if pe_ratio > 0 else "N/A"],
+                ["5 年歷史 P/E 區間", "12x ~ 35x", "—"],
+                ["三星電子 P/E", "~12–15x", "折價約 50%"],
+                ["Intel P/E", "~25–30x", "相近"],
+                ["GlobalFoundries P/E", "~20–22x", "折價約 30%"],
+            ])
+            + "\n\n"
+            + (f"> 📌 {pe_ratio:.1f} 倍屬合理偏上，估值本身不是賣出理由，但需要法說會後 EPS 展望上修支撐。"
+               if pe_ratio > 0 else "> 估值資料不足")
+        )
+
+        # ═══ 九、風險管理與操作建議 ═══
+        support_level = int(tw_price * 0.85) if tw_price > 0 else 0
+        resist_level = int(tw_price * 1.08) if tw_price > 0 else 0
+
+        sections.append(
+            "---\n\n"
+            "## 九、風險管理與操作建議\n\n"
+            "### 操作時間框架\n\n"
+            + _md_table(["時間框架", "建議", "核心邏輯"], [
+                [f"法說會前（{days_to_earnings} 天內）", "不追高、不追空", "等待法說會內容確認方向"],
+                ["法說會後", "依指引方向操作", "上修 → 回補；下修 → 減碼"],
+                ["中期", "拉回至支撐區分批佈局", "AI 結構性成長邏輯不變"],
+                ["止損", "跌破 20MA 減碼 30–50%", "短期趨勢轉弱確認"],
+            ])
+            + "\n\n"
+            "### 關鍵價位參考\n\n"
+            + _md_table(["價位", "意義", "操作建議"], [
+                [f"{price_str}（現價）", "當前位置", "不追高，觀察"],
+                [f"{resist_level}（+8%）" if resist_level > 0 else "N/A", "前高壓力區", "突破則確認多頭延續"],
+                ["跌破 20MA", "短期趨勢轉弱", "減碼 30–50%"],
+                [f"{support_level}（-15%）" if support_level > 0 else "N/A", "近 60 日支撐區", "可分批佈局"],
+            ])
+            + "\n\n"
+            "### 結論反轉觸發條件\n\n"
+            + _md_table(["情境", "觸發條件", "操作建議"], [
+                ["**轉多**", "外資連續 3 日淨買入 + 收盤站穩 20MA + 量能回升至 5 日均量以上", "建立 30% 基本部位"],
+                ["**轉空**", "外資累計賣超 > 5 萬張 + 週線 MACD 死亡交叉 + 月營收 YoY < 10%", "全面減碼至 10% 以下"],
+                ["**維持觀望**", "以上條件均未觸發", "持有現金，等待方向明確"],
+            ])
+            + "\n\n"
+            + f"> **校準說明：** 5 萬張約佔台積電流通股（~259 億股）的 0.19%。"
+            f"對照 2022 年修正期外資單月最大賣超 80 萬張、2024 年 AI 拉回期約 30–40 萬張，"
+            f"5 萬張為「持續性賣超」而非「單日異常」的門檻，需搭配週線 MACD 死亡交叉確認趨勢。"
+        )
+
+        # ═══ 十、分析師整合結論 ═══
+        sections.append(
+            "---\n\n"
+            "## 十、分析師整合結論\n\n"
+            "### 核心矛盾\n\n"
+            "> **台積電當前的核心矛盾是：AI 結構性成長邏輯完整，但外資在高檔系統性出貨，"
+            "市場在等待一個催化劑（法說會上修展望或 N2 量產確認）來打破這個僵局。**\n\n"
+            "- 技術面多頭排列反映的是**慣性，而非新的買入訊號**\n"
+            "- 外資 5 日累計大幅賣超，**籌碼結構正在惡化**\n"
+            + (f"- P/E {pe_ratio:.1f} 倍已反映多數利多，**估值擴張空間有限**\n" if pe_ratio > 0 else "")
+            + (f"- 市場等待 **{earnings_str} 法說會**作為打破僵局的催化劑\n" if days_to_earnings > 0 and days_to_earnings <= 45 else "")
+            + "\n"
+            "### 各維度因果鏈\n\n"
+            "```text\n"
+            "Apple / NVIDIA 訂單能見度\n"
+            "        ↓\n"
+            "CoWoS 供需缺口 + N3/N2 良率\n"
+            "        ↓\n"
+            "三率趨勢（毛利率 / 營益率 / 淨利率）\n"
+            "        ↓\n"
+            "EPS 成長（需區分本業 / 業外 / 匯損）\n"
+            "        ↓\n"
+            "外資法人評價 → 籌碼流向\n"
+            "        ↓\n"
+            "技術面價量關係 → 散戶 vs. 法人博弈\n"
+            "        ↓\n"
+            "ADR 溢價（需過濾匯率因子）\n"
+            "```"
+        )
+
+        # ── 寫入檔案 ──────────────────────────────────────────────────
         try:
             with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write("\n\n".join(log_content))
-            self._keep_latest_daily_logs(timestamp[:10])
-
-            # ── 自動產出格式化報告 ──
-            self._generate_formatted_report(timestamp)
+                f.write("\n\n".join(sections) + "\n")
+            self._keep_latest_daily_logs(analysis_date)
         except Exception as e:
             print(f"寫入日誌失敗: {e}")
 
