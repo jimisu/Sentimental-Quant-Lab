@@ -97,9 +97,10 @@ class GlobalMacroAgent:
             fetch_fn=lambda: self._http_get_json(url, headers=headers, params=params, timeout=timeout),
         )
 
-    def _fetch_fred_series(self, series_id: str, limit: int = 13) -> list:
+    def _fetch_fred_series(self, series_id: str, limit: int = 15) -> list:
         """
         從 FRED API 取得指定 series 的 observations。
+        limit 預設 15（而非 13）以容納 FRED 回傳中可能的 "." 未發布值。
         回傳 sorted ascending by date 的 [{"date": str, "value": float}] list。
         """
         api_key = os.getenv("FRED_API_KEY")
@@ -142,11 +143,12 @@ class GlobalMacroAgent:
     def _compute_inflation_yoy(self, series_id: str, label: str) -> Optional[str]:
         """
         計算 FRED series 最新 YoY% 變化。
-        需要 13 筆觀測值（最新 vs 12 月前）。
+        需要至少 13 筆有效觀測值（最新 vs 12 月前）。
+        limit=15 以容納 FRED 回傳中可能的 "." 未發布值。
         回傳格式："CPI (All Items) YoY: 2.9% (Dec 2024: 315.6 vs Dec 2023: 306.7)"
         """
         try:
-            observations = self._fetch_fred_series(series_id, limit=13)
+            observations = self._fetch_fred_series(series_id, limit=15)
         except Exception:
             return None
 
@@ -154,7 +156,7 @@ class GlobalMacroAgent:
             return None
 
         current = observations[-1]
-        year_ago = observations[0]
+        year_ago = observations[-13]  # 倒數第 13 筆 = 約 12 個月前
 
         if year_ago["value"] == 0:
             return None
@@ -172,9 +174,83 @@ class GlobalMacroAgent:
             f"({date_label}: {current['value']:.1f} vs {year_ago['value']:.1f})"
         )
 
+    def _interpret_inflation(self, cpi_yoy: Optional[float], core_cpi_yoy: Optional[float],
+                             pce_yoy: Optional[float]) -> str:
+        """
+        根據 CPI、Core CPI、PCE Price Index 的 YoY% 給出簡要解讀。
+        PCE 為聯準會首選通膨指標，目標值 2%。
+        回傳一字串段落，附加在通膨數據之後。
+        """
+        parts = []
+
+        # ── CPI vs Core CPI ──
+        if cpi_yoy is not None and core_cpi_yoy is not None:
+            diff = cpi_yoy - core_cpi_yoy
+            if diff > 0.5:
+                parts.append(
+                    f"  ▸ CPI ({cpi_yoy:.1f}%) 高於 Core CPI ({core_cpi_yoy:.1f}%) {diff:.1f} pp，"
+                    "顯示食品與能源價格推升整體通膨。"
+                )
+            elif diff < -0.5:
+                parts.append(
+                    f"  ▸ CPI ({cpi_yoy:.1f}%) 低於 Core CPI ({core_cpi_yoy:.1f}%) {abs(diff):.1f} pp，"
+                    "食品與能源價格相對穩定，核心壓力較大。"
+                )
+            else:
+                parts.append(
+                    f"  ▸ CPI ({cpi_yoy:.1f}%) 與 Core CPI ({core_cpi_yoy:.1f}%) 相近，"
+                    "通膨壓力來源較為均衡。"
+                )
+
+            # 絕對水位判斷
+            if core_cpi_yoy > 3.5:
+                parts.append("  ▸ Core CPI 高於 3.5%，聯準會降息空間受限，對科技股估值形成壓力。")
+            elif core_cpi_yoy > 2.5:
+                parts.append("  ▸ Core CPI 介於 2.5%~3.5%，通膨黏性仍存，聯準會可能維持利率不變。")
+            elif core_cpi_yoy > 0:
+                parts.append("  ▸ Core CPI 低於 2.5%，通膨逐步降溫，有利於聯準會未來降息預期。")
+            else:
+                parts.append("  ▸ Core CPI 接近或低於零，有通縮風險，需留意需求面疲軟。")
+
+        # ── PCE Price Index（聯準會首選指標） ──
+        if pce_yoy is not None:
+            if pce_yoy > 3:
+                parts.append(
+                    f"  ▸ PCE ({pce_yoy:.1f}%) 大幅高於 2% 目標，"
+                    "聯準會可能延後降息，對成長股估值不利。"
+                )
+            elif pce_yoy > 2:
+                parts.append(
+                    f"  ▸ PCE ({pce_yoy:.1f}%) 略高於 2% 目標，"
+                    "聯準會降息節奏可能偏慢。"
+                )
+            elif pce_yoy > 1:
+                parts.append(
+                    f"  ▸ PCE ({pce_yoy:.1f}%) 接近 2% 目標，"
+                    "通膨溫和，聯準會降息路徑暢通。"
+                )
+            else:
+                parts.append(
+                    f"  ▸ PCE ({pce_yoy:.1f}%) 低於 2% 目標，"
+                    "通膨偏弱，聯準會降息空間充足，有利科技股評價。"
+                )
+
+        # ── 對 TSMC 的意涵 ──
+        if parts:
+            parts.append("")
+            parts.append("  ▸ 對 TSMC 意涵：")
+            if core_cpi_yoy is not None and core_cpi_yoy > 3:
+                parts.append("    高利率環境持續，科技股估值承壓，但 AI 需求結構性成長可部分抵消。")
+            elif core_cpi_yoy is not None and core_cpi_yoy < 2:
+                parts.append("    降息預期升溫，有利科技股評價擴張，TSMC 受惠於 AI 資本支出週期。")
+            else:
+                parts.append("    通膨中性，TSMC 基本面主要受 AI 需求與產能利用率驅動。")
+
+        return "\n".join(parts)
+
     def fetch_inflation_report(self) -> str:
         """
-        建立 US 通膨摘要段落，納入 CPIAUCSL、CPILFESL、PPIACO。
+        建立 US 通膨摘要段落，納入 CPIAUCSL、CPILFESL、PPIFGS（Core PPI）。
         若無 FRED_API_KEY 或全部失敗則回傳空字串。
         """
         api_key = os.getenv("FRED_API_KEY")
@@ -185,25 +261,42 @@ class GlobalMacroAgent:
         series_map = [
             ("CPIAUCSL", "CPI (All Items)"),
             ("CPILFESL", "Core CPI (ex Food & Energy)"),
-            ("PPIACO", "PPI (All Commodities)"),
+            ("PCEPI",   "PCE Price Index (Fed's preferred gauge)"),
         ]
+
+        # 先收集各 series 的 YoY 值（供解讀用）
+        yoy_values: Dict[str, Optional[float]] = {
+            "CPIAUCSL": None, "CPILFESL": None, "PCEPI": None,
+        }
 
         for series_id, label in series_map:
             try:
                 result = self._compute_inflation_yoy(series_id, label)
                 if result:
                     lines.append(f"- {result}")
+                    # 解析 YoY 值
+                    m = re.search(r"YoY:\s+([-\d.]+)%", result)
+                    if m:
+                        yoy_values[series_id] = float(m.group(1))
             except Exception:
                 continue
 
         if not lines:
             return ""
 
+        # 產生解讀
+        interpretation = self._interpret_inflation(
+            cpi_yoy=yoy_values.get("CPIAUCSL"),
+            core_cpi_yoy=yoy_values.get("CPILFESL"),
+            pce_yoy=yoy_values.get("PCEPI"),
+        )
+
         return (
             "\n"
             "【US Inflation Data】\n"
             "Source: FRED (Federal Reserve Economic Data)\n"
             + "\n".join(lines)
+            + interpretation
         )
 
     def analyze_global_risk(self, tw_price: float) -> Tuple[str, int]:

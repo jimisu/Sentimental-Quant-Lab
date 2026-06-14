@@ -1123,7 +1123,7 @@ class TestFetchInflationReport:
     @patch("tsmc_macro_agent.requests.Session")
     @patch("tsmc_macro_agent.fetch_with_cache")
     def test_three_series_all_succeed(self, mock_fetch_cache, mock_session_cls):
-        """All three series (CPI, Core CPI, PPI) return valid data."""
+        """All three series (CPI, Core CPI, PCE) return valid data."""
         mock_session_cls.return_value = MagicMock()
         agent = GlobalMacroAgent()
 
@@ -1131,7 +1131,7 @@ class TestFetchInflationReport:
             base_values = {
                 "fred_CPIAUCSL": 300.0,
                 "fred_CPILFESL": 305.0,
-                "fred_PPIACO": 250.0,
+                "fred_PCEPI": 280.0,
             }
             base = None
             for key, val in base_values.items():
@@ -1154,7 +1154,7 @@ class TestFetchInflationReport:
 
         assert "CPI (All Items)" in result
         assert "Core CPI (ex Food & Energy)" in result
-        assert "PPI (All Commodities)" in result
+        assert "PCE Price Index (Fed's preferred gauge)" in result
         assert "YoY:" in result
 
     @patch("tsmc_macro_agent.requests.Session")
