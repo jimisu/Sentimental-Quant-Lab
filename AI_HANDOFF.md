@@ -8,7 +8,7 @@
 ## 📌 基本資訊
 
 - **目前所在分支 (Current Branch)**: `refine`
-- **本次交接時間 (Timestamp)**: 2026-06-14 12:00 (UTC+8)
+- **本次交接時間 (Timestamp)**: 2026-06-14 19:00 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
@@ -47,6 +47,14 @@
   - `--list-institutions` CLI 參數：列出所有已註冊機構
   - 42 新增測試，總計 236 測試全部通過
   - 提交：`6d1c93c`
+
+### 本次 session 完成（main / 2026-06-14）
+- [x] **全量 `.md` 檔案 R&R 最終檢查**：
+  - 逐一閱讀 CLAUDE.md、AI_COLLABORATION_RULES.md、DEVELOPMENT_FLOW.md、PROJECT_ARCHITECTURE.md、CODEX_RULES.md、GEMINI_RULES.md、AI_HANDOFF.md、CHANGELOG.md
+  - 以 grep 交叉比對關鍵句（Pre-flight、原子化、禁止 push、交接、CLI 指令等）
+  - 確認所有「重疊」均為合理引用或角色所需摘要，無實質內容重複
+  - 引用鏈：DEVELOPFLOW & PROJECT_ARCHITECTURE → COLLAB（規則）、DEVELOPMENT_FLOW（CLI）
+  - 工作樹已在 `refine/md-file` 分支合併回 main（PR #21，commit `ac0d9b9`）
 
 ### 本次 session 完成（refine / 2026-06-13~14）
 - [x] **analysis_log.md 重構為結構化報告格式**：
@@ -189,7 +197,7 @@
 > 15. `analyze_all_institutions()` 回傳 `(all_data, combined_report)`，combined_report 含跨機構比較表格
 
 ## 🚀 給下一個 AI 建議
-1. **目前分支**：`refine`，有 4 個未合併提交（`81c7658`～`2ecbf79`）。新功能請開新分支或在 `refine` 上繼續。
+1. **目前分支**：`main`，工作樹乾淨。新功能請開新分支。
 2. **⚠️ 禁止自動 git push**：任何情況下 AI 都不得自行推送，只能提醒人類評估。
 3. **Pre-flight**：修改前確認分支、讀取 AI_HANDOFF.md、檢查 git status。
 4. **測試**：`test_financial_agent.py` 有 2 個 pre-existing 失敗（FX insight 測試），勿誤認為新 bug。
