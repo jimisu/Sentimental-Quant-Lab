@@ -306,47 +306,19 @@ pip install -r requirements.txt
 
 ## 🤖 多 AI 代理程式協同開發指南
 
-為確保專案在 Gemini Code Assist、Claude Code CLI 和 Codex 之間的協同開發安全且高效，所有代理程式應以 `AI_COLLABORATION_RULES.md` 為共同規範，並遵守以下指南：
-
-### 架構防禦與風格一致性
-- **禁止未授權重構**：未經明確授權，不得拆分現有穩定模組（例如不得將 `tsmc_ai_agents.py` 拆分為多個檔案）或修改底層單例設計（如 `config.py` 中的配置）。
-- **保持編碼風格一致**：新程式碼必須遵循現有編碼模式：
-  - 所有資料獲取必須經過統一快取層 (`data_cache.py`) 而非直接請求外部 API
-  - 所有配置必須經由 `config.py` 集中管理
-  - 所有 Agent 分析結果必須回傳一致的資料結構（如 `Tuple[str, Dict, int]`）
-  - 優先「單一功能模組化」而非「過度封裝」
-
-### Git 分支策略遵守
-- **功能開發**：必須從最新的 `main` 切出 `feat/功能名稱` 分支
-- **錯誤修復**：必須從最新的 `main` 切出 `fix/問題描述` 分支
-- **嚴禁直接在 `main` 或 `develop` 分支上進行任何代碼修改**
-- **合併前置**：在提出合併請求前，必須確保代碼在當前分支能通過 `python tsmc_signal_dashboard.py` 的基本執行測試
-
-### 原子化提交原則
-- **微小增量**：每完成一個獨立的邏輯修改、新增一個小功能或修復一個特定錯誤，**必須立即停止後續動作並提交**
-- **提交訊息規範**：訊息應包含行為標記（feat, fix, docs, refactor, style）及其具體變更內容
-- **範例**：`feat: add unified data cache layer with per-type TTL policies`
-
-### AI 輪班交接協議
-- **交接檔案**：在切換 AI 開發工具前（或使用者要求時），目前的 AI 必須更新專案根目錄的 `AI_HANDOFF.md`
-- **交接內容必須包含**：
-  1. **當前狀態**：目前開發的分支與進度
-  2. **已知問題**：開發中遇到的障礙或尚未解決的 Bug
-  3. **下一步指示**：明確建議下一個接手的 AI 應該執行的具體任務
-- **交接觸發關鍵字**：當使用者說出「下班了」、「交班」、「任務結束」等關鍵字時，AI 必須自動執行交接流程
-- **開發流程文件**：每次 SessionStart 時自動載入 `AI_COLLABORATION_RULES.md`、`CLAUDE.md`、`AI_HANDOFF.md`、`CHANGELOG.md`、`DEVELOPMENT_FLOW.md`、`PROJECT_ARCHITECTURE.md` 和 `HANDOFF_PROMPT.md`
+為確保專案在 Gemini Code Assist、Claude Code CLI 和 Codex 之間的協同開發安全且高效，所有代理程式應以 [`AI_COLLABORATION_RULES.md`](./AI_COLLABORATION_RULES.md) 為共同規範。Pre-flight、架構防禦、原子化提交、交接協議等規則詳見該文件，以下僅說明本專案特有的架構安全設計。
 
 ### 多 Agent 安全協作重點
-- **資料競爭避免**：統一快取層 (`data_cache.py`) 使用檔案鎖定機制，確保多 Agent 安全讀寫快取
-- **配置單一來源**：所有 TTL、門檻值等設定經由 `config.py` 集中管理，避免配置衝突
-- **日誌寫入安全**：`_keep_latest_daily_logs` 函式設計為讀取全部內容後重寫，簡短衝突會被後續寫入覆蓋而不會損壞日誌
-- **圖表生成獨立**：`charts/` 目錄使用時間戳檔名策略，即使多 Agent 同時生成也不會檔案衝突
+- **資料競爭避免**：統一快取層 (`data_cache.py`) 使用環形快取（每 key 保留 3 份），多 Agent 同時寫入不同 key 是安全的。
+- **配置單一來源**：所有 TTL、門檻值等設定經由 `config.py` 集中管理，避免配置衝突。
+- **日誌寫入安全**：`analysis_log.md` 採用「讀取全部內容 → 追加新內容 → 原子性覆寫」模式，簡短衝突會被後續寫入覆蓋而不會損壞日誌。
+- **圖表生成獨立**：`charts/` 目錄使用時間戳檔名策略，即使多 Agent 同時生成也不會檔案衝突。
 
 ### 效率優化實踐
-- **快取層統一**：所有資料獲取（月營收、季報、ADR、CAPEX 等）經過統一快取層，顯著減少重複 API 請求
-- **TTL 精細化**：不同資料類型有不同快取策略（月營收 24h、季報 7d、ADR 1h、CAPEX 7d），平衡新鮮度與效率
-- **Tiered 執行模式**：儀表板分為 Tier 1（快取命中快速響應）和 Tier 2（需要真實 API 請求）兩層
-- **視窗輸出優化**：Matplotlib 字型設定優化為優先使用系統可用的中文字型，減少無效的字型搜尋警告
+- **快取層統一**：所有資料獲取（月營收、季報、ADR、CAPEX 等）經過統一快取層，顯著減少重複 API 請求。
+- **TTL 精細化**：不同資料類型有不同快取策略（月營收 24h、季報 7d、ADR 1h、CAPEX 7d），平衡新鮮度與效率。
+- **Tiered 執行模式**：儀表板分為 Tier 1（快取命中快速響應）和 Tier 2（需要真實 API 請求）兩層。
+- **視窗輸出優化**：Matplotlib 字型設定優化為優先使用系統可用的中文字型，減少無效的字型搜尋警告。
 
 ## 📜 License
 
