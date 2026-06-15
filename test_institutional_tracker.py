@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
+import tsmc_institutional_tracker
 from tsmc_institutional_tracker import (
     INSTITUTION_REGISTRY,
     DEFAULT_TRACKED_CIKs,
@@ -286,9 +287,12 @@ class TestAnalyze13fHoldings:
             </infoTable>"""
         return f'<?xml version="1.0"?><informationTable xmlns="{NS}">{entries}</informationTable>'
 
+    @patch("tsmc_institutional_tracker.should_fetch_from_sec", return_value=True)
     @patch("tsmc_institutional_tracker.fetch_with_cache")
-    def test_single_institution_tsm_increased(self, mock_fetch):
+    def test_single_institution_tsm_increased(self, mock_fetch, _mock_should):
         """TSM shares increased → score should be 80."""
+        # curl_cffi is not installed in test env; bypass the check
+        tsmc_institutional_tracker._HAS_CURL_CFFI = True
         agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
 
         # Track call count to distinguish current (1st info call) vs previous (2nd)
@@ -319,9 +323,11 @@ class TestAnalyze13fHoldings:
         assert data["holdings"]["TSM"]["status"] == "increased"
         assert "BlackRock" in report
 
+    @patch("tsmc_institutional_tracker.should_fetch_from_sec", return_value=True)
     @patch("tsmc_institutional_tracker.fetch_with_cache")
-    def test_single_institution_tsm_decreased(self, mock_fetch):
+    def test_single_institution_tsm_decreased(self, mock_fetch, _mock_should):
         """TSM shares decreased → score should be 40."""
+        tsmc_institutional_tracker._HAS_CURL_CFFI = True
         agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
 
         call_count = {"info": 0}
@@ -347,9 +353,11 @@ class TestAnalyze13fHoldings:
         assert data["score"] == 40
         assert data["holdings"]["TSM"]["status"] == "decreased"
 
+    @patch("tsmc_institutional_tracker.should_fetch_from_sec", return_value=True)
     @patch("tsmc_institutional_tracker.fetch_with_cache")
-    def test_single_institution_tsm_exited(self, mock_fetch):
+    def test_single_institution_tsm_exited(self, mock_fetch, _mock_should):
         """TSM fully exited → score should be 20."""
+        tsmc_institutional_tracker._HAS_CURL_CFFI = True
         agent = InstitutionalTrackerAgent(tracked_ciks=["0002012383"])
 
         call_count = {"info": 0}

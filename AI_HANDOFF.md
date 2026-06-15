@@ -7,8 +7,8 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `refine`
-- **本次交接時間 (Timestamp)**: 2026-06-14 19:00 (UTC+8)
+- **目前所在分支 (Current Branch)**: `develop`
+- **本次交接時間 (Timestamp)**: 2026-06-15 15:00 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
@@ -55,6 +55,15 @@
   - 確認所有「重疊」均為合理引用或角色所需摘要，無實質內容重複
   - 引用鏈：DEVELOPFLOW & PROJECT_ARCHITECTURE → COLLAB（規則）、DEVELOPMENT_FLOW（CLI）
   - 工作樹已在 `refine/md-file` 分支合併回 main（PR #21，commit `ac0d9b9`）
+
+### 本次 session 完成（develop / 2026-06-15）
+- [x] **修復 3 個 institutional tracker 測試失敗**：
+  - `test_single_institution_tsm_increased/decreased/exited` 從 FAIL → PASS
+  - 根因：`_fetch_13f_info_table()` 的 `should_fetch_from_sec()` 呼叫未 mock 的 `data_cache.read_cache()`，導致走向快取讀取路徑而非 fetch 路徑；加上 `_HAS_CURL_CFFI=False` 在測試環境中拋出 `RuntimeError`，被 `except Exception: pass` 靜默吞噬
+  - 修復：添加 `@patch("tsmc_institutional_tracker.should_fetch_from_sec", return_value=True)` + 在 test body 中設定 `tsmc_institutional_tracker._HAS_CURL_CFFI = True`
+  - 添加 `import tsmc_institutional_tracker` 模組層級引用
+  - `test_institutional_tracker.py`: 42 passed（原本 39 passed + 3 failed）
+  - 提交：待定（`feat/bridgewater-13f-tracker` 分支）
 
 ### 本次 session 完成（refine / 2026-06-13~14）
 - [x] **analysis_log.md 重構為結構化報告格式**：
@@ -173,6 +182,7 @@
 6. **[優先級：低] 舊快取清理**：`local_cache/` 中仍有舊 CIK（0001086364、0001364742）的快取檔案，可清理。
 7. **[優先級：低] `test_financial_agent.py` 2 個 pre-existing 失敗**：`test_build_structured_report_fx_insight_headwind` / `tailwind` 測試期望 `build_structured_report` 輸出 FX insight 文字（"關鍵發現"/"Pricing Power"/"貶值順風"），但該功能在 `tsmc_financial_agent.py` 的 `build_structured_report` 中已被移除。需決定是否修復功能或更新測試。
 8. **[優先級：低] `refine` branch 合併**：目前 4 個提交（`81c7658`～`2ecbf79`），可考慮合併回 main 或建立 PR。
+9. **[待提交] `test_institutional_tracker.py` 修復**：3 個測試從 FAIL → PASS，尚未 commit。建議 commit 訊息：`fix: institutional tracker tests — mock should_fetch_from_sec and _HAS_CURL_CFFI`
 
 ---
 
@@ -197,8 +207,8 @@
 > 15. `analyze_all_institutions()` 回傳 `(all_data, combined_report)`，combined_report 含跨機構比較表格
 
 ## 🚀 給下一個 AI 建議
-1. **目前分支**：`main`，工作樹乾淨。新功能請開新分支。
+1. **目前分支**：`develop`，`test_institutional_tracker.py` 有未提交的修復（3 個測試 FIX）。建議先 commit：`git add test_institutional_tracker.py && git commit -m "fix: institutional tracker tests — mock should_fetch_from_sec and _HAS_CURL_CFFI"`
 2. **⚠️ 禁止自動 git push**：任何情況下 AI 都不得自行推送，只能提醒人類評估。
 3. **Pre-flight**：修改前確認分支、讀取 AI_HANDOFF.md、檢查 git status。
-4. **測試**：`test_financial_agent.py` 有 2 個 pre-existing 失敗（FX insight 測試），勿誤認為新 bug。
+4. **測試**：`test_institutional_tracker.py` 42 個全部通過 ✅。`test_financial_agent.py` 仍有 2 個 pre-existing 失敗（FX insight 測試），勿誤認為新 bug。
 ---
