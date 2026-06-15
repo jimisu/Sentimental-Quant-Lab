@@ -27,9 +27,12 @@ from tsmc_ai_agents import Orchestrator
 
 load_dotenv()
 
+# 確保快取目錄存在（新機器首次執行時自動建立）
+CACHE_DIR = "local_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
+
 API_URL = "https://api.finmindtrade.com/api/v4/data"
 TWSE_AFTER_TRADING_URL = "https://www.twse.com.tw/rwd/zh/afterTrading"
-CACHE_DIR = "local_cache"
 CACHE_KEEP = 3
 FINANCIAL_CACHE_MAX_AGE_DAYS = 7
 
@@ -64,6 +67,30 @@ TWO_YEARS_AGO = TODAY - dt.timedelta(days=730)  # 約兩年，以便計算 YoY
 
 # TWSE 限制：查詢日期地板，根據回傳訊息彈性調整 (最早可達民國 79/01/04)
 TWSE_MIN_DATE = dt.date(1990, 1, 4)
+
+
+def check_environment() -> bool:
+    """
+    檢查環境變數是否完整。
+    若 FINMIND_TOKEN 未設定，印出首次使用說明並回傳 False。
+    """
+    if os.getenv("FINMIND_TOKEN"):
+        return True
+    try:
+        from rich.console import Console
+        console = Console()
+        console.print("\n[yellow]⚠️  FINMIND_TOKEN 未設定[/yellow]")
+        console.print("[dim]系統將以有限模式運行（僅 TWSE 資料可用）。[/dim]")
+        console.print("")
+        console.print("如需完整功能（月營收、財務報表、三大法人），請：")
+        console.print("  1. 至 https://finmindtrade.com/ 註冊並取得 API token")
+        console.print("  2. 複製 .env.example 為 .env：")
+        console.print("     [bold]cp .env.example .env[/bold]")
+        console.print("  3. 在 .env 中填入您的 FINMIND_TOKEN")
+        console.print("")
+    except ImportError:
+        pass
+    return False
 
 
 def build_cache_key(*parts) -> str:
@@ -212,7 +239,8 @@ def fetch_finmind_dataset(
         cached_data = get_cached_data(cache_key)
         if cached_data is not None:
             return cached_data
-        sys.exit(1)
+        print(f"Warning: No cache available for {dataset}/{data_id}, returning empty data.", file=sys.stderr)
+        return []
 
     if resp.status_code != 200:
         print(
@@ -222,7 +250,8 @@ def fetch_finmind_dataset(
         cached_data = get_cached_data(cache_key)
         if cached_data is not None:
             return cached_data
-        sys.exit(1)
+        print(f"Warning: No cache available for {dataset}/{data_id}, returning empty data.", file=sys.stderr)
+        return []
 
     data = resp.json()
     if data.get("status") != 200:
@@ -233,7 +262,8 @@ def fetch_finmind_dataset(
         cached_data = get_cached_data(cache_key)
         if cached_data is not None:
             return cached_data
-        sys.exit(1)
+        print(f"Warning: No cache available for {dataset}/{data_id}, returning empty data.", file=sys.stderr)
+        return []
 
     records = data.get("data", [])
     write_circular_cache(
@@ -1086,6 +1116,9 @@ def main():
         run_self_test()
         return
 
+    # ── 環境檢查 ──
+    has_finmind_token = check_environment()
+
     # 可選的 FinMind token，從環境變數讀取
     token = os.getenv("FINMIND_TOKEN")
 
@@ -1109,16 +1142,21 @@ def main():
     quarterly_margins = get_quarterly_margins(token)
 
     if not revenue_yoy:
-        print("錯誤：未能取得月營收資料。", file=sys.stderr)
-        sys.exit(1)
+        print("警告：未能取得月營收資料（FinMind API 不可用且無本地快取）。", file=sys.stderr)
+        print("將顯示部分儀表板（僅 TWSE 交易資料）。", file=sys.stderr)
     if not quarterly_margins:
         print("警告：未能取得季度毛利率/營業利益率資料，將以空白顯示。", file=sys.stderr)
 
-    # 建立 DataFrame
-    df = build_dataframe(revenue_yoy, quarterly_margins)
-
-    # 加入顏色邏輯
-    styled_df = apply_color_logic(df)
+    # 建立 DataFrame（revenue_yoy 為空時建立空 DataFrame 以降級）
+    if revenue_yoy:
+        df = build_dataframe(revenue_yoy, quarterly_margins)
+        styled_df = apply_color_logic(df)
+    else:
+        styled_df = pd.DataFrame(columns=[
+            "月份", "營收 YoY (%)", "毛利率 (%)", "營業利益率 (%)",
+            "稅後淨利率 (%)", "EPS (元)", "營收 YoY 色彩", "毛利率 色彩",
+            "營業利益率 色彩", "稅後淨利率 色彩"
+        ])
 
     # 呼叫 AI Agent 編排器
     orchestrator = Orchestrator()
