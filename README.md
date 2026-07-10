@@ -32,6 +32,49 @@ pip install -r requirements.txt
 python tsmc_signal_dashboard.py
 ```
 
+## 📈 Long-term Investment Monitor (3-5 Year Horizon)
+
+A structural monitor that filters out short-term noise and tracks only the variables that matter for multi-year holders:
+
+| Structural Variable | Source | Threshold |
+|---------------------|--------|-----------|
+| EPS 3Y CAGR | FinMind Financial Statements | > 15% |
+| Big-Tech CAPEX YoY | SEC XBRL (MSFT, GOOGL, AMZN, META) | ≥3/4 growing |
+| N2 Node Timeline | TSMC Earnings Calls | On track for risk prod H2 2025 |
+| Earnings Call Tone | Cached transcripts | POSITIVE/NEUTRAL/NEGATIVE |
+| Fair Value Range | Forward EPS × PE 25-30x | Within band = FAIR |
+| Foreign Ownership YoY | TWSE Shareholding | Decline < 2pp |
+
+### Three Usage Modes
+
+```bash
+# 1️⃣ One-shot run (manual / cron)
+python long_term_monitor.py --schedule
+
+# 2️⃣ Cron job (runs every Monday 08:00)
+0 8 * * 1 cd /path/to/Sentimental-Quant-Lab && python long_term_monitor.py --schedule >> logs/longterm_monitor.log 2>&1
+
+# 3️⃣ Daemon mode (runs continuously, auto-executes every Monday 08:00)
+python long_term_monitor.py --daemon &
+```
+
+**Outputs:**
+- Terminal: Colour-coded dashboard with assessment (BULLISH/NEUTRAL/BEARISH), fair value, risks & catalysts
+- JSON: `local_cache/longterm_snapshot_YYYYMMDD.json` for programmatic use
+
+**Post-Earnings Maintenance:** Update `local_cache/tsmc_earnings_signals.json` after each quarterly call with:
+```json
+{
+  "quarter": "2025Q3",
+  "date": "2025-10-16",
+  "capex_guidance": "2025 CAPEX 指引內容",
+  "n2_yield": "N2 良率/時程更新",
+  "customer_visibility": "客戶需求能見度描述",
+  "key_quotes": ["關鍵引述 1", "關鍵引述 2"],
+  "sentiment": "POSITIVE|NEUTRAL|NEGATIVE"
+}
+```
+
 *If you have a FinMind token for higher rate limits:*
 ```bash
 export FINMIND_TOKEN=your_token_here

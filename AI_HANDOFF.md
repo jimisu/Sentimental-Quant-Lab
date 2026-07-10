@@ -8,14 +8,24 @@
 ## 📌 基本資訊
 
 - **目前所在分支 (Current Branch)**: `develop`
-- **本次交接時間 (Timestamp)**: 2026-06-16 09:00 (UTC+8)
+- **本次交接時間 (Timestamp)**: 2026-07-10 12:10 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
 
 ## ✅ 已完成的工作 (What's Done)
 
-### 本次分支新功能（feat/auto-optimization）
+### 本次 session 完成（長期投資監看板 / 2026-07-10）
+- [x] **建立 `long_term_monitor.py`**：3-5 年投資視野的結構性監控儀表板
+  - 三大增強功能：
+    1. **自動化排程**：`--schedule` (cron 用) / `--daemon` (常駐，每週一 08:00 自動執行)
+    2. **估值錨點**：Forward EPS (最新季 ×4) × PE 25-30x → 合理價區間，現價 2465 在 FAIR 區
+    3. **法說會關鍵字監控**：解析 CAPEX 指引、N2 良率、需求能見度，最新 2025Q2：POSITIVE
+  - 結構性變數：EPS 3Y CAGR、大廠 CAPEX、N2 時程、法說會語調、合理價區間、外資持股 YoY
+  - 輸出：終端機彩色儀表板 + `local_cache/longterm_snapshot_YYYYMMDD.json`
+  - 決策框架：除非 4 大結構變數趨勢性惡化，否則短期外資賣超/股價震盪 = 噪音
+
+### 本次 session 完成（feat/auto-optimization / 2026-06-16）
 - [x] **產業分析框架全面升級**：改寫 `_build_industry_analysis_section()`，從五大優化面向擴展為七大章節
 - [x] **法說會行為模式框架**：新增 `_estimate_earnings_date()`，自動判斷當前處於法說會前/後/間距期，並給出 de-risking 模式解讀
 - [x] **客戶集中度風險段落**：Apple (~25%) 與 NVIDIA (~10-12%) 的單點脆弱性分析
@@ -191,6 +201,7 @@
 8. **[優先級：低] `refine` branch 合併**：目前 4 個提交（`81c7658`～`2ecbf79`），可考慮合併回 main 或建立 PR。
 9. **[待提交] `test_institutional_tracker.py` 修復**：3 個測試從 FAIL → PASS，尚未 commit。建議 commit 訊息：`fix: institutional tracker tests — mock should_fetch_from_sec and _HAS_CURL_CFFI`
 10. **[優先級：高] SEC Archives 403 封鎖 — 離線快取下載方案**：見下方「🚨 SEC Archives 封鎖問題與解決方案」章節。
+11. **[優先級：中] 共識 EPS 估測整合**：長期監看板目前用「最新季 × 4」做 Forward EPS，可串接 FinMind / Yahoo Finance 共識預測（1Y/2Y Forward EPS）替代簡單年化。
 
 ---
 
