@@ -602,7 +602,8 @@ class TestSECEdgarProvider:
             assert "filings" in result
 
     def test_get_13f_holdings_xml(self, provider):
-        with patch.object(provider.session, 'get') as mock_get:
+        # Patch cffi_requests.get since _HAS_CURL_CFFI is True in test env
+        with patch('sal.providers.cffi_requests.get') as mock_get:
             # First call (xml) fails, second call (txt) succeeds
             mock_resp1 = MagicMock()
             mock_resp1.status_code = 404
@@ -619,7 +620,7 @@ class TestSECEdgarProvider:
                     assert "MICROSOFT CORP" in result
 
     def test_get_13f_holdings_both_fail(self, provider):
-        with patch.object(provider.session, 'get') as mock_get:
+        with patch('sal.providers.cffi_requests.get') as mock_get:
             mock_resp1 = MagicMock()
             mock_resp1.status_code = 404
             mock_resp2 = MagicMock()
