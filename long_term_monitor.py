@@ -151,11 +151,15 @@ def fetch_eps_trend() -> EPSTrend:
     eps_values = []
 
     if isinstance(data.get("data"), dict):
-        for (year, quarter), vals in sorted(data["data"].items()):
+        # Cache is written by the dashboard's serialize_quarterly_margins():
+        # keys are "YYYYQ<n>" strings (JSON cannot store tuple keys) and each
+        # value dict carries an "eps" field. String keys sort chronologically.
+        for quarter_label, vals in sorted(data["data"].items()):
+            if not isinstance(vals, dict):
+                continue
             eps = vals.get("eps")
             if eps is not None:
-                quarters.append(f"{year}Q{quarter}")
-                eps_values.append(float(eps))
+                quarters.append(quarter_label)
                 eps_values.append(float(eps))
     elif isinstance(data.get("data"), list):
         eps_records = [r for r in data["data"] if r.get("type") == "EPS" and r.get("value") is not None]
@@ -441,17 +445,6 @@ def assess_long_term(snap: LongTermSnapshot) -> tuple[str, list[str], list[str]]
     earn_risks, earn_catalysts = assess_earnings_signals(snap.earnings_signals)
     risks.extend(earn_risks)
     catalysts.extend(earn_catalysts)
-
-    # Overall assessment
-    score = len(catalysts) - len(risks)
-    if score >= 2:
-        assessment = "BULLISH"
-    elif score <= -1:
-        assessment = "BEARISH"
-    else:
-        assessment = "NEUTRAL"
-
-    return assessment, risks, catalysts
 
     # Overall assessment
     score = len(catalysts) - len(risks)
