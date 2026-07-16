@@ -25,8 +25,12 @@ from sal.interfaces import (
     FinancialDataProvider,
     ForeignOwnership,
     InstitutionalFlow,
-    MarketDataProvider,
+    InstitutionalFlowProvider,
+    SECDataProvider,
+    TWSEDataProvider,
+    QuoteProvider,
     MonthlyRevenue,
+    CacheProvider,
     ProviderNotFoundError,
     QuarterlyMargin,
     SALProviderError,
@@ -153,9 +157,9 @@ def _read_fresh_cache(cache_key: str, max_age_hours: int) -> Optional[Dict]:
 
 
 # ──────────────────────────────────────────────
-# FinMind Provider (implements FinancialDataProvider, InstitutionalDataProvider)
+# FinMind Provider (implements FinancialDataProvider, InstitutionalFlowProvider)
 # ──────────────────────────────────────────────
-class FinMindProvider:
+class FinMindProvider(FinancialDataProvider, InstitutionalFlowProvider):
     """FinMind API data provider for Taiwan stock data."""
 
     def __init__(self, token: Optional[str] = None):
@@ -327,7 +331,7 @@ class FinMindProvider:
         margins = self.get_quarterly_margins(stock_id, quarters=1)
         return margins[0].eps if margins else None
 
-    # ─── InstitutionalDataProvider ───
+    # ─── InstitutionalFlowProvider ───
 
     def get_institutional_flow(
         self,
@@ -399,7 +403,7 @@ class FinMindProvider:
             ))
         return result
 
-    # ─── MarketDataProvider ───
+    # ─── Market data (FinMind daily prices) ───
 
     def get_daily_prices(self, stock_id: str = "2330", days: int = 60) -> List[DailyPrice]:
         """Get daily OHLCV from FinMind."""
@@ -440,9 +444,9 @@ class FinMindProvider:
 
 
 # ──────────────────────────────────────────────
-# TWSE Provider (implements MarketDataProvider)
+# TWSE Provider (implements TWSEDataProvider)
 # ──────────────────────────────────────────────
-class TWSEProvider:
+class TWSEProvider(TWSEDataProvider):
     """TWSE (Taiwan Stock Exchange) data provider."""
 
     def __init__(self):
@@ -603,9 +607,9 @@ class TWSEProvider:
 
 
 # ──────────────────────────────────────────────
-# Yahoo Finance Provider (implements MarketDataProvider)
+# Yahoo Finance Provider (implements QuoteProvider)
 # ──────────────────────────────────────────────
-class YahooFinanceProvider:
+class YahooFinanceProvider(QuoteProvider):
     """Yahoo Finance data provider for ADR, FX, and US stocks."""
 
     def __init__(self):
@@ -678,7 +682,7 @@ class YahooFinanceProvider:
 # ──────────────────────────────────────────────
 # SEC EDGAR Provider
 # ──────────────────────────────────────────────
-class SECEdgarProvider:
+class SECEdgarProvider(SECDataProvider):
     """SEC EDGAR data provider for 13F filings and company facts."""
 
     def __init__(self):
@@ -849,7 +853,7 @@ class SECEdgarProvider:
 # ──────────────────────────────────────────────
 # Cache Provider (implements CacheProvider)
 # ──────────────────────────────────────────────
-class FileCacheProvider:
+class FileCacheProvider(CacheProvider):
     """File-based cache implementation."""
 
     def get(self, key: str, max_age_hours: Optional[int] = None) -> Optional[Any]:

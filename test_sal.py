@@ -33,8 +33,10 @@ from sal.interfaces import (
     DataParseError,
     CacheMissError,
     FinancialDataProvider,
-    MarketDataProvider,
-    InstitutionalDataProvider,
+    InstitutionalFlowProvider,
+    TWSEDataProvider,
+    QuoteProvider,
+    SECDataProvider,
     EarningsCallProvider,
     CacheProvider,
 )
@@ -742,6 +744,35 @@ class TestSALCacheUnwrap:
             yahoo = YahooFinanceProvider()
             price = yahoo.get_tsmc_adr_price()
         assert price == 419.48
+
+
+class TestSALInterfaceEnforcement:
+    """
+    Providers must actually inherit their SAL interfaces (ABCs), so that the
+    contract the upper layer depends on is enforced at class-definition time
+    (a missing abstract method raises TypeError on import/instantiation),
+    not only at the call site.
+
+    This is the regression guard for the previous "decorative interface" state,
+    where providers claimed 'implements XProvider' in docstrings but inherited
+    nothing and `isinstance(provider, XProvider)` was False.
+    """
+
+    def test_finmind_implements_financial_and_flow(self):
+        assert isinstance(get_finmind(), FinancialDataProvider)
+        assert isinstance(get_finmind(), InstitutionalFlowProvider)
+
+    def test_twse_implements_twse_data(self):
+        assert isinstance(get_twse(), TWSEDataProvider)
+
+    def test_yahoo_implements_quote(self):
+        assert isinstance(get_yahoo(), QuoteProvider)
+
+    def test_sec_implements_sec_data(self):
+        assert isinstance(get_sec(), SECDataProvider)
+
+    def test_cache_implements_cache(self):
+        assert isinstance(get_cache(), CacheProvider)
 
 
 if __name__ == "__main__":
