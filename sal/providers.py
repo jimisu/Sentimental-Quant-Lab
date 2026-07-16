@@ -459,7 +459,9 @@ class TWSEProvider:
         if cache_hours > 0:
             cached = _read_fresh_cache(cache_key, cache_hours)
             if cached:
-                return cached
+                # Unwrap: cache stores {source, cached_at, data:<raw response>};
+                # live fetch returns the inner raw dict, so do the same here.
+                return cached.get("data")
 
         url = f"{TWSE_AFTER_TRADING_URL}/{endpoint}"
         try:
@@ -620,7 +622,8 @@ class YahooFinanceProvider:
         cache_key = _build_cache_key("yahoo", "chart", symbol, interval)
         cached = _read_fresh_cache(cache_key, 1)  # 1 hour cache
         if cached:
-            return cached
+            # Unwrap to the inner raw response (consistent with live fetch).
+            return cached.get("data")
 
         url = f"{YAHOO_FINANCE_URL}/{symbol}"
         params = {
