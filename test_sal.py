@@ -701,5 +701,48 @@ class TestSALExceptions:
         assert isinstance(err, SALProviderError)
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Cache-unwrap Regression Tests
+# ──────────────────────────────────────────────────────────────────────
+
+class TestSALCacheUnwrap:
+    """
+    Regression: on a cache hit, providers must unwrap the stored payload
+    ({source, cached_at, data:<raw response>}) down to the INNER raw response,
+    exactly like a live fetch does. Otherwise the upper layer looks for
+    `stat` / `chart` keys on the wrapper (where they don't exist) and silently
+    gets an empty result.
+
+    This bug was invisible to the mocked integration tests because they patch
+    `_fetch_json` / `get_chart` to return the inner dict directly, bypassing
+    the cache-read path. It was caught by scripts/check_api_connectivity.py,
+    which exercises the real cache.
+    """
+
+    def test_twse_get_stock_day_unwraps_cache(self):
+        wrapper = {
+            "source": "TWSE",
+            "cached_at": "2026-07-16T00:00:00",
+            "data": _sample_twse_stock_day(),
+        }
+        with patch("sal.providers._read_fresh_cache", return_value=wrapper):
+            twse = TWSEProvider()
+            rows = twse.get_stock_day("2330", "202607")
+        assert len(rows) == 2
+        assert all(isinstance(r, DailyPrice) for r in rows)
+        assert rows[-1].close == 2465.0
+
+    def test_yahoo_get_tsmc_adr_price_unwraps_cache(self):
+        wrapper = {
+            "source": "YahooFinance",
+            "cached_at": "2026-07-16T00:00:00",
+            "data": _sample_yahoo_chart("TSM", 419.48),
+        }
+        with patch("sal.providers._read_fresh_cache", return_value=wrapper):
+            yahoo = YahooFinanceProvider()
+            price = yahoo.get_tsmc_adr_price()
+        assert price == 419.48
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
