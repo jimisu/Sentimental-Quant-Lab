@@ -631,7 +631,7 @@ class TestSECEdgarProvider:
 
             with patch('sal.providers._read_latest_cache', return_value=None):
                 with patch('sal.providers._read_fresh_cache', return_value=None):
-                    with pytest.raises(SALProviderError, match="both xml/txt failed"):
+                    with pytest.raises(SALProviderError, match="無法取得持股明細"):
                         provider.get_13f_holdings("0002012383", "0002012383-26-001841")
 
 
@@ -773,6 +773,64 @@ class TestSALInterfaceEnforcement:
 
     def test_cache_implements_cache(self):
         assert isinstance(get_cache(), CacheProvider)
+
+
+class TestSECDataTransport:
+    """SAL owns the SEC transport (URL discovery + curl_cffi TLS bypass).
+
+    These pin the transport logic migrated out of tsmc_institutional_tracker,
+    so it stays verified in one place instead of only inside the tracker.
+    """
+
+    @pytest.fixture
+    def provider(self):
+        return SECEdgarProvider()
+
+    def test_fetch_13f_infotable_raw_txt_then_xml_fallback(self, provider):
+        with patch("sal.providers.cffi_requests.get") as mock_get:
+            def _side_effect(url, **kwargs):
+                resp = MagicMock()
+                if ".txt" in url:
+                    resp.status_code = 404
+                    resp.text = ""
+                elif "infotable.xml" in url:
+                    resp.status_code = 200
+                    resp.text = _sample_sec_13f_xml()
+                else:
+                    resp.status_code = 404
+                    resp.text = ""
+                return resp
+            mock_get.side_effect = _side_effect
+
+            text = provider.fetch_13f_infotable_raw("0002012383", "0002012383-26-001841")
+            assert "TAIWAN SEMICONDUCTOR" in text
+
+    def test_fetch_13f_infotable_raw_all_fail_raises(self, provider):
+        with patch("sal.providers.cffi_requests.get") as mock_get:
+            resp = MagicMock()
+            resp.status_code = 404
+            resp.text = ""
+            mock_get.return_value = resp
+
+            with pytest.raises(SALProviderError, match="無法取得持股明細"):
+                provider.fetch_13f_infotable_raw("0002012383", "0002012383-26-001841")
+
+    def test_fetch_submissions_raw_403_raises(self, provider):
+        with patch.object(provider.session, "get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 403
+            mock_get.return_value = mock_resp
+            with pytest.raises(SALProviderError, match="SEC API 403"):
+                provider.fetch_submissions_raw("0002012383")
+
+    def test_fetch_submissions_raw_ok(self, provider):
+        with patch.object(provider.session, "get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = _sample_sec_submissions()
+            mock_get.return_value = mock_resp
+            result = provider.fetch_submissions_raw("0002012383")
+            assert "filings" in result
 
 
 if __name__ == "__main__":

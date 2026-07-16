@@ -18,7 +18,6 @@ from tsmc_institutional_tracker import (
     TARGET_COMPANIES,
     _match_name,
     InstitutionalTrackerAgent,
-    SEC_HEADERS,
     NS,
 )
 

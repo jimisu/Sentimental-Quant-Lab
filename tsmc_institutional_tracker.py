@@ -31,24 +31,13 @@ import sys
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Tuple
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
 from data_cache import fetch_with_cache
 from datetime import datetime, timedelta, timezone
+from sal import get_sec
 
-# curl_cffi for bypassing SEC TLS fingerprint blocking
-try:
-    from curl_cffi import requests as cffi_requests
-    _HAS_CURL_CFFI = True
-except ImportError:
-    _HAS_CURL_CFFI = False
-
-SEC_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Encoding": "gzip, deflate",
-}
+# Kept for test compatibility (tests assign this module attribute); the actual
+# curl_cffi TLS bypass now lives in SAL's SECEdgarProvider.
+_HAS_CURL_CFFI = False
 
 # ── 13F 抓取排程常數 ──
 # 美東時間固定抓取日（季度結束後 ~45 天）
@@ -178,49 +167,17 @@ class InstitutionalTrackerAgent:
         self.source = "SEC EDGAR Form 13F-HR"
         self.logic = "追蹤大型機構法人每季 13F 持倉變化，分析 TSMC 與四大科技巨頭持股方向。"
         self.tracked_ciks = tracked_ciks or DEFAULT_TRACKED_CIKs
-        self.session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS"],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        })
+        # Network transport is delegated to SAL's SECEdgarProvider (get_sec()).
 
-    def _http_get(self, url: str, headers: Optional[Dict[str, str]] = None,
-                  timeout: int = 30) -> requests.Response:
-        try:
-            resp = self.session.get(url, headers=headers or SEC_HEADERS, timeout=timeout)
-            resp.raise_for_status()
-            return resp
-        except requests.RequestException as exc:
-            raise RuntimeError(f"HTTP request failed: {url} — {exc}")
-
-    def _http_get_json(self, url: str, timeout: int = 30) -> Dict:
-        resp = self._http_get(url, timeout=timeout)
-        try:
-            return resp.json()
-        except ValueError as exc:
-            raise RuntimeError(f"Invalid JSON from {url} — {exc}")
-
-    def _http_get_text(self, url: str, timeout: int = 30) -> str:
-        return self._http_get(url, timeout=timeout).text
-
-    # ── SEC EDGAR API 互動 ──────────────────────────────────────────
+    # ── SEC EDGAR API 互動 (via SAL) ──────────────────────────────
 
     def _fetch_submission_index(self, cik: str) -> Dict:
-        """從 SEC EDGAR 取得機構法人的 filing 索引"""
-        url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        """從 SEC EDGAR 取得機構法人的 filing 索引（經 SAL 傳輸層）"""
         cache_key = f"sec_13f_submissions_{cik}"
         return fetch_with_cache(
             policy_name="sec_13f",
             cache_key=cache_key,
-            fetch_fn=lambda: self._http_get_json(url),
+            fetch_fn=lambda: get_sec().fetch_submissions_raw(cik),
         )
 
     def _find_13f_filings(self, submissions: Dict, count: int = 2,
@@ -262,43 +219,15 @@ class InstitutionalTrackerAgent:
 
         return filings
 
-    def _discover_13f_urls(self, cik: str, accession: str) -> List[Tuple[str, str]]:
-        """
-        系統性探索 13F 持股明細的所有可能 URL。
-
-        SEC 13F 檔案存放位置不統一，可能的路徑組合：
-        - cik_path: accession 前綴（可能與 CIK 不同）或 CIK 本身
-        - 檔名: {accession}.txt、infotable.xml、primary_doc.xml
-        - 子目錄: xslForm13F_X02/、xslForm13F_X01/、或直接放在 accession 目錄下
-
-        回傳: [(url, method), ...] 按嘗試順序排列
-        """
-        accession_clean = accession.replace("-", "")
-        # cik_path 可能是 accession 前綴或 CIK 本身
-        acc_prefix = accession.split("-")[0]
-        cik_paths = list(dict.fromkeys([acc_prefix, cik]))  # 去重，保持順序
-
-        urls = []
-        for cp in cik_paths:
-            base = f"https://www.sec.gov/Archives/edgar/data/{cp}/{accession_clean}"
-            # 優先 .txt（標準 requests 可存取）
-            urls.append((f"{base}/{accession}.txt", "txt"))
-            # infotable.xml（需要 curl_cffi）
-            urls.append((f"{base}/xslForm13F_X02/infotable.xml", "xml"))
-            urls.append((f"{base}/xslForm13F_X01/infotable.xml", "xml"))
-            # primary_doc.xml（封面頁，通常無持股明細，但某些舊檔可能在此）
-            urls.append((f"{base}/xslForm13F_X02/primary_doc.xml", "xml"))
-            urls.append((f"{base}/xslForm13F_X01/primary_doc.xml", "xml"))
-
-        return urls
+    # NOTE: 13F URL 探索 + 傳輸已移至 SAL
+    # (SECEdgarProvider._discover_13f_urls / fetch_13f_infotable_raw)。
 
     def _fetch_13f_info_table(self, cik: str, accession: str, force: bool = False) -> str:
         """
-        統一抓取 13F 持股明細（兩機構相同邏輯）
+        統一抓取 13F 持股明細（兩機構相同邏輯）。
 
-        資料來源：SEC EDGAR Archives
-        - URL 探索：_discover_13f_urls() 系統性嘗試所有可能路徑
-        - 優先 .txt（標準 requests 可存取），fallback 到 infotable.xml（需要 curl_cffi）
+        傳輸層已委託 SAL 的 SECEdgarProvider.fetch_13f_infotable_raw
+        （curl_cffi TLS 偽裝 + URL 探索）；本方法只負責排程與快取。
 
         排程邏輯：
         - force=True 或固定抓取日（美東 2/15, 5/15, 8/15, 11/15）→ 強制重新抓取
@@ -321,41 +250,10 @@ class InstitutionalTrackerAgent:
                 return cached_any
             # 完全沒有 cache：首次抓取，不受排程限制
 
-        # ── 從 SEC 抓取 ──
-        headers = {
-            'User-Agent': 'Sentimental-Quant-Lab/1.0',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
-
+        # ── 從 SEC 抓取（經 SAL 傳輸層）──
         def _fetch_from_sec():
-            """嘗試所有可能的 URL 路徑"""
-            urls = self._discover_13f_urls(cik, accession)
-            errors = []
-
-            for url, method in urls:
-                is_txt = method == "txt"
-                try:
-                    if _HAS_CURL_CFFI:
-                        resp = cffi_requests.get(url, headers=headers, impersonate='chrome', timeout=120)
-                    elif is_txt:
-                        resp = requests.get(url, headers=headers, timeout=120)
-                    else:
-                        # 無 curl_cffi 且非 .txt，跳過
-                        continue
-
-                    if resp.status_code == 200 and len(resp.text) > 100:
-                        return resp.text
-
-                    errors.append(f"{method}:{resp.status_code}")
-                except Exception as e:
-                    errors.append(f"{method}:{e}")
-
-            raise RuntimeError(
-                f"SEC Archives 無法取得持股明細：CIK {cik} Acc {accession}\n"
-                f"  嘗試 URL：{len(urls)} 個\n"
-                f"  結果：{', '.join(errors[:6])}"
-            )
+            """嘗試所有可能的 URL 路徑（由 SAL 實作）"""
+            return get_sec().fetch_13f_infotable_raw(cik, accession)
 
         try:
             content = fetch_with_cache(
