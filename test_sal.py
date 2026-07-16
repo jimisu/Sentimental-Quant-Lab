@@ -33,8 +33,10 @@ from sal.interfaces import (
     DataParseError,
     CacheMissError,
     FinancialDataProvider,
-    MarketDataProvider,
-    InstitutionalDataProvider,
+    InstitutionalFlowProvider,
+    TWSEDataProvider,
+    QuoteProvider,
+    SECDataProvider,
     EarningsCallProvider,
     CacheProvider,
 )
@@ -629,7 +631,7 @@ class TestSECEdgarProvider:
 
             with patch('sal.providers._read_latest_cache', return_value=None):
                 with patch('sal.providers._read_fresh_cache', return_value=None):
-                    with pytest.raises(SALProviderError, match="both xml/txt failed"):
+                    with pytest.raises(SALProviderError, match="無法取得持股明細"):
                         provider.get_13f_holdings("0002012383", "0002012383-26-001841")
 
 
@@ -699,6 +701,136 @@ class TestSALExceptions:
     def test_cache_miss_error(self):
         err = CacheMissError("Key not found")
         assert isinstance(err, SALProviderError)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cache-unwrap Regression Tests
+# ──────────────────────────────────────────────────────────────────────
+
+class TestSALCacheUnwrap:
+    """
+    Regression: on a cache hit, providers must unwrap the stored payload
+    ({source, cached_at, data:<raw response>}) down to the INNER raw response,
+    exactly like a live fetch does. Otherwise the upper layer looks for
+    `stat` / `chart` keys on the wrapper (where they don't exist) and silently
+    gets an empty result.
+
+    This bug was invisible to the mocked integration tests because they patch
+    `_fetch_json` / `get_chart` to return the inner dict directly, bypassing
+    the cache-read path. It was caught by scripts/check_api_connectivity.py,
+    which exercises the real cache.
+    """
+
+    def test_twse_get_stock_day_unwraps_cache(self):
+        wrapper = {
+            "source": "TWSE",
+            "cached_at": "2026-07-16T00:00:00",
+            "data": _sample_twse_stock_day(),
+        }
+        with patch("sal.providers._read_fresh_cache", return_value=wrapper):
+            twse = TWSEProvider()
+            rows = twse.get_stock_day("2330", "202607")
+        assert len(rows) == 2
+        assert all(isinstance(r, DailyPrice) for r in rows)
+        assert rows[-1].close == 2465.0
+
+    def test_yahoo_get_tsmc_adr_price_unwraps_cache(self):
+        wrapper = {
+            "source": "YahooFinance",
+            "cached_at": "2026-07-16T00:00:00",
+            "data": _sample_yahoo_chart("TSM", 419.48),
+        }
+        with patch("sal.providers._read_fresh_cache", return_value=wrapper):
+            yahoo = YahooFinanceProvider()
+            price = yahoo.get_tsmc_adr_price()
+        assert price == 419.48
+
+
+class TestSALInterfaceEnforcement:
+    """
+    Providers must actually inherit their SAL interfaces (ABCs), so that the
+    contract the upper layer depends on is enforced at class-definition time
+    (a missing abstract method raises TypeError on import/instantiation),
+    not only at the call site.
+
+    This is the regression guard for the previous "decorative interface" state,
+    where providers claimed 'implements XProvider' in docstrings but inherited
+    nothing and `isinstance(provider, XProvider)` was False.
+    """
+
+    def test_finmind_implements_financial_and_flow(self):
+        assert isinstance(get_finmind(), FinancialDataProvider)
+        assert isinstance(get_finmind(), InstitutionalFlowProvider)
+
+    def test_twse_implements_twse_data(self):
+        assert isinstance(get_twse(), TWSEDataProvider)
+
+    def test_yahoo_implements_quote(self):
+        assert isinstance(get_yahoo(), QuoteProvider)
+
+    def test_sec_implements_sec_data(self):
+        assert isinstance(get_sec(), SECDataProvider)
+
+    def test_cache_implements_cache(self):
+        assert isinstance(get_cache(), CacheProvider)
+
+
+class TestSECDataTransport:
+    """SAL owns the SEC transport (URL discovery + curl_cffi TLS bypass).
+
+    These pin the transport logic migrated out of tsmc_institutional_tracker,
+    so it stays verified in one place instead of only inside the tracker.
+    """
+
+    @pytest.fixture
+    def provider(self):
+        return SECEdgarProvider()
+
+    def test_fetch_13f_infotable_raw_txt_then_xml_fallback(self, provider):
+        with patch("sal.providers.cffi_requests.get") as mock_get:
+            def _side_effect(url, **kwargs):
+                resp = MagicMock()
+                if ".txt" in url:
+                    resp.status_code = 404
+                    resp.text = ""
+                elif "infotable.xml" in url:
+                    resp.status_code = 200
+                    resp.text = _sample_sec_13f_xml()
+                else:
+                    resp.status_code = 404
+                    resp.text = ""
+                return resp
+            mock_get.side_effect = _side_effect
+
+            text = provider.fetch_13f_infotable_raw("0002012383", "0002012383-26-001841")
+            assert "TAIWAN SEMICONDUCTOR" in text
+
+    def test_fetch_13f_infotable_raw_all_fail_raises(self, provider):
+        with patch("sal.providers.cffi_requests.get") as mock_get:
+            resp = MagicMock()
+            resp.status_code = 404
+            resp.text = ""
+            mock_get.return_value = resp
+
+            with pytest.raises(SALProviderError, match="無法取得持股明細"):
+                provider.fetch_13f_infotable_raw("0002012383", "0002012383-26-001841")
+
+    def test_fetch_submissions_raw_403_raises(self, provider):
+        with patch.object(provider.session, "get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 403
+            mock_get.return_value = mock_resp
+            with pytest.raises(SALProviderError, match="SEC API 403"):
+                provider.fetch_submissions_raw("0002012383")
+
+    def test_fetch_submissions_raw_ok(self, provider):
+        with patch.object(provider.session, "get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = _sample_sec_submissions()
+            mock_get.return_value = mock_resp
+            result = provider.fetch_submissions_raw("0002012383")
+            assert "filings" in result
 
 
 if __name__ == "__main__":

@@ -132,21 +132,38 @@ class FinancialDataProvider(ABC):
         ...
 
 
-class MarketDataProvider(ABC):
-    """Interface for market price and trading data."""
+class InstitutionalFlowProvider(ABC):
+    """Interface for institutional investor flow & foreign ownership data."""
 
     @abstractmethod
-    def get_current_price(self, symbol: str) -> Optional[float]:
-        """Get current market price."""
+    def get_institutional_flow(
+        self,
+        stock_id: str,
+        days: int = 30,
+    ) -> List[InstitutionalFlow]:
+        """Get daily institutional buy/sell flow."""
         ...
 
     @abstractmethod
-    def get_daily_prices(
+    def get_foreign_ownership(
         self,
-        symbol: str,
-        days: int = 30,
+        stock_id: str,
+        days: int = 252,
+    ) -> List[ForeignOwnership]:
+        """Get foreign ownership percentage history."""
+        ...
+
+
+class TWSEDataProvider(ABC):
+    """Interface for TWSE market data (daily trading + market turnover)."""
+
+    @abstractmethod
+    def get_stock_day(
+        self,
+        stock_id: str,
+        year_month: Optional[str] = None,
     ) -> List[DailyPrice]:
-        """Get recent daily OHLCV data."""
+        """Get daily OHLCV for a stock (STOCK_DAY)."""
         ...
 
     @abstractmethod
@@ -158,8 +175,17 @@ class MarketDataProvider(ABC):
         ...
 
 
-class InstitutionalDataProvider(ABC):
-    """Interface for institutional investor data."""
+class QuoteProvider(ABC):
+    """Interface for current price quotes (Yahoo Finance ADR, FX, etc.)."""
+
+    @abstractmethod
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """Get current market price for a symbol."""
+        ...
+
+
+class EarningsCallProvider(ABC):
+    """Interface for earnings call transcripts and signals (not yet implemented)."""
 
     @abstractmethod
     def get_institutional_flow(
@@ -194,25 +220,30 @@ class EarningsCallProvider(ABC):
         ...
 
 
-class InstitutionalDataProvider(ABC):
-    """Interface for SEC 13F institutional holdings."""
+class SECDataProvider(ABC):
+    """Interface for SEC EDGAR data (company facts, submissions, 13F)."""
+
+    @abstractmethod
+    def get_company_facts(self, cik: str) -> Optional[Dict]:
+        """Get company facts (XBRL) for a CIK."""
+        ...
+
+    @abstractmethod
+    def get_submissions(self, cik: str) -> Optional[Dict]:
+        """Get recent filings submissions for a CIK."""
+        ...
 
     @abstractmethod
     def get_13f_holdings(
         self,
         cik: str,
-        latest_n: int = 2,
-    ) -> List[SEC13FHolding]:
-        """Get 13F holdings for a given CIK."""
-        ...
+        accession_number: str,
+    ) -> Optional[str]:
+        """Fetch raw 13F infotable XML/text for an accession.
 
-    @abstractmethod
-    def get_big_tech_capex(
-        self,
-        companies: List[str],
-        latest_n: int = 4,
-    ) -> List[BigTechCAPEX]:
-        """Get big tech CAPEX history."""
+        Returns the raw text; the caller parses it. Parsing is planned to
+        move into SAL in a later step so this returns DTOs instead of text.
+        """
         ...
 
 

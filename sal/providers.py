@@ -25,8 +25,12 @@ from sal.interfaces import (
     FinancialDataProvider,
     ForeignOwnership,
     InstitutionalFlow,
-    MarketDataProvider,
+    InstitutionalFlowProvider,
+    SECDataProvider,
+    TWSEDataProvider,
+    QuoteProvider,
     MonthlyRevenue,
+    CacheProvider,
     ProviderNotFoundError,
     QuarterlyMargin,
     SALProviderError,
@@ -153,9 +157,9 @@ def _read_fresh_cache(cache_key: str, max_age_hours: int) -> Optional[Dict]:
 
 
 # ──────────────────────────────────────────────
-# FinMind Provider (implements FinancialDataProvider, InstitutionalDataProvider)
+# FinMind Provider (implements FinancialDataProvider, InstitutionalFlowProvider)
 # ──────────────────────────────────────────────
-class FinMindProvider:
+class FinMindProvider(FinancialDataProvider, InstitutionalFlowProvider):
     """FinMind API data provider for Taiwan stock data."""
 
     def __init__(self, token: Optional[str] = None):
@@ -327,7 +331,7 @@ class FinMindProvider:
         margins = self.get_quarterly_margins(stock_id, quarters=1)
         return margins[0].eps if margins else None
 
-    # ─── InstitutionalDataProvider ───
+    # ─── InstitutionalFlowProvider ───
 
     def get_institutional_flow(
         self,
@@ -399,7 +403,7 @@ class FinMindProvider:
             ))
         return result
 
-    # ─── MarketDataProvider ───
+    # ─── Market data (FinMind daily prices) ───
 
     def get_daily_prices(self, stock_id: str = "2330", days: int = 60) -> List[DailyPrice]:
         """Get daily OHLCV from FinMind."""
@@ -440,9 +444,9 @@ class FinMindProvider:
 
 
 # ──────────────────────────────────────────────
-# TWSE Provider (implements MarketDataProvider)
+# TWSE Provider (implements TWSEDataProvider)
 # ──────────────────────────────────────────────
-class TWSEProvider:
+class TWSEProvider(TWSEDataProvider):
     """TWSE (Taiwan Stock Exchange) data provider."""
 
     def __init__(self):
@@ -459,7 +463,9 @@ class TWSEProvider:
         if cache_hours > 0:
             cached = _read_fresh_cache(cache_key, cache_hours)
             if cached:
-                return cached
+                # Unwrap: cache stores {source, cached_at, data:<raw response>};
+                # live fetch returns the inner raw dict, so do the same here.
+                return cached.get("data")
 
         url = f"{TWSE_AFTER_TRADING_URL}/{endpoint}"
         try:
@@ -601,9 +607,9 @@ class TWSEProvider:
 
 
 # ──────────────────────────────────────────────
-# Yahoo Finance Provider (implements MarketDataProvider)
+# Yahoo Finance Provider (implements QuoteProvider)
 # ──────────────────────────────────────────────
-class YahooFinanceProvider:
+class YahooFinanceProvider(QuoteProvider):
     """Yahoo Finance data provider for ADR, FX, and US stocks."""
 
     def __init__(self):
@@ -620,7 +626,8 @@ class YahooFinanceProvider:
         cache_key = _build_cache_key("yahoo", "chart", symbol, interval)
         cached = _read_fresh_cache(cache_key, 1)  # 1 hour cache
         if cached:
-            return cached
+            # Unwrap to the inner raw response (consistent with live fetch).
+            return cached.get("data")
 
         url = f"{YAHOO_FINANCE_URL}/{symbol}"
         params = {
@@ -675,7 +682,7 @@ class YahooFinanceProvider:
 # ──────────────────────────────────────────────
 # SEC EDGAR Provider
 # ──────────────────────────────────────────────
-class SECEdgarProvider:
+class SECEdgarProvider(SECDataProvider):
     """SEC EDGAR data provider for 13F filings and company facts."""
 
     def __init__(self):
@@ -723,30 +730,40 @@ class SECEdgarProvider:
         )
         return data
 
+    def fetch_submissions_raw(self, cik: str) -> Dict:
+        """Fetch SEC submissions JSON (no caching).
+
+        Pure transport: raises SALProviderError on network/HTTP failure so the
+        caller (SAL cache wrapper or an upper-layer cache) owns fallback policy.
+        """
+        cik_padded = cik.zfill(10)
+        url = f"{SEC_EDGAR_URL}/CIK{cik_padded}.json"
+        try:
+            resp = self.session.get(url, timeout=30)
+        except requests.RequestException as exc:
+            raise SALProviderError(f"SEC submissions request failed: {exc}") from exc
+        if resp.status_code == 403:
+            raise SALProviderError("SEC API 403 - IP may be blocked")
+        if resp.status_code != 200:
+            raise SALProviderError(f"SEC submissions {resp.status_code}")
+        return resp.json()
+
     def get_submissions(self, cik: str) -> Optional[Dict]:
-        """Get recent filings submissions for a CIK."""
+        """Get recent filings submissions for a CIK (cached)."""
         cik_padded = cik.zfill(10)
         cache_key = _build_cache_key("sec", "submissions", cik_padded)
         cached = _read_fresh_cache(cache_key, 168)
         if cached:
             return cached.get("data")
 
-        url = f"{SEC_EDGAR_URL}/CIK{cik_padded}.json"
         try:
-            resp = self.session.get(url, timeout=30)
-        except requests.RequestException as exc:
+            data = self.fetch_submissions_raw(cik)
+        except SALProviderError:
             cached = _read_latest_cache(cache_key)
             if cached:
                 return cached.get("data")
-            raise SALProviderError(f"SEC submissions request failed: {exc}") from exc
+            raise
 
-        if resp.status_code != 200:
-            cached = _read_latest_cache(cache_key)
-            if cached:
-                return cached.get("data")
-            raise SALProviderError(f"SEC submissions {resp.status_code}")
-
-        data = resp.json()
         _write_circular_cache(
             cache_key,
             {
@@ -759,15 +776,70 @@ class SECEdgarProvider:
         )
         return data
 
+    def _discover_13f_urls(self, cik: str, accession: str) -> List[Tuple[str, str]]:
+        """Systematically try all candidate 13F holdings URLs.
+
+        SEC Archives paths are inconsistent; try both the accession prefix and
+        the CIK as the path component, with .txt (standard requests) and
+        infotable.xml (needs curl_cffi TLS bypass) variants.
+        """
+        accession_clean = accession.replace("-", "")
+        acc_prefix = accession.split("-")[0]
+        cik_paths = list(dict.fromkeys([acc_prefix, cik]))  # dedupe, keep order
+        urls = []
+        for cp in cik_paths:
+            base = f"{SEC_ARCHIVES_URL}/{cp}/{accession_clean}"
+            urls.append((f"{base}/{accession}.txt", "txt"))
+            urls.append((f"{base}/xslForm13F_X02/infotable.xml", "xml"))
+            urls.append((f"{base}/xslForm13F_X01/infotable.xml", "xml"))
+            urls.append((f"{base}/xslForm13F_X02/primary_doc.xml", "xml"))
+            urls.append((f"{base}/xslForm13F_X01/primary_doc.xml", "xml"))
+        return urls
+
+    def fetch_13f_infotable_raw(self, cik: str, accession: str) -> str:
+        """Fetch raw 13F infotable XML/text (no caching).
+
+        Mirrors the prior tracker transport: tries each candidate URL, preferring
+        .txt (standard requests) and falling back to infotable.xml via curl_cffi
+        (TLS fingerprint bypass). Raises SALProviderError if all candidates fail.
+        """
+        headers = {
+            "User-Agent": "Sentimental-Quant-Lab/1.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        errors = []
+        for url, method in self._discover_13f_urls(cik, accession):
+            is_txt = method == "txt"
+            try:
+                if _HAS_CURL_CFFI:
+                    resp = cffi_requests.get(url, headers=headers, impersonate="chrome", timeout=120)
+                elif is_txt:
+                    resp = self.session.get(url, headers=headers, timeout=120)
+                else:
+                    continue
+            except Exception as exc:
+                errors.append(f"{method}:{exc}")
+                continue
+            if resp.status_code == 200 and len(resp.text) > 100:
+                return resp.text
+            errors.append(f"{method}:{resp.status_code}")
+        raise SALProviderError(
+            f"SEC Archives 無法取得持股明細：CIK {cik} Acc {accession}\n"
+            f"  嘗試 URL：{len(errors)} 個\n"
+            f"  結果：{', '.join(errors[:6])}"
+        )
+
     def get_13f_holdings(
         self,
         cik: str,
         accession_number: str,
     ) -> Optional[str]:
         """
-        Get 13F holdings raw XML/text content.
-        Returns raw text for parsing by caller.
-        Uses curl_cffi for SEC Archives endpoint to bypass TLS fingerprint blocking.
+        Get 13F holdings raw XML/text content (cached).
+
+        Returns raw text for parsing by caller. Underlying transport is
+        fetch_13f_infotable_raw (curl_cffi TLS bypass for SEC Archives).
         """
         cik_path = accession_number.split("-")[0]
         acc_clean = accession_number.replace("-", "")
@@ -777,57 +849,13 @@ class SECEdgarProvider:
         if cached:
             return cached.get("data")
 
-        # Try infotable.xml first
-        url = f"{SEC_ARCHIVES_URL}/{cik_path}/{acc_clean}/xslForm13F_X02/infotable.xml"
-
-        # Use curl_cffi if available for SEC Archives (bypasses TLS fingerprint blocking)
-        if _HAS_CURL_CFFI:
-            try:
-                resp = cffi_requests.get(url, headers=_get_headers(), impersonate='chrome', timeout=60)
-            except Exception as exc:
-                cached = _read_latest_cache(cache_key)
-                if cached:
-                    return cached.get("data")
-                raise SALProviderError(f"SEC 13F infotable request failed: {exc}") from exc
-        else:
-            try:
-                resp = self.session.get(url, headers=_get_headers(), timeout=60)
-            except requests.RequestException as exc:
-                cached = _read_latest_cache(cache_key)
-                if cached:
-                    return cached.get("data")
-                raise SALProviderError(f"SEC 13F infotable request failed: {exc}") from exc
-
-        if resp.status_code == 200 and len(resp.text) > 100:
-            text = resp.text
-        else:
-            # Fallback to .txt
-            url2 = f"{SEC_ARCHIVES_URL}/{cik_path}/{acc_clean}/{accession_number}.txt"
-
-            if _HAS_CURL_CFFI:
-                try:
-                    resp2 = cffi_requests.get(url2, headers=_get_headers(), impersonate='chrome', timeout=120)
-                except Exception as exc:
-                    cached = _read_latest_cache(cache_key)
-                    if cached:
-                        return cached.get("data")
-                    raise SALProviderError(f"SEC 13F txt request failed: {exc}") from exc
-            else:
-                try:
-                    resp2 = self.session.get(url2, headers=_get_headers(), timeout=120)
-                except requests.RequestException as exc:
-                    cached = _read_latest_cache(cache_key)
-                    if cached:
-                        return cached.get("data")
-                    raise SALProviderError(f"SEC 13F txt request failed: {exc}") from exc
-
-            if resp2.status_code != 200:
-                cached = _read_latest_cache(cache_key)
-                if cached:
-                    return cached.get("data")
-                raise SALProviderError(f"SEC 13F both xml/txt failed: xml={resp.status_code}, txt={resp2.status_code}")
-
-            text = resp2.text
+        try:
+            text = self.fetch_13f_infotable_raw(cik, accession_number)
+        except SALProviderError:
+            cached = _read_latest_cache(cache_key)
+            if cached:
+                return cached.get("data")
+            raise
 
         _write_circular_cache(
             cache_key,
@@ -846,7 +874,7 @@ class SECEdgarProvider:
 # ──────────────────────────────────────────────
 # Cache Provider (implements CacheProvider)
 # ──────────────────────────────────────────────
-class FileCacheProvider:
+class FileCacheProvider(CacheProvider):
     """File-based cache implementation."""
 
     def get(self, key: str, max_age_hours: Optional[int] = None) -> Optional[Any]:
