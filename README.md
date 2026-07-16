@@ -32,6 +32,44 @@ pip install -r requirements.txt
 python tsmc_signal_dashboard.py
 ```
 
+## 💻 Usage
+
+All commands assume the virtual environment is activated (`source venv/bin/activate`).
+If the venv is **not** activated, prefix `python` with the venv path (e.g. `venv/bin/python …`).
+
+### Main Dashboard
+```bash
+python tsmc_signal_dashboard.py        # Full analysis → colour-coded dashboard + report
+python tsmc_signal_dashboard.py --test # Self-diagnostic (API / network / env check)
+```
+
+### Standalone AI Agents
+```bash
+python tsmc_financial_agent.py   # Financial / margin analysis
+python tsmc_macro_agent.py       # Macro / ADR premium & big-tech CAPEX analysis
+```
+
+### SEC 13F Institutional Holdings Tracker
+```bash
+python tsmc_institutional_tracker.py --list-institutions   # List tracked institutions
+python tsmc_institutional_tracker.py                       # Track all (BlackRock + Bridgewater)
+python tsmc_institutional_tracker.py --cik 0002012383      # Single institution by CIK
+python tsmc_institutional_tracker.py --force               # Force re-fetch (ignore schedule)
+python scripts/fetch_13f_research.py                       # Generate 13F research report
+```
+> Requires `curl_cffi` to bypass SEC Archives TLS fingerprint blocking
+> (`pip install curl_cffi`, also pinned in `requirements.txt`).
+> If `www.sec.gov` is IP-blocked in your environment, drop offline cache JSON into
+> `local_cache/` instead (see `AI_HANDOFF.md` → "SEC Archives 封鎖問題與解決方案").
+
+### Running the Test Suite
+```bash
+venv/bin/python -m pytest                              # Full suite (756 tests)
+venv/bin/python -m pytest test_sal.py -q               # Subset
+```
+> ⚠️ **Must run with the venv interpreter** — `curl_cffi` is only installed inside
+> `venv/`. Running `pytest` with a system Python fails the SAL/SEC transport tests.
+
 ## 📈 Long-term Investment Monitor (3-5 Year Horizon)
 
 A structural monitor that filters out short-term noise and tracks only the variables that matter for multi-year holders:
@@ -107,6 +145,12 @@ Four specialized agents collaborate via an Orchestrator:
 | **Chip Agent** | Institutional flow | Foreign/trust/dealer 5-day cumulative, 3-institution resonance |
 | **Macro Agent** | Global trends | ADR premium, big-tech CAPEX trends |
 
+### Service Abstraction Layer (SAL)
+All external API calls are routed through `sal/` (FinMind / TWSE / Yahoo Finance / SEC EDGAR
+providers) rather than being made directly from the agents. This isolates fetch/transport
+logic — URL discovery, caching, and TLS bypass — from analysis logic, and is where the unit
+tests pin transport behaviour (see `test_sal.py`).
+
 ### SEC 13F Institutional Holdings Tracker
 
 Tracks quarterly 13F filings from major institutional investors:
@@ -153,6 +197,8 @@ httpx
 rich
 pandas
 matplotlib
+curl_cffi   # SEC 13F Archives TLS-fingerprint bypass (pinned in requirements.txt)
+pytest      # dev / test only
 ```
 
 ## 📝 Notes
