@@ -5,13 +5,22 @@ TSMC Quant Lab — 統一快取層
 （宏觀、財務），僅每日變化資料（技術、籌碼）每次重新抓取。
 """
 
+import dataclasses
 import json
 import os
 import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
+
+
+class DataclassEncoder(json.JSONEncoder):
+    """支援 dataclass 的 JSON 編碼器"""
+    def default(self, obj):
+        if dataclasses.is_dataclass(obj):
+            return dataclasses.asdict(obj)
+        return super().default(obj)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -134,7 +143,7 @@ def write_cache(cache_key: str, data, directory: str = "local_cache",
         payload["metadata"] = metadata
 
     with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2, cls=DataclassEncoder)
 
     # 環形清理：只保留最新 keep_count 份
     prefix = f"{safe_key}_"

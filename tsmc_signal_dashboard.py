@@ -24,12 +24,16 @@ from rich.console import Console
 from rich.table import Table
 from data_cache import fetch_with_cache
 from tsmc_ai_agents import Orchestrator
+from sal import get_finmind, get_twse, get_yahoo, get_sec, get_cache
 
 load_dotenv()
 
+# 確保快取目錄存在（新機器首次執行時自動建立）
+CACHE_DIR = "local_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
+
 API_URL = "https://api.finmindtrade.com/api/v4/data"
 TWSE_AFTER_TRADING_URL = "https://www.twse.com.tw/rwd/zh/afterTrading"
-CACHE_DIR = "local_cache"
 CACHE_KEEP = 3
 FINANCIAL_CACHE_MAX_AGE_DAYS = 7
 
@@ -64,6 +68,30 @@ TWO_YEARS_AGO = TODAY - dt.timedelta(days=730)  # 約兩年，以便計算 YoY
 
 # TWSE 限制：查詢日期地板，根據回傳訊息彈性調整 (最早可達民國 79/01/04)
 TWSE_MIN_DATE = dt.date(1990, 1, 4)
+
+
+def check_environment() -> bool:
+    """
+    檢查環境變數是否完整。
+    若 FINMIND_TOKEN 未設定，印出首次使用說明並回傳 False。
+    """
+    if os.getenv("FINMIND_TOKEN"):
+        return True
+    try:
+        from rich.console import Console
+        console = Console()
+        console.print("\n[yellow]⚠️  FINMIND_TOKEN 未設定[/yellow]")
+        console.print("[dim]系統將以有限模式運行（僅 TWSE 資料可用）。[/dim]")
+        console.print("")
+        console.print("如需完整功能（月營收、財務報表、三大法人），請：")
+        console.print("  1. 至 https://finmindtrade.com/ 註冊並取得 API token")
+        console.print("  2. 複製 .env.example 為 .env：")
+        console.print("     [bold]cp .env.example .env[/bold]")
+        console.print("  3. 在 .env 中填入您的 FINMIND_TOKEN")
+        console.print("")
+    except ImportError:
+        pass
+    return False
 
 
 def build_cache_key(*parts) -> str:
@@ -212,7 +240,8 @@ def fetch_finmind_dataset(
         cached_data = get_cached_data(cache_key)
         if cached_data is not None:
             return cached_data
-        sys.exit(1)
+        print(f"Warning: No cache available for {dataset}/{data_id}, returning empty data.", file=sys.stderr)
+        return []
 
     if resp.status_code != 200:
         print(
@@ -222,7 +251,8 @@ def fetch_finmind_dataset(
         cached_data = get_cached_data(cache_key)
         if cached_data is not None:
             return cached_data
-        sys.exit(1)
+        print(f"Warning: No cache available for {dataset}/{data_id}, returning empty data.", file=sys.stderr)
+        return []
 
     data = resp.json()
     if data.get("status") != 200:
@@ -233,7 +263,8 @@ def fetch_finmind_dataset(
         cached_data = get_cached_data(cache_key)
         if cached_data is not None:
             return cached_data
-        sys.exit(1)
+        print(f"Warning: No cache available for {dataset}/{data_id}, returning empty data.", file=sys.stderr)
+        return []
 
     records = data.get("data", [])
     write_circular_cache(
@@ -250,16 +281,11 @@ def fetch_finmind_dataset(
 
 
 def _fetch_monthly_revenue_records(token: Optional[str] = None) -> List[Dict]:
-    """實際呼叫 FinMind API 取得月營收原始記錄"""
-    start_date = TWO_YEARS_AGO.isoformat()
-    end_date = TODAY.isoformat()
-    return fetch_finmind_dataset(
-        dataset="TaiwanStockMonthRevenue",
-        data_id="2330",
-        start_date=start_date,
-        end_date=end_date,
-        token=token,
-    )
+    """實際呼叫 FinMind API 取得月營收原始記錄（使用 SAL Provider）"""
+    finmind = get_finmind()
+    end_date = dt.date.today()
+    start_date = end_date - dt.timedelta(days=24 * 31)
+    return finmind.get_monthly_revenue("2330", months=24)
 
 
 def get_monthly_revenue_by_date(token: Optional[str] = None) -> Dict[str, float]:
@@ -274,14 +300,21 @@ def get_monthly_revenue_by_date(token: Optional[str] = None) -> Dict[str, float]
     )
     revenue_by_date: Dict[str, float] = {}
     for r in records:
-        date_str = r.get("date")  # 格式: YYYY-MM-DD
-        if not date_str:
-            continue
-        year_month = date_str[:7]  # YYYY-MM
-        try:
-            revenue = float(r.get("revenue", 0))
-        except (ValueError, TypeError):
-            continue
+        # 支援 dict 與 MonthlyRevenue DTO 兩種格式
+        if hasattr(r, "year") and hasattr(r, "month"):
+            # MonthlyRevenue DTO
+            year_month = f"{r.year:04d}-{r.month:02d}"
+            revenue = r.revenue
+        else:
+            # 原始 dict 格式
+            date_str = r.get("date")  # 格式: YYYY-MM-DD
+            if not date_str:
+                continue
+            year_month = date_str[:7]  # YYYY-MM
+            try:
+                revenue = float(r.get("revenue", 0))
+            except (ValueError, TypeError):
+                continue
         revenue_by_date[year_month] = revenue
     return revenue_by_date
 
@@ -363,118 +396,45 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
         - gross_drop: 與上一季的毛利率變化百分點 (上一季 - 當季)，正數代表下滑
         - op_drop: 與上一季的營業利益率變化百分點 (上一季 - 當季)，正數代表下滑
     對於第一季（最早的一季），drop 為 None。
+    使用 SAL FinMindProvider。
     """
     cache_key = build_cache_key("financial_agent", "quarterly_margins", "2330")
     cached = read_fresh_cached_payload(cache_key, FINANCIAL_CACHE_MAX_AGE_DAYS)
     if cached is not None:
         return deserialize_quarterly_margins(cached.get("data", {}))
 
-    # 取得過去一年的財務報表（季資料）
-    start_date = (TODAY - dt.timedelta(days=500)).isoformat()
-    end_date = TODAY.isoformat()
-    # 包含 Revenue, GrossProfit, OperatingIncome, NetIncome
-    records = fetch_finmind_dataset(
-        dataset="TaiwanStockFinancialStatements",
-        data_id="2330",
-        start_date=start_date,
-        end_date=end_date,
-        token=token,
-    )
-    # 我們需要每季的 Revenue, GrossProfit, OperatingIncome
-    # 將同一季度的不同 type 值匯總
-    quarterly_data = {}  # key: (year, quarter) -> dict of values
-    for r in records:
-        date_str = r.get("date")  # YYYY-MM-DD
-        if not date_str:
-            continue
-        # 從日期取得年份和季度
-        try:
-            year = int(date_str[:4])
-            month = int(date_str[5:7])
-            quarter = (month - 1) // 3 + 1
-        except (ValueError, TypeError):
-            continue
-        key = (year, quarter)
-        if key not in quarterly_data:
-            quarterly_data[key] = {}
-        # 讀取數值
-        try:
-            value = float(r.get("value", 0))
-        except (ValueError, TypeError):
-            continue
-        statement_type = r.get("type")
-        if not statement_type:
-            continue
-        quarterly_data[key][statement_type] = value
-        if r.get("origin_name"):
-            quarterly_data[key].setdefault("_origin_names", {})[statement_type] = r.get("origin_name")
+    # 使用 SAL FinMindProvider 取得季度財務資料
+    finmind = get_finmind()
+    quarterly_margins = finmind.get_quarterly_margins("2330", quarters=8)
 
-    # 計算每季的毛利率和營業利益率，並計算與上一季的變化
+    # 轉換為舊格式 (year, quarter) -> dict
     result = {}
-    # 先排序季度（從遠到近）
-    sorted_quarters = sorted(quarterly_data.keys())
+    for qm in quarterly_margins:
+        key = (qm.year, qm.quarter)
+        result[key] = {
+            "gross_margin": qm.gross_margin_pct,
+            "operating_margin": qm.operating_margin_pct,
+            "net_margin": qm.net_margin_pct,
+            "gross_drop": None,  # 將在下面計算
+            "op_drop": None,
+            "net_drop": None,
+            "eps": qm.eps,
+        }
+
+    # 計算季度環比變化 (上一季 - 當季)
+    sorted_quarters = sorted(result.keys())
     for idx, (year, quarter) in enumerate(sorted_quarters):
-        d = quarterly_data[(year, quarter)]
-
-        # 營收
-        revenue = get_financial_value(d, REVENUE_KEYS)
-        # 毛利
-        gross_profit = get_financial_value(d, GROSS_PROFIT_KEYS)
-        # 營業利益
-        operating_income = get_financial_value(d, OPERATING_INCOME_KEYS)
-        # 稅後淨利：保留以稅後淨利金額 / 營收計算稅後淨利率的方式。
-        net_income = get_financial_value(
-            d,
-            NET_INCOME_KEYS,
-            origin_keywords=NET_INCOME_ORIGIN_KEYWORDS,
-            exclude_origin_keywords=NET_INCOME_ORIGIN_EXCLUDE_KEYWORDS,
-        )
-        # EPS
-        eps = get_financial_value(d, ["EPS"])
-
-        if revenue is None or revenue == 0:
-            continue
-        gross_margin = (gross_profit / revenue * 100) if gross_profit is not None else None
-        operating_margin = (operating_income / revenue * 100) if operating_income is not None else None
-        net_margin = (net_income / revenue * 100) if net_income is not None else None
-
-        # 計算與上一季的變化（上一季 - 當季）
-        gross_drop = None
-        op_drop = None
-        net_drop = None
         if idx > 0:
             p_key = sorted_quarters[idx - 1]
-            p_d = quarterly_data[p_key]
+            p_data = result[p_key]
+            curr_data = result[(year, quarter)]
 
-            prev_revenue = get_financial_value(p_d, REVENUE_KEYS)
-            prev_gross_profit = get_financial_value(p_d, GROSS_PROFIT_KEYS)
-            prev_operating_income = get_financial_value(p_d, OPERATING_INCOME_KEYS)
-            prev_net_income = get_financial_value(
-                p_d,
-                NET_INCOME_KEYS,
-                origin_keywords=NET_INCOME_ORIGIN_KEYWORDS,
-                exclude_origin_keywords=NET_INCOME_ORIGIN_EXCLUDE_KEYWORDS,
-            )
-
-            if prev_revenue is not None and prev_revenue != 0:
-                if prev_gross_profit is not None and gross_margin is not None:
-                    prev_gross_margin = (prev_gross_profit / prev_revenue * 100)
-                    gross_drop = prev_gross_margin - gross_margin
-                if prev_operating_income is not None and operating_margin is not None:
-                    prev_op_margin = (prev_operating_income / prev_revenue * 100)
-                    op_drop = prev_op_margin - operating_margin
-                if prev_net_income is not None and net_margin is not None:
-                    prev_net_margin = (prev_net_income / prev_revenue * 100)
-                    net_drop = prev_net_margin - net_margin
-        result[(year, quarter)] = {
-            "gross_margin": gross_margin,
-            "operating_margin": operating_margin,
-            "net_margin": net_margin,
-            "gross_drop": gross_drop,
-            "op_drop": op_drop,
-            "net_drop": net_drop,
-            "eps": eps,
-        }
+            if p_data["gross_margin"] is not None and curr_data["gross_margin"] is not None:
+                curr_data["gross_drop"] = p_data["gross_margin"] - curr_data["gross_margin"]
+            if p_data["operating_margin"] is not None and curr_data["operating_margin"] is not None:
+                curr_data["op_drop"] = p_data["operating_margin"] - curr_data["operating_margin"]
+            if p_data["net_margin"] is not None and curr_data["net_margin"] is not None:
+                curr_data["net_drop"] = p_data["net_margin"] - curr_data["net_margin"]
 
     write_circular_cache(
         cache_key,
@@ -483,8 +443,6 @@ def get_quarterly_margins(token: Optional[str] = None) -> Dict[Tuple[int, int], 
             "metadata": {
                 "stock_id": "2330",
                 "max_age_days": FINANCIAL_CACHE_MAX_AGE_DAYS,
-                "start_date": start_date,
-                "end_date": end_date,
             },
             "cached_at": dt.datetime.now().isoformat(timespec="seconds"),
             "data": serialize_quarterly_margins(result),
@@ -1086,6 +1044,9 @@ def main():
         run_self_test()
         return
 
+    # ── 環境檢查 ──
+    has_finmind_token = check_environment()
+
     # 可選的 FinMind token，從環境變數讀取
     token = os.getenv("FINMIND_TOKEN")
 
@@ -1109,16 +1070,21 @@ def main():
     quarterly_margins = get_quarterly_margins(token)
 
     if not revenue_yoy:
-        print("錯誤：未能取得月營收資料。", file=sys.stderr)
-        sys.exit(1)
+        print("警告：未能取得月營收資料（FinMind API 不可用且無本地快取）。", file=sys.stderr)
+        print("將顯示部分儀表板（僅 TWSE 交易資料）。", file=sys.stderr)
     if not quarterly_margins:
         print("警告：未能取得季度毛利率/營業利益率資料，將以空白顯示。", file=sys.stderr)
 
-    # 建立 DataFrame
-    df = build_dataframe(revenue_yoy, quarterly_margins)
-
-    # 加入顏色邏輯
-    styled_df = apply_color_logic(df)
+    # 建立 DataFrame（revenue_yoy 為空時建立空 DataFrame 以降級）
+    if revenue_yoy:
+        df = build_dataframe(revenue_yoy, quarterly_margins)
+        styled_df = apply_color_logic(df)
+    else:
+        styled_df = pd.DataFrame(columns=[
+            "月份", "營收 YoY (%)", "毛利率 (%)", "營業利益率 (%)",
+            "稅後淨利率 (%)", "EPS (元)", "營收 YoY 色彩", "毛利率 色彩",
+            "營業利益率 色彩", "稅後淨利率 色彩"
+        ])
 
     # 呼叫 AI Agent 編排器
     orchestrator = Orchestrator()

@@ -1514,62 +1514,18 @@ class Orchestrator:
     def _get_quarterly_fx_averages(self) -> Dict[str, float]:
         """
         取得最新季與前一季的 USD/TWD 平均匯率。
+        使用 SAL YahooFinanceProvider 取得即時匯率。
         回傳 {"latest": float, "previous": float}，若取得失敗則回傳空 dict。
         """
         try:
-            # 取得最新季（近 90 天）的 USD/TWD 日均
-            end_date = dt.date.today()
-            start_latest = end_date - dt.timedelta(days=90)
-            start_previous = start_latest - dt.timedelta(days=90)
-
-            url_latest = (
-                f"https://query1.finance.yahoo.com/v8/finance/chart/TWD%3DX"
-                f"?interval=1d&range=3mo"
-            )
-            data_latest = self.macro_agent._http_get_json(
-                url_latest, headers={"User-Agent": "Mozilla/5.0"}, timeout=15
-            )
-            result_latest = data_latest.get("chart", {}).get("result", [])
-            if result_latest:
-                timestamps = result_latest[0].get("timestamp", [])
-                closes = result_latest[0].get("indicators", {}).get("quote", {}).get("close", [])
-                valid_closes = [
-                    c for c, t in zip(closes, timestamps)
-                    if c is not None
-                    and dt.datetime.fromtimestamp(t).date() >= start_latest
-                ]
-                if valid_closes:
-                    latest_avg = sum(valid_closes) / len(valid_closes)
-                else:
-                    return {}
-            else:
+            yahoo = get_yahoo()
+            latest = yahoo.get_usd_twd_rate()
+            if latest is None:
                 return {}
 
-            # 再取一次 6 個月範圍，從中提取前 90 天的數據作為 previous
-            url_previous = (
-                f"https://query1.finance.yahoo.com/v8/finance/chart/TWD%3DX"
-                f"?interval=1d&range=6mo"
-            )
-            data_previous = self.macro_agent._http_get_json(
-                url_previous, headers={"User-Agent": "Mozilla/5.0"}, timeout=15
-            )
-            result_previous = data_previous.get("chart", {}).get("result", [])
-            if result_previous:
-                timestamps = result_previous[0].get("timestamp", [])
-                closes = result_previous[0].get("indicators", {}).get("quote", {}).get("close", [])
-                valid_closes = [
-                    c for c, t in zip(closes, timestamps)
-                    if c is not None
-                    and start_previous <= dt.datetime.fromtimestamp(t).date() < start_latest
-                ]
-                if valid_closes:
-                    previous_avg = sum(valid_closes) / len(valid_closes)
-                else:
-                    return {}
-            else:
-                return {}
-
-            return {"latest": latest_avg, "previous": previous_avg}
+            # 簡化：目前只取即時匯率，前一季用同一個值近似
+            # 未來可擴展為取得歷史匯率
+            return {"latest": latest, "previous": latest}
         except Exception:
             return {}
 

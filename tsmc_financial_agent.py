@@ -466,9 +466,32 @@ class QuarterlyFinancialAgent:
         analysis_date = analysis_date or dt.date.today().isoformat()
         trend = self.analyze_margin_trend(quarterly_data)
 
+        # 計算匯率方向與影響
+        fx_averages = fx_averages or {}
+        previous_fx = self._safe_float(fx_averages.get("previous"))
+        latest_fx = self._safe_float(fx_averages.get("latest"))
+        fx_margin_impact = None
+        fx_direction = None
+        fx_marker = None
+
+        if previous_fx is not None and latest_fx is not None:
+            fx_delta = latest_fx - previous_fx
+            fx_margin_impact = fx_delta * 0.4
+            if fx_delta > 0.5:
+                fx_direction = "tailwind"
+                fx_marker = f"🟢 台幣貶值匯兌助力（USD/TWD +{fx_delta:.2f}）"
+            elif fx_delta < -0.5:
+                fx_direction = "headwind"
+                fx_marker = f"🔴 台幣升值匯率逆風（USD/TWD {fx_delta:.2f}）"
+            else:
+                fx_direction = "neutral"
+                fx_marker = f"⚪ 匯率波動中性（USD/TWD {fx_delta:+.2f}）"
+
         driver = self.analyze_margin_driver(
             process_mix,
             capacity_utilization_up,
+            fx_direction=fx_direction,
+            fx_margin_impact=fx_margin_impact,
         )
 
         def pct(value) -> str:
@@ -492,9 +515,22 @@ class QuarterlyFinancialAgent:
         else:
             conclusion_parts.append("三率趨勢出現分歧，需持續追蹤。")
 
+        # 關鍵發現：匯率逆風下的 Pricing Power 或貶值順風助力
+        key_findings = []
+        if driver.get("fx_bonus") and fx_direction == "headwind":
+            key_findings.append(
+                f"💡 **關鍵發現**：在台幣升值匯率逆風下（拖累毛利率約 {abs(fx_margin_impact):.1f}pp）"
+                f"三率仍持續改善，代表本業定價能力（Pricing Power）比表面數字更強。"
+            )
+        elif fx_direction == "tailwind":
+            key_findings.append(
+                f"💡 **關鍵發現**：台幣貶值順風（USD/TWD +{latest_fx - previous_fx:.2f}）"
+                f"為毛利率提供匯兌助力，但需區分匯率貢獻與本業改善。"
+            )
+
         conclusion = "".join(conclusion_parts)
 
-        return "\n".join([
+        sections = [
             "### 財務 Agent 分析報告",
             f"數據來源：{self.source}、{self.revenue_source}、{self.fx_source}",
             f"分析日期：{analysis_date}",
@@ -506,7 +542,26 @@ class QuarterlyFinancialAgent:
             "**【驅動力判斷】**",
             f"→ 類型：{driver['type']}",
             f"→ 說明：{driver['description']}",
+        ]
+
+        if fx_marker:
+            sections += [
+                "",
+                "**【匯率分析】**",
+                f"→ {fx_marker}",
+            ]
+
+        if key_findings:
+            sections += [
+                "",
+                "**【關鍵發現】**",
+                *key_findings,
+            ]
+
+        sections += [
             "",
             "**【財務面綜合結論】**",
             conclusion,
-        ])
+        ]
+
+        return "\n".join(sections)

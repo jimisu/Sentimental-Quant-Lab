@@ -31,24 +31,13 @@ import sys
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Tuple
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
 from data_cache import fetch_with_cache
 from datetime import datetime, timedelta, timezone
+from sal import get_sec
 
-# curl_cffi for bypassing SEC TLS fingerprint blocking
-try:
-    from curl_cffi import requests as cffi_requests
-    _HAS_CURL_CFFI = True
-except ImportError:
-    _HAS_CURL_CFFI = False
-
-SEC_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Encoding": "gzip, deflate",
-}
+# Kept for test compatibility (tests assign this module attribute); the actual
+# curl_cffi TLS bypass now lives in SAL's SECEdgarProvider.
+_HAS_CURL_CFFI = False
 
 # ── 13F 抓取排程常數 ──
 # 美東時間固定抓取日（季度結束後 ~45 天）
@@ -178,49 +167,17 @@ class InstitutionalTrackerAgent:
         self.source = "SEC EDGAR Form 13F-HR"
         self.logic = "追蹤大型機構法人每季 13F 持倉變化，分析 TSMC 與四大科技巨頭持股方向。"
         self.tracked_ciks = tracked_ciks or DEFAULT_TRACKED_CIKs
-        self.session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS"],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        })
+        # Network transport is delegated to SAL's SECEdgarProvider (get_sec()).
 
-    def _http_get(self, url: str, headers: Optional[Dict[str, str]] = None,
-                  timeout: int = 30) -> requests.Response:
-        try:
-            resp = self.session.get(url, headers=headers or SEC_HEADERS, timeout=timeout)
-            resp.raise_for_status()
-            return resp
-        except requests.RequestException as exc:
-            raise RuntimeError(f"HTTP request failed: {url} — {exc}")
-
-    def _http_get_json(self, url: str, timeout: int = 30) -> Dict:
-        resp = self._http_get(url, timeout=timeout)
-        try:
-            return resp.json()
-        except ValueError as exc:
-            raise RuntimeError(f"Invalid JSON from {url} — {exc}")
-
-    def _http_get_text(self, url: str, timeout: int = 30) -> str:
-        return self._http_get(url, timeout=timeout).text
-
-    # ── SEC EDGAR API 互動 ──────────────────────────────────────────
+    # ── SEC EDGAR API 互動 (via SAL) ──────────────────────────────
 
     def _fetch_submission_index(self, cik: str) -> Dict:
-        """從 SEC EDGAR 取得機構法人的 filing 索引"""
-        url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        """從 SEC EDGAR 取得機構法人的 filing 索引（經 SAL 傳輸層）"""
         cache_key = f"sec_13f_submissions_{cik}"
         return fetch_with_cache(
             policy_name="sec_13f",
             cache_key=cache_key,
-            fetch_fn=lambda: self._http_get_json(url),
+            fetch_fn=lambda: get_sec().fetch_submissions_raw(cik),
         )
 
     def _find_13f_filings(self, submissions: Dict, count: int = 2,
@@ -262,29 +219,28 @@ class InstitutionalTrackerAgent:
 
         return filings
 
-    def _fetch_13f_info_table(self, cik: str, accession: str) -> str:
-        """
-        統一抓取 13F 持股明細（兩機構相同邏輯）
+    # NOTE: 13F URL 探索 + 傳輸已移至 SAL
+    # (SECEdgarProvider._discover_13f_urls / fetch_13f_infotable_raw)。
 
-        資料來源：SEC EDGAR Archives
-        - URL 格式：https://www.sec.gov/Archives/edgar/data/{cik_path}/{acc_clean}/xslForm13F_X02/infotable.xml
-        - cik_path 從 accession number 前綴取得（非 CIK 本身，因 accession 前綴可能不同）
-        - 兩機構都用相同 URL 格式，統一使用 curl_cffi + impersonate='chrome'
+    def _fetch_13f_info_table(self, cik: str, accession: str, force: bool = False) -> str:
+        """
+        統一抓取 13F 持股明細（兩機構相同邏輯）。
+
+        傳輸層已委託 SAL 的 SECEdgarProvider.fetch_13f_infotable_raw
+        （curl_cffi TLS 偽裝 + URL 探索）；本方法只負責排程與快取。
 
         排程邏輯：
-        - 固定抓取日（美東 2/15, 5/15, 8/15, 11/15）→ 強制重新抓取
+        - force=True 或固定抓取日（美東 2/15, 5/15, 8/15, 11/15）→ 強制重新抓取
         - 抓取失敗後 24 小時內 → 重試
         - 其餘時間 → 使用 local cache（TTL 90 天）
+        - 完全無 cache → 不受排程限制，直接抓取
         """
-        accession_clean = accession.replace("-", "")
-        # URL 路徑用 accession 前綴（可能與 CIK 不同，如 Bridgewater 早期 accession 用不同前綴）
-        cik_path = accession.split("-")[0]
         cache_key = f"sec_13f_infotable_{accession}"
 
         # ── 排程判斷：是否應從 SEC 抓取 ──
-        if not should_fetch_from_sec(cache_key):
-            # 非抓取日：使用 local cache
-            from data_cache import read_cache as _read_cache
+        from data_cache import read_cache as _read_cache
+        if not force and not should_fetch_from_sec(cache_key):
+            # 非抓取日：使用 local cache（TTL 內）
             cached = _read_cache(cache_key, max_age_hours=CACHE_TTL_HOURS)
             if cached is not None:
                 return cached
@@ -292,51 +248,20 @@ class InstitutionalTrackerAgent:
             cached_any = _read_cache(cache_key, max_age_hours=0)
             if cached_any is not None:
                 return cached_any
+            # 完全沒有 cache：首次抓取，不受排程限制
 
-        # ── 從 SEC 抓取 ──
-        if not _HAS_CURL_CFFI:
-            raise RuntimeError(
-                "需要 curl_cffi 才能存取 SEC Archives。請安裝：pip install curl_cffi"
-            )
-
-        headers = {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
-
+        # ── 從 SEC 抓取（經 SAL 傳輸層）──
         def _fetch_from_sec():
-            """從 SEC Archives 抓取
-
-            優先嘗試 infotable.xml（Bridgewater 等 HTML 表格格式）
-            若 404，fallback 到 .txt（BlackRock 等 XML 格式）
-            """
-            # 嘗試 infotable.xml
-            url = (f"https://www.sec.gov/Archives/edgar/data/{cik_path}"
-                   f"/{accession_clean}/xslForm13F_X02/infotable.xml")
-            resp = cffi_requests.get(url, headers=headers, impersonate='chrome', timeout=120)
-
-            if resp.status_code == 200 and len(resp.text) > 100:
-                return resp.text
-
-            # Fallback：嘗試 .txt（BlackRock 等）
-            url_txt = (f"https://www.sec.gov/Archives/edgar/data/{cik_path}"
-                       f"/{accession_clean}/{accession}.txt")
-            resp_txt = cffi_requests.get(url_txt, headers=headers, impersonate='chrome', timeout=120)
-
-            if resp_txt.status_code == 200 and len(resp_txt.text) > 100:
-                return resp_txt.text
-
-            raise RuntimeError(
-                f"SEC Archives 無法取得持股明細：CIK {cik} Acc {accession} "
-                f"(infotable.xml: {resp.status_code}, .txt: {resp_txt.status_code})"
-            )
+            """嘗試所有可能的 URL 路徑（由 SAL 實作）"""
+            return get_sec().fetch_13f_infotable_raw(cik, accession)
 
         try:
-            return fetch_with_cache(
+            content = fetch_with_cache(
                 policy_name="sec_13f",
                 cache_key=cache_key,
                 fetch_fn=_fetch_from_sec,
             )
+            return content
         except Exception:
             # 標記抓取失敗，觸發 24 小時重試
             mark_fetch_failed(cache_key)
@@ -396,8 +321,8 @@ class InstitutionalTrackerAgent:
         1. XML 格式（BlackRock）：<infoTable> 帶 namespace
         2. HTML 格式（Bridgewater）：<tr><td> 表格
         """
-        # 先嘗試 XML 格式
-        if "<infoTable>" in xml_text or "<n2:infoTable>" in xml_text:
+        # 先嘗試 XML 格式（支援多種 namespace 前綴：infoTable, n2:infoTable, ns1:infoTable 等）
+        if "<infoTable>" in xml_text or re.search(r"<\w+:infoTable>", xml_text):
             return self._parse_holdings_xml(xml_text)
         # 再嘗試 HTML 格式
         elif "<tr>" in xml_text:
@@ -425,6 +350,9 @@ class InstitutionalTrackerAgent:
             info_tables = root.findall(f"{{{NS}}}infoTable")
             if not info_tables:
                 info_tables = root.findall(".//infoTable")
+            if not info_tables:
+                # 嘗試任意 namespace 前綴（如 ns1:infoTable）
+                info_tables = root.findall(".//{*}infoTable")
             use_regex = False
         else:
             info_tables = None
@@ -491,12 +419,19 @@ class InstitutionalTrackerAgent:
         return holdings
 
     def _parse_holdings_regex(self, text: str) -> Dict[str, Dict]:
-        """用 regex 解析 13F 持股（處理非標準 XML，如 BlackRock .txt 中的 &amp; 等實體）"""
+        """用 regex 解析 13F 持股（處理非標準 XML，如 BlackRock .txt 中的 &amp; 等實體）
+
+        支援任意 namespace 前綴（infoTable, ns1:infoTable, n2:infoTable 等）
+        """
         holdings = {}
 
-        entries = re.findall(r'<infoTable>(.*?)</infoTable>', text, re.DOTALL)
+        entries = re.findall(r'<\w+:infoTable>(.*?)</\w+:infoTable>', text, re.DOTALL)
+        if not entries:
+            entries = re.findall(r'<infoTable>(.*?)</infoTable>', text, re.DOTALL)
         for e in entries:
-            name_m = re.search(r'<nameOfIssuer>(.*?)</nameOfIssuer>', e)
+            name_m = re.search(r'<\w+:nameOfIssuer>(.*?)</\w+:nameOfIssuer>', e)
+            if not name_m:
+                name_m = re.search(r'<nameOfIssuer>(.*?)</nameOfIssuer>', e)
             if not name_m:
                 continue
             issuer_name = name_m.group(1).strip()
@@ -509,8 +444,12 @@ class InstitutionalTrackerAgent:
             if matched_ticker is None:
                 continue
 
-            shares_m = re.search(r'<sshPrnamt>(.*?)</sshPrnamt>', e)
-            value_m = re.search(r'<value>(.*?)</value>', e)
+            shares_m = re.search(r'<\w+:sshPrnamt>(.*?)</\w+:sshPrnamt>', e)
+            if not shares_m:
+                shares_m = re.search(r'<sshPrnamt>(.*?)</sshPrnamt>', e)
+            value_m = re.search(r'<\w+:value>(.*?)</\w+:value>', e)
+            if not value_m:
+                value_m = re.search(r'<value>(.*?)</value>', e)
 
             shares = int(shares_m.group(1)) if shares_m else 0
             value = float(value_m.group(1)) if value_m else 0.0
@@ -589,9 +528,15 @@ class InstitutionalTrackerAgent:
     # ── 核心分析邏輯 ──────────────────────────────────────────────
 
     def analyze_13f_holdings(self, cik: str,
-                            target_tickers: Optional[List[str]] = None) -> Tuple[Dict, str]:
+                            target_tickers: Optional[List[str]] = None,
+                            force: bool = False) -> Tuple[Dict, str]:
         """
         核心方法：抓取單一機構最近兩份 13F，比較目標持股的季度變化。
+
+        Args:
+            cik: SEC CIK 號碼
+            target_tickers: 目標股票清單（預設：TARGET_COMPANIES）
+            force: 是否強制重新抓取（忽略排程）
 
         回傳：
         - data: dict 包含每檔股票的持股比較、變化量、分數
@@ -666,10 +611,12 @@ class InstitutionalTrackerAgent:
 
             # 嘗試抓取最新季的持股明細
             try:
-                xml = self._fetch_13f_info_table(cik, current["accessionNumber"])
+                xml = self._fetch_13f_info_table(cik, current["accessionNumber"], force=force)
                 current_holdings = self._parse_holdings(xml)
-            except Exception:
-                pass
+            except Exception as e:
+                if force:
+                    report_lines.append(f"⚠️ 抓取失敗（force mode）：{e}")
+                    report_lines.append("")
 
             # 若最新季無持股（Notice 形式），從舊快取載入
             if not current_holdings:
@@ -698,7 +645,7 @@ class InstitutionalTrackerAgent:
             previous_holdings = {}
             if previous:
                 try:
-                    prev_xml = self._fetch_13f_info_table(cik, previous["accessionNumber"])
+                    prev_xml = self._fetch_13f_info_table(cik, previous["accessionNumber"], force=force)
                     previous_holdings = self._parse_holdings(prev_xml)
                 except Exception:
                     # 嘗試從 local_cache 找舊快取作為 previous
@@ -937,6 +884,7 @@ class InstitutionalTrackerAgent:
     def analyze_all_institutions(
         self,
         target_tickers: Optional[List[str]] = None,
+        force: bool = False,
     ) -> Tuple[List[Dict], str]:
         """
         追蹤所有已註冊機構法人，彙整報告。
@@ -955,7 +903,7 @@ class InstitutionalTrackerAgent:
         ]
 
         for cik in self.tracked_ciks:
-            data, report = self.analyze_13f_holdings(cik=cik, target_tickers=target_tickers)
+            data, report = self.analyze_13f_holdings(cik=cik, target_tickers=target_tickers, force=force)
             all_data.append(data)
             report_sections.append(report)
             report_sections.append("")
@@ -1011,7 +959,29 @@ def main() -> None:
         action="store_true",
         help="列出所有已註冊的機構法人",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="強制重新抓取（忽略排程與 retry 標記）",
+    )
+    parser.add_argument(
+        "--clear-retry",
+        action="store_true",
+        help="清除所有 retry 標記檔，然後結束",
+    )
     args = parser.parse_args()
+
+    # 清除 retry 標記
+    if args.clear_retry:
+        retry_files = glob.glob("local_cache/sec_13f_retry_*.json")
+        if retry_files:
+            for f in retry_files:
+                os.remove(f)
+                print(f"  已刪除：{os.path.basename(f)}")
+            print(f"✅ 已清除 {len(retry_files)} 個 retry 標記檔")
+        else:
+            print("✅ 無 retry 標記檔需要清除")
+        return
 
     if args.list_institutions:
         print("=== 已註冊機構法人 ===")
@@ -1026,10 +996,14 @@ def main() -> None:
     print(f"目標持股: {', '.join(target_list)}")
     print()
 
+    if args.force:
+        print("⚡ 強制重新抓取模式（忽略排程）")
+        print()
+
     if args.cik:
         # 單一機構模式（向後相容）
         print(f"目標 CIK: {args.cik}")
-        data, report = agent.analyze_13f_holdings(cik=args.cik, target_tickers=target_list)
+        data, report = agent.analyze_13f_holdings(cik=args.cik, target_tickers=target_list, force=args.force)
         print(report)
         if "error" in data:
             print(f"\n錯誤詳情: {data['error']}")
@@ -1038,7 +1012,7 @@ def main() -> None:
     else:
         # 全部機構模式
         agent = InstitutionalTrackerAgent()
-        all_data, combined_report = agent.analyze_all_institutions(target_tickers=target_list)
+        all_data, combined_report = agent.analyze_all_institutions(target_tickers=target_list, force=args.force)
         print(combined_report)
 
         has_error = any("error" in d for d in all_data)

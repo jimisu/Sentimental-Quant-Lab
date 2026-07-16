@@ -191,73 +191,47 @@ class TestAnalyzeGlobalRisk:
         assert score == 100
         assert "跳過" in report
 
-    @patch("tsmc_macro_agent.requests.Session")
-    @patch("tsmc_macro_agent.fetch_with_cache")
-    def test_premium_scenario(self, mock_fetch_cache, mock_session_cls):
+    @patch("sal.providers.YahooFinanceProvider.get_current_price")
+    def test_premium_scenario(self, mock_price):
         """TSM=180, USD/TWD=32 -> ADR equiv = (180*32)/5 = 1152; tw_price=1100
         premium = (1152-1100)/1100*100 = 4.73% -> premium, score=100"""
-        mock_session_cls.return_value = MagicMock()
+        prices = {"TSM": 180.0, "TWD=X": 32.0}
+        mock_price.side_effect = lambda symbol: prices.get(symbol)
+
         agent = GlobalMacroAgent()
-
-        def fake_fetch(policy_name, cache_key, fetch_fn):
-            if "TSM" in cache_key:
-                return {"chart": {"result": [{"meta": {"regularMarketPrice": 180.0}}]}}
-            elif "TWD" in cache_key:
-                return {"chart": {"result": [{"meta": {"regularMarketPrice": 32.0}}]}}
-            return {}
-
-        mock_fetch_cache.side_effect = fake_fetch
         report, score = agent.analyze_global_risk(1100.0)
         assert score == 100
         assert "溢價" in report
         assert "ADR折算價" in report
         assert "匯率參考" in report
 
-    @patch("tsmc_macro_agent.requests.Session")
-    @patch("tsmc_macro_agent.fetch_with_cache")
-    def test_small_discount_score_80(self, mock_fetch_cache, mock_session_cls):
+    @patch("sal.providers.YahooFinanceProvider.get_current_price")
+    def test_small_discount_score_80(self, mock_price):
         """premium = -0.5% -> score 80 (premium < 0 but >= -1)"""
-        mock_session_cls.return_value = MagicMock()
-        agent = GlobalMacroAgent()
-
         # ADR equiv = (174 * 31.48) / 5 = 1095.5, tw=1100 -> p=-0.41% -> score 80
-        def fake_fetch(policy_name, cache_key, fetch_fn):
-            if "TSM" in cache_key:
-                return {"chart": {"result": [{"meta": {"regularMarketPrice": 174.0}}]}}
-            elif "TWD" in cache_key:
-                return {"chart": {"result": [{"meta": {"regularMarketPrice": 31.48}}]}}
-            return {}
+        prices = {"TSM": 174.0, "TWD=X": 31.48}
+        mock_price.side_effect = lambda symbol: prices.get(symbol)
 
-        mock_fetch_cache.side_effect = fake_fetch
+        agent = GlobalMacroAgent()
         report, score = agent.analyze_global_risk(1100.0)
         assert score == 80
         assert "折價" in report
 
-    @patch("tsmc_macro_agent.requests.Session")
-    @patch("tsmc_macro_agent.fetch_with_cache")
-    def test_large_discount_score_60(self, mock_fetch_cache, mock_session_cls):
+    @patch("sal.providers.YahooFinanceProvider.get_current_price")
+    def test_large_discount_score_60(self, mock_price):
         """premium < -1% -> score 60"""
-        mock_session_cls.return_value = MagicMock()
-        agent = GlobalMacroAgent()
-
         # TSM=170, TWD=31 => (170*31)/5 = 1054 => p=-4.18%
-        def fake_fetch(policy_name, cache_key, fetch_fn):
-            if "TSM" in cache_key:
-                return {"chart": {"result": [{"meta": {"regularMarketPrice": 170.0}}]}}
-            elif "TWD" in cache_key:
-                return {"chart": {"result": [{"meta": {"regularMarketPrice": 31.0}}]}}
-            return {}
+        prices = {"TSM": 170.0, "TWD=X": 31.0}
+        mock_price.side_effect = lambda symbol: prices.get(symbol)
 
-        mock_fetch_cache.side_effect = fake_fetch
+        agent = GlobalMacroAgent()
         report, score = agent.analyze_global_risk(1100.0)
         assert score == 60
         assert "折價" in report
 
-    @patch("tsmc_macro_agent.requests.Session")
-    @patch("tsmc_macro_agent.fetch_with_cache")
-    def test_exception_returns_error_and_score_100(self, mock_fetch_cache, mock_session_cls):
-        mock_session_cls.return_value = MagicMock()
-        mock_fetch_cache.side_effect = RuntimeError("API down")
+    @patch("sal.providers.YahooFinanceProvider.get_current_price")
+    def test_exception_returns_error_and_score_100(self, mock_price):
+        mock_price.side_effect = RuntimeError("API down")
 
         agent = GlobalMacroAgent()
         report, score = agent.analyze_global_risk(900.0)
@@ -398,43 +372,34 @@ class TestFetchTsmEpsEstimate:
 # ══════════════════════════════════════════════════════════════
 
 class TestFetchYahooPrice:
-    @patch("tsmc_macro_agent.requests.Session")
-    @patch("tsmc_macro_agent.fetch_with_cache")
-    def test_fetch_yahoo_price_calls_correct_ticker(self, mock_fetch_cache, mock_session_cls):
-        mock_session_cls.return_value = MagicMock()
-        mock_fetch_cache.return_value = {
-            "chart": {"result": [{"meta": {"regularMarketPrice": 180.0}}]}
-        }
+    """_fetch_yahoo_price delegates to SAL's YahooFinanceProvider.get_current_price."""
+
+    @patch("sal.providers.YahooFinanceProvider.get_current_price")
+    def test_fetch_yahoo_price_calls_correct_ticker(self, mock_price):
+        mock_price.return_value = 180.0
 
         agent = GlobalMacroAgent()
         price = agent._fetch_yahoo_price("TSM")
         assert price == 180.0
+        mock_price.assert_called_with("TSM")
 
-        call_kwargs = mock_fetch_cache.call_args.kwargs
-        assert call_kwargs["cache_key"] == "yahoo_price_TSM"
-        assert call_kwargs["policy_name"] == "macro_adr"
-
-    @patch("tsmc_macro_agent.requests.Session")
-    @patch("tsmc_macro_agent.fetch_with_cache")
-    def test_fetch_yahoo_price_raises_on_missing_result(self, mock_fetch_cache, mock_session_cls):
-        mock_session_cls.return_value = MagicMock()
-        mock_fetch_cache.return_value = {"chart": {"result": []}}
+    @patch("sal.providers.YahooFinanceProvider.get_current_price")
+    def test_fetch_yahoo_price_raises_on_missing_result(self, mock_price):
+        # get_current_price returns None when Yahoo has no chart result.
+        mock_price.return_value = None
 
         agent = GlobalMacroAgent()
-        with pytest.raises(RuntimeError, match="格式異常"):
+        with pytest.raises(RuntimeError, match="無法取得"):
             agent._fetch_yahoo_price("TSM")
 
-    @patch("tsmc_macro_agent.requests.Session")
-    @patch("tsmc_macro_agent.fetch_with_cache")
-    def test_fetch_yahoo_price_raises_on_missing_price(self, mock_fetch_cache, mock_session_cls):
-        mock_session_cls.return_value = MagicMock()
-        mock_fetch_cache.return_value = {
-            "chart": {"result": [{"meta": {"regularMarketPrice": None}}]}
-        }
+    @patch("sal.providers.YahooFinanceProvider.get_current_price")
+    def test_fetch_yahoo_price_returns_zero_for_missing_price(self, mock_price):
+        # SAL get_current_price falls back to 0.0 for a missing regularMarketPrice
+        # (not None), so _fetch_yahoo_price does NOT raise on it.
+        mock_price.return_value = 0.0
 
         agent = GlobalMacroAgent()
-        with pytest.raises(RuntimeError, match="regularMarketPrice"):
-            agent._fetch_yahoo_price("TSM")
+        assert agent._fetch_yahoo_price("TSM") == 0.0
 
 
 # ══════════════════════════════════════════════════════════════

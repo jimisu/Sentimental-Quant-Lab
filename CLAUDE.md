@@ -22,6 +22,7 @@ Sentimental-Quant-Lab 是一個台積電（2330.TW）量化分析實驗室，結
 # 環境設定
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # 並填入 API tokens
 
 # 執行儀表板（主程式）
 python tsmc_signal_dashboard.py

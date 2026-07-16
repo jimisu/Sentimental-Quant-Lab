@@ -20,6 +20,7 @@ from urllib3.util.retry import Retry
 
 # 引入統一快取層，取代私有快取函式
 from data_cache import fetch_with_cache
+from sal import get_yahoo, get_sec, get_cache
 
 SEC_HEADERS = {
     "User-Agent": "Sentimental-Quant-Lab/1.0 contact@example.com",
@@ -609,24 +610,12 @@ class GlobalMacroAgent:
         return None, []
 
     def _fetch_yahoo_price(self, ticker: str) -> float:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
-        # 使用統一快取層，1 小時 TTL（macro_adr policy）
-        data = fetch_with_cache(
-            policy_name="macro_adr",
-            cache_key=f"yahoo_price_{ticker}",
-            fetch_fn=lambda: self._http_get_json(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10),
-        )
-
-        result = data.get("chart", {}).get("result")
-        if not result or not isinstance(result, list):
-            raise RuntimeError("Yahoo Finance 回傳格式異常，無法解析價格。")
-
-        meta = result[0].get("meta", {})
-        price = meta.get("regularMarketPrice")
+        """使用 SAL YahooFinanceProvider 取得即時價格"""
+        yahoo = get_yahoo()
+        price = yahoo.get_current_price(ticker)
         if price is None:
-            raise RuntimeError("Yahoo Finance 無法取得 regularMarketPrice。")
-
-        return float(price)
+            raise RuntimeError(f"Yahoo Finance 無法取得 {ticker} 價格")
+        return price
 
     def _fetch_recent_capex_quarters(self, company_meta: Dict) -> List[Dict]:
         cik = company_meta["cik"]

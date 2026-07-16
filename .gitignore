@@ -7,6 +7,7 @@ __pycache__/
 sentiment_venv/
 charts/
 local_cache/
+finmind_data/
 reports/
 analysis_log.md
 .env

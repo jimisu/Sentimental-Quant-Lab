@@ -1,5 +1,6 @@
 requests
 httpx
+curl_cffi
 rich
 pandas
 matplotlib
