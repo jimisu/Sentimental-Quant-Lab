@@ -8,6 +8,13 @@ import datetime as dt
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 try:
+    # Use the non-interactive Agg backend. The agents render charts
+    # (plt.savefig) from background threads spawned by run_full_analysis's
+    # ThreadPoolExecutor; interactive backends (e.g. TkAgg) touch the
+    # GUI main loop and raise "main thread is not in main loop" off-thread.
+    # Agg always works and only writes files, so behavior is unchanged.
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib as mpl
     import matplotlib.dates as mdates
