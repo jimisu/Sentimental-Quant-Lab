@@ -7,13 +7,18 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `feat/sal-service-abstraction-layer`
-- **本次交接時間 (Timestamp)**: 2026-07-11 09:30 (UTC+8)
+- **目前所在分支 (Current Branch)**: `develop`（最新修復分支：`fix/macro-agent-yahoo-sal-tests`，待合併）
+- **本次交接時間 (Timestamp)**: 2026-07-16 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
 
 ## ✅ 已完成的工作 (What's Done)
+
+### 本次 session 完成（SAL 13F 傳輸遷移 + macro 測試修復 / 2026-07-16）
+- [x] **SEC 13F 傳輸層遷移至 SAL**：`tsmc_institutional_tracker.py` 的 URL 探索與 curl_cffi TLS 繞過邏輯移到 `sal/providers.py` 的 `SECEdgarProvider`（`fetch_submissions_raw` / `_discover_13f_urls` / `fetch_13f_infotable_raw`），tracker 改委派 `get_sec()`。已透過 **PR #23 合併進 `develop`**（commit `d73bd75`）。
+- [x] **macro agent 測試對齊 SAL YahooFinanceProvider 遷移**：`test_macro_agent.py` 原本 7 個測試 mock 舊的 `fetch_with_cache` + `requests.Session` 路徑，改為 mock `sal.providers.YahooFinanceProvider.get_current_price` 邊界。`test_fetch_yahoo_price_raises_on_missing_price` 重構為 `test_fetch_yahoo_price_returns_zero_for_missing_price`（SAL `get_current_price` 對缺失價格回傳 0.0，不拋錯）。分支 `fix/macro-agent-yahoo-sal-tests`（commit `eed7924`，待合併）。
+- [x] **全測試套件 756 passed**（原 749 + 7 fail）。
 
 ### 本次 session 完成（SAL 服務抽象層完整實作 / 2026-07-10~11）
 - [x] **建立 `sal/` 服務抽象層**：隔離上層判斷邏輯與下層 API 呼叫
@@ -219,7 +224,7 @@
 6. **[優先級：低] 舊快取清理**：`local_cache/` 中仍有舊 CIK（0001086364、0001364742）的快取檔案，可清理。
 7. **[優先級：低] `test_financial_agent.py` 2 個 pre-existing 失敗**：`test_build_structured_report_fx_insight_headwind` / `tailwind` 測試期望 `build_structured_report` 輸出 FX insight 文字（"關鍵發現"/"Pricing Power"/"貶值順風"），但該功能在 `tsmc_financial_agent.py` 的 `build_structured_report` 中已被移除。需決定是否修復功能或更新測試。
 8. **[優先級：低] `refine` branch 合併**：目前 4 個提交（`81c7658`～`2ecbf79`），可考慮合併回 main 或建立 PR。
-9. **[待提交] `test_institutional_tracker.py` 修復**：3 個測試從 FAIL → PASS，尚未 commit。建議 commit 訊息：`fix: institutional tracker tests — mock should_fetch_from_sec and _HAS_CURL_CFFI`
+9. ~~**[待提交] `test_institutional_tracker.py` 修復**~~（已完成 — 隨 PR #23 / commit `d73bd75` 合併進 develop）
 10. **[優先級：高] SEC Archives 403 封鎖 — 離線快取下載方案**：見下方「🚨 SEC Archives 封鎖問題與解決方案」章節。
 11. **[優先級：中] 共識 EPS 估測整合**：長期監看板目前用「最新季 × 4」做 Forward EPS，可串接 FinMind / Yahoo Finance 共識預測（1Y/2Y Forward EPS）替代簡單年化。
 
@@ -494,9 +499,9 @@ python tsmc_institutional_tracker.py
 > 15. `analyze_all_institutions()` 回傳 `(all_data, combined_report)`，combined_report 含跨機構比較表格
 
 ## 🚀 給下一個 AI 建議
-1. **目前分支**：`develop`，工作樹乾淨。`test_institutional_tracker.py` 修復已 commit（`78b51b6`）。
+1. **目前分支**：`develop`（工作樹乾淨）。最新兩筆修復：SEC 13F 傳輸遷移已透過 **PR #23** 合併進 develop（commit `d73bd75`）；macro agent 測試修復在分支 **`fix/macro-agent-yahoo-sal-tests`**（commit `eed7924`，待建立 PR 合併）。
 2. **⚠️ 禁止自動 git push**：任何情況下 AI 都不得自行推送，只能提醒人類評估。
 3. **Pre-flight**：修改前確認分支、讀取 AI_HANDOFF.md、檢查 git status。**不要在 develop/main 上直接 commit**，先開 `feat/` 或 `fix/` 分支。
-4. **測試**：`test_institutional_tracker.py` 42 個全部通過 ✅。`test_financial_agent.py` 仍有 2 個 pre-existing 失敗（FX insight 測試），勿誤認為新 bug。
+4. **測試**：全測試套件 **756 passed** ✅（含 `test_sal.py` 56、`test_institutional_tracker.py` 42、`test_macro_agent.py` 95）。⚠️ **必須用 venv 直譯器**：`venv/bin/python -m pytest`（系統 Python 缺 `curl_cffi`，SAL/SEC 傳輸測試會崩）。`test_financial_agent.py` 仍有 2 個 pre-existing 失敗（FX insight 測試），勿誤認為新 bug。
 5. **🔴 SEC Archives 403 封鎖（高優先）**：本機 IP 被 `www.sec.gov` 全面封鎖。若你的環境可以存取 SEC Archives（非封鎖 IP + 有 curl_cffi），請執行上方「解決方案 D」中的 Python 腳本下載 holdings 快取，將 JSON 傳回目標機器的 `local_cache/`。**這不需要修改任何程式碼**，快取檔案放好後 `python tsmc_institutional_tracker.py` 就能正確讀取。
 ---

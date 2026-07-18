@@ -300,14 +300,24 @@ def get_monthly_revenue_by_date(token: Optional[str] = None) -> Dict[str, float]
     )
     revenue_by_date: Dict[str, float] = {}
     for r in records:
-        # 支援 dict 與 MonthlyRevenue DTO 兩種格式
+        # 支援三種格式：
+        #  1) MonthlyRevenue DTO（記憶體中，有 year/month 屬性）
+        #  2) 序列化後從快取讀回的 DTO dict（有 year/month 鍵，無 date 欄位）
+        #  3) FinMind 原始 API dict（有 date 欄位，格式 YYYY-MM-DD）
         if hasattr(r, "year") and hasattr(r, "month"):
             # MonthlyRevenue DTO
             year_month = f"{r.year:04d}-{r.month:02d}"
             revenue = r.revenue
+        elif isinstance(r, dict) and "year" in r and "month" in r:
+            # 從快取讀回的 DTO dict（DataclassEncoder 序列化後無 date 欄位）
+            year_month = f"{int(r['year']):04d}-{int(r['month']):02d}"
+            try:
+                revenue = float(r.get("revenue", 0))
+            except (ValueError, TypeError):
+                continue
         else:
-            # 原始 dict 格式
-            date_str = r.get("date")  # 格式: YYYY-MM-DD
+            # 原始 API dict 格式
+            date_str = r.get("date") if isinstance(r, dict) else None
             if not date_str:
                 continue
             year_month = date_str[:7]  # YYYY-MM
