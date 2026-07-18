@@ -458,14 +458,21 @@ class TWSEProvider(TWSEDataProvider):
         params: Dict,
         cache_key: str,
         cache_hours: int = 24,
-    ) -> Optional[Dict]:
-        """Fetch JSON from TWSE with caching."""
+    ) -> Tuple[Optional[Dict], bool]:
+        """Fetch JSON from TWSE with caching.
+
+        Returns a tuple of (data, from_cache):
+          - data: the inner raw response dict (consistent with the prior
+            "return cached.get('data')" behaviour), or None on miss/error.
+          - from_cache: True when the result came from a fresh cache hit
+            (no network request was issued), False when a live request ran.
+        """
         if cache_hours > 0:
             cached = _read_fresh_cache(cache_key, cache_hours)
             if cached:
                 # Unwrap: cache stores {source, cached_at, data:<raw response>};
                 # live fetch returns the inner raw dict, so do the same here.
-                return cached.get("data")
+                return cached.get("data"), True
 
         url = f"{TWSE_AFTER_TRADING_URL}/{endpoint}"
         try:
@@ -473,13 +480,13 @@ class TWSEProvider(TWSEDataProvider):
         except requests.RequestException as exc:
             cached = _read_latest_cache(cache_key)
             if cached:
-                return cached
+                return cached, True
             raise SALProviderError(f"TWSE request failed: {exc}") from exc
 
         if resp.status_code != 200:
             cached = _read_latest_cache(cache_key)
             if cached:
-                return cached
+                return cached, True
             raise SALProviderError(f"TWSE API {resp.status_code}")
 
         try:
@@ -496,7 +503,7 @@ class TWSEProvider(TWSEDataProvider):
                 "data": data,
             },
         )
-        return data
+        return data, False
 
     def get_stock_day(self, stock_id: str = "2330", year_month: Optional[str] = None) -> List[DailyPrice]:
         """Get daily OHLCV for a stock (STOCK_DAY)."""
@@ -511,7 +518,7 @@ class TWSEProvider(TWSEDataProvider):
         }
         cache_key = _build_cache_key("twse", "STOCK_DAY", stock_id, year_month)
 
-        data = self._fetch_json("STOCK_DAY", params, cache_key, cache_hours=24)
+        data, _ = self._fetch_json("STOCK_DAY", params, cache_key, cache_hours=24)
         if not data or data.get("stat") != "OK":
             return []
 
@@ -580,7 +587,10 @@ class TWSEProvider(TWSEDataProvider):
             }
             cache_key = _build_cache_key("twse", "FMTQIK", ym)
 
-            data = self._fetch_json("FMTQIK", params, cache_key, cache_hours=24)
+            data, from_cache = self._fetch_json("FMTQIK", params, cache_key, cache_hours=24)
+            # 僅在實際發出網路請求時退避，命中快取（例行執行）時跳過，減少總耗時。
+            if not from_cache:
+                time.sleep(0.3)
             if data and data.get("stat") == "OK":
                 fields = data.get("fields", [])
                 records = data.get("data", [])

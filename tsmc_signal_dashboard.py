@@ -14,6 +14,7 @@ import argparse
 import random
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -1064,20 +1065,31 @@ def main():
     # 資料抓取：依變化頻率分為兩個層級
     # ══════════════════════════════════════════════════════════════
 
-    # Tier 1: 每日變化資料 — 每次執行皆重新抓取
-    value_df = get_recent_trading_value_history(days=260)
-    chip_data = fetch_finmind_dataset(
-        dataset="TaiwanStockInstitutionalInvestorsBuySell",
-        data_id="2330",
-        start_date=(TODAY - dt.timedelta(days=15)).isoformat(),
-        end_date=TODAY.isoformat(),
-        token=token,
-    )
+    # ── 並行抓取彼此獨立的資料源 ──
+    # value_df（TWSE 交易值）、chip_data（FinMind 法人）、revenue_by_date（月營收）、
+    # quarterly_margins（季報）四者無相互依賴，各自走統一快取層，可並行以縮短總抓取耗時。
+    # revenue_yoy 需在月營收快取暖後再計算（它會再讀 get_monthly_revenue_by_date），
+    # 故置於並行池之後，避免快取未命中時重複觸發網路抓取。
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_value_df = executor.submit(get_recent_trading_value_history, days=260)
+        future_chip = executor.submit(
+            fetch_finmind_dataset,
+            dataset="TaiwanStockInstitutionalInvestorsBuySell",
+            data_id="2330",
+            start_date=(TODAY - dt.timedelta(days=15)).isoformat(),
+            end_date=TODAY.isoformat(),
+            token=token,
+        )
+        future_revenue = executor.submit(get_monthly_revenue_by_date, token)
+        future_margins = executor.submit(get_quarterly_margins, token)
 
-    # Tier 2: 低頻變化資料 — 使用 TTL 快取（月營收 24h、季報 7d）
-    revenue_by_date = get_monthly_revenue_by_date(token)
+        value_df = future_value_df.result()
+        chip_data = future_chip.result()
+        revenue_by_date = future_revenue.result()
+        quarterly_margins = future_margins.result()
+
+    # 月營收快取已暖，此處僅讀取快取計算 YoY，不再觸發額外網路抓取。
     revenue_yoy = get_monthly_revenue_yoy(token)
-    quarterly_margins = get_quarterly_margins(token)
 
     if not revenue_yoy:
         print("警告：未能取得月營收資料（FinMind API 不可用且無本地快取）。", file=sys.stderr)

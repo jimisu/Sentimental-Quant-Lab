@@ -6,7 +6,15 @@ TSMC AI Agents 模組
 
 import datetime as dt
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
 try:
+    # Use the non-interactive Agg backend. The agents render charts
+    # (plt.savefig) from background threads spawned by run_full_analysis's
+    # ThreadPoolExecutor; interactive backends (e.g. TkAgg) touch the
+    # GUI main loop and raise "main thread is not in main loop" off-thread.
+    # Agg always works and only writes files, so behavior is unchanged.
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib as mpl
     import matplotlib.dates as mdates
@@ -1540,21 +1548,32 @@ class Orchestrator:
         # ── Step 0: 取得匯率季度均值 ──
         fx_averages = self._get_quarterly_fx_averages()
 
-        # ── Step 1: 各 Agent 分析 ──
-        fin_report = self.fin_agent.analyze_margins(quarterly_data)
-        # 同時產生結構化財務報告（含匯率調整後毛利率）
-        fin_report_structured = self.fin_agent.build_structured_report(
-            quarterly_data=quarterly_data,
-            fx_averages=fx_averages,
-        )
-        tech_report, tech_flags, tech_scores, vol_price_divergence = self.tech_agent.analyze_sentiment(trading_df)
-        chip_report, chip_flags, chip_score = self.chip_agent.analyze_flow(chip_data, trading_df)
+        # ── Step 1: 各 Agent 分析（並行） ──
+        # 七個 Agent 分析彼此獨立、無共享可變狀態，且各自走統一快取層，
+        # 故以 ThreadPoolExecutor 並行執行，總耗時趨近於最慢單一 Agent。
+        # tw_price 供 macro.analyze_global_risk 使用，先算好再並行。
         tw_price = trading_df['台積電收盤價'].iloc[-1] if not trading_df.empty else 0
-        macro_report, macro_score = self.macro_agent.analyze_global_risk(tw_price)
-        bigtech_data, bigtech_report = self.macro_agent.analyze_bigtech_fundamentals(quarterly_data)
 
-        # 機構法人 13F 持倉追蹤（BlackRock + Bridgewater）
-        tracker_all_data, tracker_report = self.tracker_agent.analyze_all_institutions()
+        with ThreadPoolExecutor(max_workers=7) as executor:
+            f_fin = executor.submit(self.fin_agent.analyze_margins, quarterly_data)
+            f_fin_struct = executor.submit(
+                self.fin_agent.build_structured_report,
+                quarterly_data=quarterly_data,
+                fx_averages=fx_averages,
+            )
+            f_tech = executor.submit(self.tech_agent.analyze_sentiment, trading_df)
+            f_chip = executor.submit(self.chip_agent.analyze_flow, chip_data, trading_df)
+            f_macro = executor.submit(self.macro_agent.analyze_global_risk, tw_price)
+            f_bigtech = executor.submit(self.macro_agent.analyze_bigtech_fundamentals, quarterly_data)
+            f_tracker = executor.submit(self.tracker_agent.analyze_all_institutions)
+
+            fin_report = f_fin.result()
+            fin_report_structured = f_fin_struct.result()
+            tech_report, tech_flags, tech_scores, vol_price_divergence = f_tech.result()
+            chip_report, chip_flags, chip_score = f_chip.result()
+            macro_report, macro_score = f_macro.result()
+            bigtech_data, bigtech_report = f_bigtech.result()
+            tracker_all_data, tracker_report = f_tracker.result()
 
         # ── Step 2: 建構信號 ──
         financial_signals = self._build_financial_signals(quarterly_data, styled_df)

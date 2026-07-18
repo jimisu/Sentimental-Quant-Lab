@@ -498,7 +498,7 @@ class TestTWSEProvider:
         return TWSEProvider()
 
     def test_get_stock_day(self, provider):
-        with patch.object(provider, '_fetch_json', return_value=_sample_twse_stock_day()):
+        with patch.object(provider, '_fetch_json', return_value=(_sample_twse_stock_day(), True)):
             result = provider.get_stock_day("2330", "202607")
             assert len(result) == 2
             assert all(isinstance(r, DailyPrice) for r in result)
@@ -512,12 +512,12 @@ class TestTWSEProvider:
             assert result[0].turnover == 93600076825
 
     def test_get_stock_day_empty_on_error(self, provider):
-        with patch.object(provider, '_fetch_json', return_value={"stat": "ERROR"}):
+        with patch.object(provider, '_fetch_json', return_value=({"stat": "ERROR"}, True)):
             result = provider.get_stock_day("2330", "202607")
             assert result == []
 
     def test_get_market_turnover(self, provider):
-        with patch.object(provider, '_fetch_json', return_value=_sample_twse_fmtqik()):
+        with patch.object(provider, '_fetch_json', return_value=(_sample_twse_fmtqik(), True)):
             result = provider.get_market_turnover(days=10)
             assert len(result) == 2
             assert all(isinstance(r, tuple) and len(r) == 2 for r in result)
@@ -650,7 +650,7 @@ class TestSALIntegration:
             assert all(isinstance(r, MonthlyRevenue) for r in revenue)
 
     def test_twse_integration(self):
-        with patch('sal.providers.TWSEProvider._fetch_json', return_value=_sample_twse_stock_day()):
+        with patch('sal.providers.TWSEProvider._fetch_json', return_value=(_sample_twse_stock_day(), True)):
             twse = get_twse()
             daily = twse.get_stock_day("2330", "202607")
             assert len(daily) == 2

@@ -7,8 +7,8 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `develop`（待合併分支：`fix/macro-agent-yahoo-sal-tests`、`fix/monthly-revenue-cache-parse`、`docs/update-handoff-readme`）
-- **本次交接時間 (Timestamp)**: 2026-07-16 (UTC+8)
+- **目前所在分支 (Current Branch)**: `test/perf-efficiency-improvements`（實驗分支，基於 `develop`；待合併分支：`fix/macro-agent-yahoo-sal-tests`、`fix/monthly-revenue-cache-parse`、`docs/update-handoff-readme`）
+- **本次交接時間 (Timestamp)**: 2026-07-18 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
@@ -22,6 +22,14 @@
 - [x] **「未能取得月營收資料」警告診斷與解決**：根因為 20:50 某次執行碰到 FinMind 瞬時只回傳 3 個月，該 3 個月快取在 24h TTL 內被視為新鮮、後續執行皆複用 → 算不出 YoY → 警告。經即時驗證 token 有效、FinMind 現可回傳 24 個月（2024-08～2026-07）；已清除過期月營收快取並重新抓取，寫入 24 個月新快取，下次執行警告消失。
 - [x] **README / 交接文件更新**：README 新增 Usage 專區、SAL 說明、curl_cffi/pytest 依賴；本交接報告同步更新。分支 `docs/update-handoff-readme`（commit `934c128`，待合併）。
 - [x] **全測試套件 756 passed**（原 749 + 7 fail）。
+
+### 本次 session 完成（效率改善實驗 / 2026-07-18，分支 `test/perf-efficiency-improvements`）
+- [x] **建立效率改善實驗分支**：從 `develop` 切出 `test/perf-efficiency-improvements`，用於測試程式效率改善（使用者明確授權）。
+- [x] **並行化 `main()` 獨立抓取**：`value_df`(TWSE)、`chip_data`(FinMind 法人)、`revenue_by_date`(月營收)、`quarterly_margins`(季報) 四者無依賴且各自走統一快取層，改以 `ThreadPoolExecutor` 並行抓取；`revenue_yoy` 保留在並行池之後（會再讀月營收快取），避免快取未命中時重複觸網。抓取總耗時由「各源之和」降為「最慢單一源」。
+- [x] **並行化 Orchestrator 的 Agent 分析**：`run_full_analysis` 中 7 個彼此獨立、無共享可變狀態的 Agent 分析（財務 ×2、技術、籌碼、宏觀 ×2、13F tracker）改以 `ThreadPoolExecutor` 並行；`fx_averages` 與 `tw_price` 先算好再並行，結果仍依原順序彙總與 print。分析總耗時趨近最慢單一 Agent。
+- [x] **移除 TWSE 月循環不必要 sleep**：`sal/providers.py` 的 `TWSEProvider._fetch_json` 改回傳 `(data, from_cache)`；`get_market_turnover` 僅在實際發出網路請求時 `sleep(0.3)`，命中快取（例行執行）時跳過。同步更新 `get_stock_day` 與 `test_sal.py` 4 處 mock 契約。
+- [x] **測試狀態**：全測試套件 752 passed + 4 fail（4 個 fail 皆為既有 `curl_cffi` 未安裝導致的 `ModuleNotFoundError`，與本次改動無關）。
+- [ ] **待辦**：量化驗證（基準測試 / API 呼叫次數統計）使用者選擇「先只做程式碼改動」，驗證方式後續再定。
 
 ### 本次 session 完成（SAL 服務抽象層完整實作 / 2026-07-10~11）
 - [x] **建立 `sal/` 服務抽象層**：隔離上層判斷邏輯與下層 API 呼叫
