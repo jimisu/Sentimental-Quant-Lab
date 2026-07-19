@@ -816,3 +816,29 @@ class TestScoreToAlert:
     def test_extremes(self):
         assert score_to_alert(100.0)[0] == "green"
         assert score_to_alert(0.0)[0] == "red"
+
+
+# ══════════════════════════════════════════════════════════════
+# 綜合情境：基本面健全 + 技術帶量破線 + 籌碼嚴重賣超 → 至少黃燈
+# ══════════════════════════════════════════════════════════════
+class TestSevereScenarioYellow:
+    """重校準後，技術帶量跌破所有支撐 + 外資連續十天賣超的嚴重情境，
+    即便基本面（財務 + 大廠）仍健全，綜合燈號也應脫離綠燈（至少黃燈）。"""
+
+    def test_severe_tech_and_chip_forces_yellow(self):
+        eng = SignalEngine()
+        # 基本面健全
+        fin = FinancialSignals(latest_revenue_yoy=35.0)
+        bt = BigTechSignals(capex_growing_count=4, capex_valid_count=4, nvda_revenue_yoy=80.0)
+        # 技術：長期帶量破線（long 低），其餘良好
+        tech = TechnicalSignals(scores={"early": 100, "short": 85, "mid": 100, "long": 35})
+        # 籌碼：嚴重賣超（< 30，觸發結構性黃燈）
+        chip = ChipSignals(score=5)
+
+        result = eng.analyze(fin, bt, tech, chip)
+        # 綜合分可能仍在綠燈區間，但 chip<30 結構規則應強制至少黃燈
+        assert result.alert_level == "yellow"
+        assert "黃燈" in result.alert_label
+        assert "籌碼面嚴重惡化" in result.alert_message
+        # 訊息應與最終燈號一致（不再出現「綠燈區間」自相矛盾）
+        assert "綠燈區間" not in result.alert_message

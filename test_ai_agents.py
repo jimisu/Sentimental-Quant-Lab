@@ -1356,3 +1356,106 @@ class TestRiskAndAnalystRewrite:
         finally:
             mr._INJECTED.clear()
 
+
+# ══════════════════════════════════════════════════════════════════════
+# 籌碼計分重校準：外資連續賣超、10 日累計賣超 ≥ 8 萬張 → chip_score < 30
+# ══════════════════════════════════════════════════════════════════════
+class TestInstitutionalInvestorAgentChipScoreSevere:
+    """驗證籌碼計分重校準後，嚴重賣超情境 chip_score 顯著低於 30
+    （觸發結構性黃燈），而非舊制的 50 分。"""
+
+    @pytest.fixture
+    def agent(self):
+        return InstitutionalInvestorAgent()
+
+    def _build_chip_data(self, foreign_sell_per_day, sell_days, total_days=10):
+        """建構 chip_data：前 (total_days - sell_days) 日中性，後 sell_days 日外資淨賣超。"""
+        records = []
+        for i in range(total_days):
+            d = f"2026-07-{i+1:02d}"
+            if i >= total_days - sell_days:
+                f_buy, f_sell = 500_000, 500_000 + foreign_sell_per_day
+            else:
+                f_buy, f_sell = 1_000_000, 1_000_000
+            records.append({"date": d, "type": "Foreign_Investor", "buy": f_buy, "sell": f_sell})
+            records.append({"date": d, "type": "Investment_Trust", "buy": 1_000_000, "sell": 1_000_000})
+            records.append({"date": d, "type": "Dealer", "buy": 800_000, "sell": 800_000})
+        return records
+
+    def test_severe_10d_80k_lots_below_30(self, agent):
+        """外資 9/10 日賣超、10 日累計賣超 ≥ 8 萬張 → chip_score < 30。"""
+        # 每日淨賣超 9.5M 股 × 9 日 ≈ 81,000 張
+        chip_data = self._build_chip_data(foreign_sell_per_day=9_500_000, sell_days=9)
+        report, flags, score = agent.analyze_flow(chip_data, pd.DataFrame())
+        assert score < 30
+        assert flags["big_foreign_sell"] is True
+        assert flags["extreme_sell"] is True
+        assert "嚴重惡化" in report or "強力賣出" in report
+
+    def test_mild_selling_stays_above_30(self, agent):
+        """輕微賣超（3 日、約 1500 張/日）不應被壓到 30 以下。"""
+        chip_data = self._build_chip_data(foreign_sell_per_day=1_500_000, sell_days=3)
+        report, flags, score = agent.analyze_flow(chip_data, pd.DataFrame())
+        assert score > 30
+
+    def test_severe_score_below_mild(self, agent):
+        severe = agent.analyze_flow(
+            self._build_chip_data(foreign_sell_per_day=9_500_000, sell_days=9), pd.DataFrame()
+        )[2]
+        mild = agent.analyze_flow(
+            self._build_chip_data(foreign_sell_per_day=1_500_000, sell_days=3), pd.DataFrame()
+        )[2]
+        assert severe < mild
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 技術計分重校準：技術線型帶量跌破 20MA/60MA/支撐 → long 分數顯著下降
+# ══════════════════════════════════════════════════════════════════════
+class TestMarketDynamicsAgentVolumeBreakdown:
+    """驗證 _format_reversal_signals 對「帶量跌破所有支撐」給予顯著 long 懲罰。"""
+
+    @pytest.fixture
+    def agent(self):
+        return MarketDynamicsAgent()
+
+    def _make_crash_df(self):
+        """>60 交易日盤整高檔，末 5 日帶量重挫跌破 20MA/60MA/支撐。"""
+        dates = pd.bdate_range("2026-03-01", "2026-07-17")
+        n = len(dates)
+        price = [1100.0] * (n - 5) + [1050.0, 1000.0, 970.0, 940.0, 900.0]
+        vol = [2e9] * (n - 1) + [6e9]  # 暴跌日放量 3 倍
+        return pd.DataFrame({
+            "日期": dates,
+            "台積電收盤價": price,
+            "台積電開盤價": price,
+            "台積電最高價": [p + 5 for p in price],
+            "台積電最低價": [p - 5 for p in price],
+            "台積電成交金額": vol,
+        })
+
+    def _make_flat_df(self):
+        dates = pd.bdate_range("2026-03-01", "2026-07-17")
+        n = len(dates)
+        return pd.DataFrame({
+            "日期": dates,
+            "台積電收盤價": [1100.0] * n,
+            "台積電開盤價": [1100.0] * n,
+            "台積電最高價": [1105.0] * n,
+            "台積電最低價": [1095.0] * n,
+            "台積電成交金額": [2e9] * n,
+        })
+
+    def test_breakdown_penalty_high(self, agent):
+        report, monthly_break, penalties, vol_price = agent._format_reversal_signals(self._make_crash_df())
+        assert penalties["long"] >= 60
+        assert max(0, 100 - penalties["long"]) < 50  # long 分數趨近 0
+
+    def test_flat_no_penalty(self, agent):
+        report, monthly_break, penalties, vol_price = agent._format_reversal_signals(self._make_flat_df())
+        assert penalties["long"] == 0
+
+    def test_crash_exceeds_flat(self, agent):
+        crash = agent._format_reversal_signals(self._make_crash_df())[2]["long"]
+        flat = agent._format_reversal_signals(self._make_flat_df())[2]["long"]
+        assert crash > flat + 45
+
