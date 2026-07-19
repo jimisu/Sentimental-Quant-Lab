@@ -355,12 +355,15 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
                 if r["name"] == "Foreign_Investor" and cutoff <= r["date"] <= as_of_str
             )
             foreign_2m_lots = net_2m_shares / 1000.0
-            # 外資高檔出貨強制紅燈：P/E > 門檻 且 兩月淨賣超超門檻
-            sellout_threshold = CONFIG.chip.two_month_high_sellout_pct * CONFIG.chip.tsmc_float_shares
+            # 外資當日實際持股（強制紅燈分母：用外資持股而非總流通股）
+            hold = next((sh for sh in reversed(shareholding) if sh["date"] <= as_of_str), None)
+            foreign_shares_as_of = (hold["foreign_shares"] if (hold and hold.get("foreign_shares"))
+                                    else CONFIG.chip.tsmc_float_shares)
+            # 外資高檔出貨強制紅燈：P/E > 門檻 且 兩月淨賣超超過「外資當日持股」之門檻比例
+            sellout_threshold = CONFIG.chip.two_month_high_sellout_pct * foreign_shares_as_of
             forced_red = (pe_ratio is not None
                           and pe_ratio > CONFIG.chip.high_sellout_pe_threshold
                           and net_2m_shares < -sellout_threshold)
-            hold = next((sh for sh in reversed(shareholding) if sh["date"] <= as_of_str), None)
             if hold and hold["foreign_shares"] > 0:
                 foreign_holdings_lots = hold["foreign_shares"] / 1000.0
                 total_shares_lots = hold["total_shares"] / 1000.0
@@ -422,7 +425,7 @@ def to_markdown(results: List[dict]) -> str:
     lines.append("")
     lines.append("範圍：七個崩盤日的前一個交易日（as-of）。財務/大廠以最新代表值(=100)代入；")
     lines.append(f"本益比為各 as-of 當時真實收盤價 / 過去四季 EPS。強制紅燈條件：P/E > {CONFIG.chip.high_sellout_pe_threshold:.0f} "
-                 f"且外資兩月淨賣超 > {CONFIG.chip.two_month_high_sellout_pct*100:.0f}% 流通股（{CONFIG.chip.two_month_high_sellout_pct*CONFIG.chip.tsmc_float_shares/1000:,.0f} 張）。")
+                 f"且外資兩月淨賣超 > 外資當日實際持股之 {CONFIG.chip.two_month_high_sellout_pct*100:.0f}%（分母改用各 as-of 外資持股，非總流通股）。")
     lines.append("")
     lines.append("| 崩盤日 | as-of(前一日) | 次日跌幅 | 綜合燈號 | 綜合分 | 籌碼面燈號 | 籌碼分 | 技術(早/短/中/長) | 外資5日(張) | 賣超比 | 連續賣超 | 外資2月(張) | 佔外資持股% | 佔總股% | 本益比 | 強制紅燈? | 轉折 | 警示 |")
     lines.append("|------|------|------:|------|------:|------|------:|------|------:|------:|------:|------:|------:|------:|------:|------|------|------|")
