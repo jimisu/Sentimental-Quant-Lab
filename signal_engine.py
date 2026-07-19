@@ -446,6 +446,24 @@ class AlertLevelDetector:
 
 
 # ══════════════════════════════════════════════════════════════
+# 分數 → 燈號 輔助函式
+# ══════════════════════════════════════════════════════════════
+
+def score_to_alert(score: float) -> Tuple[str, str, str]:
+    """
+    將 0~100 分數對應為燈號 (level, label, emoji)。
+
+    與 AlertLevelDetector 共用相同門檻：<50 紅燈、<70 黃燈、≥70 綠燈。
+    供總覽儀表板將多面向合併為單一燈號時複用，確保與綜合燈號邏輯一致。
+    """
+    if score < AlertLevelDetector.RED_THRESHOLD:
+        return "red", "紅燈", "🔴"
+    elif score < AlertLevelDetector.YELLOW_THRESHOLD:
+        return "yellow", "黃燈", "🟡"
+    return "green", "綠燈", "🟢"
+
+
+# ══════════════════════════════════════════════════════════════
 # 整合入口
 # ══════════════════════════════════════════════════════════════
 

@@ -24,6 +24,7 @@ from signal_engine import (
     BigTechSignals,
     MarketSentimentSignals,
     ComprehensiveResult,
+    score_to_alert,
 )
 
 
@@ -808,3 +809,27 @@ class TestStructuralWarning:
         )
         assert result.alert_level == "yellow"
         assert "結構性警示" in result.alert_message
+
+
+# ══════════════════════════════════════════════════════════════
+# score_to_alert 輔助函式
+# ══════════════════════════════════════════════════════════════
+
+class TestScoreToAlert:
+    """score_to_alert：分數 → 燈號（與 AlertLevelDetector 共用門檻）。"""
+
+    def test_green_at_threshold(self):
+        assert score_to_alert(70.0) == ("green", "綠燈", "🟢")
+
+    def test_yellow_below_yellow_threshold(self):
+        assert score_to_alert(69.9) == ("yellow", "黃燈", "🟡")
+
+    def test_yellow_at_red_boundary(self):
+        assert score_to_alert(50.0) == ("yellow", "黃燈", "🟡")
+
+    def test_red_below_red_threshold(self):
+        assert score_to_alert(49.9) == ("red", "紅燈", "🔴")
+
+    def test_extremes(self):
+        assert score_to_alert(100.0)[0] == "green"
+        assert score_to_alert(0.0)[0] == "red"

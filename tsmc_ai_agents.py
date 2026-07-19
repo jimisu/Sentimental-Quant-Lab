@@ -51,6 +51,7 @@ from signal_engine import (
     TechnicalSignals,
     ChipSignals,
     MarketSentimentSignals,
+    score_to_alert,
 )
 
 
@@ -2479,13 +2480,37 @@ class Orchestrator:
         )
 
         # ═══ 一、總覽儀表板 ═══
+        # 各面向分數（優先取 SignalEngine 結果，確保與綜合得分一致）
+        fin_s   = result.financial_score if result else fin_score
+        bt_s    = result.bigtech_score if result else bigtech_score
+        tech_s  = result.tech_score if result else tech_score_val
+        chip_s  = result.chip_score if result else chip_score
+        ms_s    = result.market_sentiment_score if result else ms_score
+
+        # 燈號分組：基本面 = 財務面 + 大廠基本面；技術籌碼 = 技術面 + 籌碼面
+        # 合併分數依各面向原有權重加權平均，與綜合得分邏輯一致。
+        fin_w, bt_w   = w.financial, w.bigtech
+        tech_w, chip_w = w.tech, w.chip
+        ms_w          = w.market_sentiment
+
+        def _combine(s1, w1, s2, w2):
+            tot = w1 + w2
+            if tot <= 0:
+                return (s1 + s2) / 2
+            return (s1 * w1 + s2 * w2) / tot
+
+        fundamental_score = _combine(fin_s, fin_w, bt_s, bt_w)
+        techchip_score    = _combine(tech_s, tech_w, chip_s, chip_w)
+
+        fund_emoji     = score_to_alert(fundamental_score)[2]
+        techchip_emoji = score_to_alert(techchip_score)[2]
+        ms_emoji       = score_to_alert(ms_s)[2]
+
         score_rows = [
-            ["財務面", "100", f"{w.financial*100:.0f}%", f"{fin_score * w.financial:.1f}"],
-            ["大廠基本面", "100", f"{w.bigtech*100:.0f}%", f"{bigtech_score * w.bigtech:.1f}"],
-            ["技術面", "100", f"{w.tech*100:.0f}%", f"{tech_score_val * w.tech:.1f}"],
-            ["籌碼面", "100", f"{w.chip*100:.0f}%", f"{chip_score * w.chip:.1f}"],
-            ["市場情緒", "100", f"{w.market_sentiment*100:.0f}%", f"{ms_score * w.market_sentiment:.1f}"],
-            ["**合計**", "—", "100%", f"**{comprehensive_score:.1f}**"],
+            [f"基本面（財務 + 大廠）", "100", f"{(fin_w+bt_w)*100:.0f}%", f"{fundamental_score:.1f}", fund_emoji],
+            [f"技術籌碼（技術 + 籌碼）", "100", f"{(tech_w+chip_w)*100:.0f}%", f"{techchip_score:.1f}", techchip_emoji],
+            ["市場情緒", "100", f"{ms_w*100:.0f}%", f"{ms_s:.1f}", ms_emoji],
+            ["**合計**", "—", "100%", f"**{comprehensive_score:.1f}**", alert_emoji],
         ]
 
         # 主要警示
@@ -2505,7 +2530,7 @@ class Orchestrator:
             "---\n\n"
             "<a id=\"ch1\"></a>\n\n## 一、總覽儀表板\n\n"
             f"### {alert_emoji} 綜合健康得分：{comprehensive_score:.1f} / 100（{alert_label}）\n\n"
-            + _md_table(["面向", "滿分", "權重", "得分"], score_rows)
+            + _md_table(["面向", "滿分", "權重", "得分", "燈號"], score_rows)
             + "\n\n"
             + "### ⚠️ 主要警示\n\n"
             + (warn_block if warn_block else "- 無重大警示")
