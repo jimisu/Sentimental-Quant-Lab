@@ -402,6 +402,97 @@ class TestFetchWithCache:
 
 
 # ══════════════════════════════════════════════════════════════
+# validate (完整性校驗)
+# ══════════════════════════════════════════════════════════════
+
+class TestCacheValidation:
+    """validate 回呼應防止半截 JSON 污染快取 TTL。"""
+
+    def _corrupt_payload(self, ts):
+        # 半截 companyfacts：只有 1 個 tag、2 筆 entry（對應實際中毒快取）
+        return {
+            "cached_at": ts,
+            "data": {
+                "facts": {"us-gaap": {
+                    "PaymentsToAcquirePropertyPlantAndEquipment": {
+                        "units": {"USD": [
+                            {"end": "2026-03-31", "val": 1, "form": "10-Q", "fp": "Q1", "filed": "2026-04-24"},
+                            {"end": "2025-12-31", "val": 2, "form": "10-K", "fp": "FY", "filed": "2026-01-28"},
+                        ]}
+                    }
+                }}
+            },
+        }
+
+    def _valid_payload(self, ts, value):
+        return {"cached_at": ts, "data": {"facts": {"us-gaap": {f"tag_{i}": {} for i in range(30)}}}}
+
+    def _write(self, directory, safe, name, payload):
+        with open(os.path.join(directory, f"{safe}_{name}.json"), "w") as f:
+            json.dump(payload, f)
+
+    def test_read_cache_skips_corrupt_newest_uses_valid_older(self, temp_cache_dir):
+        """最新的快取若未通過校驗，應回退到較舊但有效的一份。"""
+        safe = _safe_key("vkey")
+        now = datetime.now().isoformat(timespec="seconds")
+        self._write(temp_cache_dir, safe, "new", self._corrupt_payload(now))
+        self._write(temp_cache_dir, safe, "old", self._valid_payload(now, 1))
+
+        validate = lambda d: isinstance(d, dict) and len(d.get("facts", {}).get("us-gaap", {})) >= 20
+        result = read_cache("vkey", max_age_hours=24, directory=temp_cache_dir, validate=validate)
+        assert result == {"facts": {"us-gaap": {f"tag_{i}": {} for i in range(30)}}}
+
+    def test_read_cache_returns_none_when_only_corrupt(self, temp_cache_dir):
+        """若僅有未通過校驗的快取，read_cache 應回傳 None（觸發重新抓取）。"""
+        safe = _safe_key("only_corrupt")
+        now = datetime.now().isoformat(timespec="seconds")
+        self._write(temp_cache_dir, safe, "new", self._corrupt_payload(now))
+
+        validate = lambda d: isinstance(d, dict) and len(d.get("facts", {}).get("us-gaap", {})) >= 20
+        assert read_cache("only_corrupt", max_age_hours=24, directory=temp_cache_dir, validate=validate) is None
+
+    def test_fetch_with_cache_does_not_poison_on_invalid_result(self, temp_cache_dir):
+        """即時結果未通過校驗時，不應寫入快取，改回退既有有效快取。"""
+        # 既有有效快取（較舊）
+        safe = _safe_key("poison")
+        old = self._valid_payload(datetime.now().isoformat(timespec="seconds"), 99)
+        self._write(temp_cache_dir, safe, "old", old)
+
+        sentinel = {"facts": {"us-gaap": {"PaymentsToAcquirePropertyPlantAndEquipment": {}}}}
+        mock_fetch = MagicMock(return_value=sentinel)
+        validate = lambda d: isinstance(d, dict) and len(d.get("facts", {}).get("us-gaap", {})) >= 20
+
+        result = fetch_with_cache("macro_capex", "poison", mock_fetch,
+                                  directory=temp_cache_dir, validate=validate)
+        # 應回傳回退的有效快取，而非 sentinel
+        assert result == old["data"]
+        # 確認 sentinel 未被寫入任何快取檔
+        for fn in _list_cache_files(temp_cache_dir, f"{safe}_"):
+            with open(os.path.join(temp_cache_dir, fn)) as f:
+                assert json.load(f).get("data") != sentinel
+
+    def test_fetch_with_cache_raises_when_invalid_and_no_fallback(self, temp_cache_dir):
+        """即時結果未通過校驗且無舊快可取時，應拋出 RuntimeError。"""
+        sentinel = {"facts": {"us-gaap": {"PaymentsToAcquirePropertyPlantAndEquipment": {}}}}
+        mock_fetch = MagicMock(return_value=sentinel)
+        validate = lambda d: isinstance(d, dict) and len(d.get("facts", {}).get("us-gaap", {})) >= 20
+        with pytest.raises(RuntimeError, match="未通過完整性校驗"):
+            fetch_with_cache("macro_capex", "no_fallback", mock_fetch,
+                             directory=temp_cache_dir, validate=validate)
+
+    def test_fetch_with_cache_writes_when_valid(self, temp_cache_dir):
+        """結果通過校驗時，行為與原本一致：寫入並回傳。"""
+        good = {"facts": {"us-gaap": {f"tag_{i}": {} for i in range(30)}}}
+        mock_fetch = MagicMock(return_value=good)
+        validate = lambda d: isinstance(d, dict) and len(d.get("facts", {}).get("us-gaap", {})) >= 20
+        result = fetch_with_cache("macro_capex", "writes_good", mock_fetch,
+                                  directory=temp_cache_dir, validate=validate)
+        assert result == good
+        assert read_cache("writes_good", max_age_hours=24, directory=temp_cache_dir,
+                          validate=validate) == good
+
+
+# ══════════════════════════════════════════════════════════════
 # get_policy_ttl
 # ══════════════════════════════════════════════════════════════
 
