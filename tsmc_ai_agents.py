@@ -2332,6 +2332,18 @@ class Orchestrator:
                 out += "\n| " + " | ".join(str(c) if str(c) else "N/A" for c in row) + " |"
             return out
 
+        def _demote_headings(md: str, levels: int = 1) -> str:
+            """將嵌入子報告的 Markdown ATX 標題降級，避免破壞『## 章節 / ### 小節』層級。"""
+            if not md:
+                return md
+
+            def _shift(m):
+                hashes = m.group(1)
+                rest = m.group(2)
+                return "#" * min(len(hashes) + levels, 6) + rest
+
+            return re.sub(r'^(#{1,5})(\s+.*)$', _shift, md, flags=re.MULTILINE)
+
         def _build_3month_cumulative_table():
             """建立近 N 組 3 個月累計營收 vs. 去年同期的比較表格。"""
             if not revenue_by_date:
@@ -2442,6 +2454,19 @@ class Orchestrator:
 
         # ── 報告各節 ──────────────────────────────────────────────────
         sections = []
+        present_chapters = set()
+        CHAPTERS = [
+            ("ch1", "一、總覽儀表板"),
+            ("ch2", "二、財務面分析"),
+            ("ch3", "三、技術面分析"),
+            ("ch4", "四、籌碼面分析"),
+            ("ch5", "五、宏觀與 ADR 分析"),
+            ("ch6", "六、機構法人 13F 持倉追蹤"),
+            ("ch7", "七、產業深度解讀"),
+            ("ch8", "八、估值定位"),
+            ("ch9", "九、風險管理與操作建議"),
+            ("ch10", "十、分析師整合結論"),
+        ]
 
         # ═══ 標題 ═══
         price_str = f"NT${tw_price:,.0f}" if tw_price > 0 else "N/A"
@@ -2478,7 +2503,7 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "## 一、總覽儀表板\n\n"
+            "<a id=\"ch1\"></a>\n\n## 一、總覽儀表板\n\n"
             f"### {alert_emoji} 綜合健康得分：{comprehensive_score:.1f} / 100（{alert_label}）\n\n"
             + _md_table(["面向", "滿分", "權重", "得分"], score_rows)
             + "\n\n"
@@ -2539,13 +2564,13 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "## 二、財務面分析\n\n"
+            "<a id=\"ch2\"></a>\n\n## 二、財務面分析\n\n"
             "**資料來源：** FinMind 財務報表 / 月營收資料集、Yahoo Finance\n\n"
             "### 三率趨勢（逐季）\n\n"
             + _md_table(["季度", "毛利率", "營業利益率", "稅後淨利率", "EPS（元）"],
                        q_rows if q_rows else [["N/A"] * 5])
             + "\n\n"
-            + f"**結論：** 三率連續兩季同步上升，基本面強勁，多頭格局明確。\n\n"
+            + f"> 💡 **結論：** 三率連續兩季同步上升，基本面強勁，多頭格局明確。\n\n"
             "### 月營收 YoY（近 12 個月）\n\n"
             + _md_table(["月份", "YoY (%)", "備註"],
                        month_rows if month_rows else [["N/A", "N/A", "N/A"]])
@@ -2596,7 +2621,7 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "## 三、技術面分析\n\n"
+            "<a id=\"ch3\"></a>\n\n## 三、技術面分析\n\n"
             "**資料來源：** TWSE 每日收盤行情（STOCK_DAY）、大盤統計（FMTQIK）\n\n"
             "### 近 10 個交易日成交金額（單位：元）\n\n"
             + vol_table_block + "\n\n"
@@ -2611,8 +2636,8 @@ class Orchestrator:
             ])
             + "\n\n"
             f"**均線結構：** {ma_order}\n\n"
-            f"**趨勢判斷：** 短期{short_trend} ｜ 中期{mid_trend} ｜ 長期{long_trend}\n\n"
-            + tech_report
+            f"> 📈 **趨勢判斷：** 短期{short_trend} ｜ 中期{mid_trend} ｜ 長期{long_trend}\n\n"
+            + _demote_headings(tech_report)
         )
 
         # ═══ 四、籌碼面分析 ═══
@@ -2633,7 +2658,7 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "## 四、籌碼面分析\n\n"
+            "<a id=\"ch4\"></a>\n\n## 四、籌碼面分析\n\n"
             "**資料來源：** FinMind 三大法人買賣超資料集（TaiwanStockInstitutionalInvestorsBuySell）\n\n"
             "### 三大法人近況\n\n"
             + _md_table(["法人", "方向", "張數", "備註"], [
@@ -2645,7 +2670,7 @@ class Orchestrator:
                  dealer_val if dealer_val != "N/A" else "N/A", ""],
             ])
             + "\n\n"
-            + chip_report
+            + _demote_headings(chip_report)
         )
 
         # ═══ 五、宏觀與 ADR 分析 ═══
@@ -2659,7 +2684,7 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "## 五、宏觀與 ADR 分析\n\n"
+            "<a id=\"ch5\"></a>\n\n## 五、宏觀與 ADR 分析\n\n"
             "**資料來源：** Yahoo Finance（TSM ADR、TWD=X）\n\n"
             + _md_table(["項目", "數值"], [
                 ["台股現價", price_str],
@@ -2668,30 +2693,30 @@ class Orchestrator:
                 ["匯率參考", f"{fx_ref_val} USD/TWD" if fx_ref_val != "N/A" else "N/A"],
             ])
             + "\n\n"
-            + macro_report
+            + _demote_headings(macro_report)
         )
 
         # ═══ 六、機構法人 13F 持倉追蹤 ═══
         if tracker_report:
             sections.append(
                 "---\n\n"
-                "## 六、機構法人 13F 持倉追蹤\n\n"
+                "<a id=\"ch6\"></a>\n\n## 六、機構法人 13F 持倉追蹤\n\n"
                 "**資料來源：** SEC EDGAR Form 13F-HR（infotable.xml）\n\n"
-                + tracker_report
+                + _demote_headings(tracker_report)
             )
 
         # ═══ 七、產業深度解讀 ═══
         if industry_analysis_md:
             # 將舊的 ## 📊 五、產業分析框架 改為 ## 七、產業深度解讀
             ia_clean = industry_analysis_md.replace(
-                "## 📊 五、產業分析框架與深度解讀", "## 七、產業深度解讀"
+                "## 📊 五、產業分析框架與深度解讀", "<a id=\"ch7\"></a>\n\n## 七、產業深度解讀"
             )
             sections.append("---\n\n" + ia_clean)
 
         # ═══ 八、估值定位 ═══
         sections.append(
             "---\n\n"
-            "## 八、估值定位\n\n"
+            "<a id=\"ch8\"></a>\n\n## 八、估值定位\n\n"
             + _md_table(["指標", "數值", "解讀"], [
                 ["當前 P/E（TTM）", f"**{pe_str} 倍**" if pe_ratio > 0 else "N/A",
                  "歷史 70–80 百分位" if pe_ratio > 0 else "N/A"],
@@ -2711,7 +2736,7 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "## 九、風險管理與操作建議\n\n"
+            "<a id=\"ch9\"></a>\n\n## 九、風險管理與操作建議\n\n"
             "### 操作時間框架\n\n"
             + _md_table(["時間框架", "建議", "核心邏輯"], [
                 [f"法說會前（{days_to_earnings} 天內）", "不追高、不追空", "等待法說會內容確認方向"],
@@ -2743,7 +2768,7 @@ class Orchestrator:
         # ═══ 十、分析師整合結論 ═══
         sections.append(
             "---\n\n"
-            "## 十、分析師整合結論\n\n"
+            "<a id=\"ch10\"></a>\n\n## 十、分析師整合結論\n\n"
             "### 核心矛盾\n\n"
             "> **台積電當前的核心矛盾是：AI 結構性成長邏輯完整，但外資在高檔系統性出貨，"
             "市場在等待一個催化劑（法說會上修展望或 N2 量產確認）來打破這個僵局。**\n\n"
@@ -2769,6 +2794,20 @@ class Orchestrator:
             "ADR 溢價（需過濾匯率因子）\n"
             "```"
         )
+
+        # ── 報告目錄（TOC）────────────────────────────────────────────
+        present_chapters.update({"ch1", "ch2", "ch3", "ch4", "ch5", "ch8", "ch9", "ch10"})
+        if tracker_report:
+            present_chapters.add("ch6")
+        if industry_analysis_md:
+            present_chapters.add("ch7")
+        toc_lines = ["## 📑 報告目錄\n"]
+        for _anchor, _label in CHAPTERS:
+            if _anchor in present_chapters:
+                toc_lines.append(f"- [{_label}](#{_anchor})")
+        toc_block = "---\n\n" + "\n".join(toc_lines) + "\n"
+        # 目錄置於標題（sections[0]）之後
+        sections.insert(1, toc_block)
 
         # ── 寫入檔案 ──────────────────────────────────────────────────
         try:
