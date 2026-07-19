@@ -34,8 +34,8 @@
 ### 本次 session 完成（避險能力補強 / 2026-07-19，分支 `feat/adr-overnight-radar`）
 - **背景**：使用者回報 7/17 台積電大跌，原系統綜合燈號（收盤後回顧性情緒聚合）仍給綠燈，未能幫忙避開。根因——大跌當下財報 / 收盤量價 / 法人買賣超皆為「大跌前」健康狀態，且單日大跌多由外部 / 事件驅動，不在回顧輸入內。
 - [x] **B. ADR / 美股隔夜風險雷達（已完成）**：新增 `adr_radar.py`，`scan_overnight_risk()` 複用 SAL `YahooFinanceProvider.get_chart`（1h 環形快取），監控 TSM ADR / NVDA / SMH 隔夜漲跌，台股開盤前發「跳空低開預警」。`main()` 最前印醒目 Panel；報告最前插入雷達章節。閾值為模組常數（未動 `config.py` 單例）。`test_adr_radar.py` 10 測試全過。commit `243bf24`。
-- [ ] **C. 趨勢保護信號（待做）**：價格跌破關鍵 MA / 前低即翻「減碼」，即便基本面仍綠；應作為可強制降級燈號的保護機制（預計在 `signal_engine.AlertLevelDetector` 加 override 參數，不動 config 權重）。
-- [x] **測試狀態**：全測試 803 passed + 3 fail（3 fail 為既有 `test_macro_agent` 通膨測試 flaky / 網路依賴，與本次無關）。
+- [x] **C. 趨勢保護信號（已完成）**：新增 `trend_protection.py`，`evaluate_trend_protection()` 依台股 2330 日線判斷 收盤價 vs MA20/MA60、MA20 斜率、近 20 日低點支撐、下跌量增；跌破 60MA→紅燈，跌破 20MA / 支撐 / 下跌量增→黃燈。`signal_engine.AlertLevelDetector` 新增 `protect_override` 參數，價格保護評為黃/紅時強制升級綜合燈號（承認「綠燈 ≠ 不會跌」，不動 config 權重）。`main()` 抓取 value_df 後評估並印 Panel，傳入 `run_full_analysis` 觸發降級；報告插入趨勢保護章節。`test_trend_protection.py` 10 測試全過。commit `aa5962f`。
+- [x] **測試狀態**：全測試 816 passed（0 fail；既有 `test_macro_agent` 通膨測試為 flaky / 網路依賴，間歇失敗，與本次無關）。
 
 ### 本次 session 完成（SAL 服務抽象層完整實作 / 2026-07-10~11）
 - [x] **建立 `sal/` 服務抽象層**：隔離上層判斷邏輯與下層 API 呼叫
