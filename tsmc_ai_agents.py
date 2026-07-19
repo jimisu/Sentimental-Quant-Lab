@@ -50,6 +50,7 @@ from signal_engine import (
     BigTechSignals,
     TechnicalSignals,
     ChipSignals,
+    AlertLevelDetector,
     score_to_alert,
 )
 import macro_risk
@@ -1276,11 +1277,15 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         # two_month_window_days 天過濾後加總，負值 = 淨賣超。
         # 與籌碼資料抓取視窗解耦，確保「兩個月」定義穩定。
         foreign_2m_net_shares = 0.0
+        foreign_2m_window_start = None
+        foreign_2m_window_end = None
         if not foreign_daily.empty:
             try:
                 latest_dt = datetime.strptime(foreign_daily.index.max(), "%Y-%m-%d")
-                cutoff = (latest_dt - datetime.timedelta(days=CONFIG.chip.two_month_window_days)).strftime("%Y-%m-%d")
+                cutoff = (latest_dt - dt.timedelta(days=CONFIG.chip.two_month_window_days)).strftime("%Y-%m-%d")
                 window_series = foreign_daily[foreign_daily.index >= cutoff]
+                foreign_2m_window_start = cutoff
+                foreign_2m_window_end = latest_dt.strftime("%Y-%m-%d")
             except Exception:
                 window_series = foreign_daily
             foreign_2m_net_shares = float(window_series.sum())  # 負值 = 淨賣超
@@ -1347,6 +1352,8 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             "max_consecutive_sell": foreign_analysis["max_consecutive_sell"],
             "foreign_net_sell_shares": recent_5d_net_shares,  # 負值表示淨賣超
             "foreign_2m_net_shares": foreign_2m_net_shares,  # 近兩個月累計淨買賣，負值=淨賣超
+            "foreign_2m_window_start": foreign_2m_window_start,
+            "foreign_2m_window_end": foreign_2m_window_end,
             **resonance_flags,
         }
 
@@ -1361,6 +1368,15 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         ]
         if divergence:
             detail_parts.append(f"⚠️ {divergence}")
+
+        # 外資近兩個月累計買賣超（高檔出貨監測）
+        if foreign_2m_window_start:
+            two_m_dir = "賣超" if foreign_2m_net_shares < 0 else "買超"
+            two_m_pct = abs(foreign_2m_net_shares) / CONFIG.chip.tsmc_float_shares * 100
+            detail_parts.append(
+                f"外資近兩個月({foreign_2m_window_start}~{foreign_2m_window_end})累計{two_m_dir} "
+                f"{abs(foreign_2m_net_shares) / 1000:.0f} 張（佔流通股 {two_m_pct:.2f}%）"
+            )
 
         detail_section = "\n".join(detail_parts)
         trend_section = "三大法人個別趨勢:\n" + "\n".join(trend_lines)
@@ -1683,6 +1699,12 @@ class Orchestrator:
 
         print(f"\n--- 綜合評分總結 ---\n{console_summary}\n------------------")
 
+        # ── 綜合燈號拉低原因 ──
+        drag_text = self._format_drag_reasons(
+            result, w, chip_flags, tech_flags, comprehensive_score, markdown=False,
+        )
+        print(drag_text)
+
         # 建立 dashboard_summary（統一燈號）
         dashboard_summary = f"{alert_emoji} {alert_label} | {alert_message}"
 
@@ -1766,6 +1788,126 @@ class Orchestrator:
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
         return dashboard_summary
+
+    # ── 綜合燈號拉低原因 ─────────────────────────────────────────────
+    def _format_drag_reasons(self, result, w, chip_flags, tech_flags,
+                             comprehensive_score, markdown: bool = False) -> str:
+        """
+        產出「綜合燈號被哪些面向拉低」的說明。
+
+        判斷以「最終燈號」（result.alert_level）為準，而非僅看綜合分數——
+        因為綜合分數可能已達綠燈區，但仍被結構性規則（籌碼面 < 30 強制
+        至少黃燈、轉折訊號升紅燈）拉低。
+
+        - console (markdown=False)：純文字，供最後綜合燈號 log 顯示。
+        - markdown=True：Markdown 小節，寫入報告總覽（ch1）。
+        """
+        if result is None:
+            if markdown:
+                return ""
+            return "--- 綜合燈號拉低原因 ---\n   （分析結果不可用，無法列出拖累原因）"
+
+        Y = AlertLevelDetector.YELLOW_THRESHOLD  # 70
+        R = AlertLevelDetector.RED_THRESHOLD     # 50
+
+        facets = [
+            ("財務面", result.financial_score, w.financial,
+             result.details.get("financial_warnings", [])),
+            ("大廠基本面", result.bigtech_score, w.bigtech,
+             result.details.get("bigtech_warnings", [])),
+            ("技術面", result.tech_score, w.tech,
+             self._tech_drag_detail(tech_flags)),
+            ("籌碼面", result.chip_score, w.chip,
+             self._chip_drag_detail(chip_flags)),
+        ]
+        ranked = sorted(
+            [f for f in facets if f[1] < Y],
+            key=lambda x: -(x[2] * (100 - x[1])),
+        )
+
+        # 特殊 / 結構性訊號（會升級燈號者）
+        special = []
+        if result.chip_score < 30:
+            special.append(f"籌碼面嚴重惡化（{result.chip_score:.0f} 分 < 30）→ 強制至少黃燈")
+        if result.reversal_advanced:
+            special.append("🚨🚨🚨 高強度轉折訊號（20MA 轉負 + 月線破 MA12 + 外資大額賣超 + 布林通道壓縮後破位）→ 直接紅燈")
+        elif result.reversal_signal:
+            special.append("⚠️ 轉折訊號（20MA 轉負 + 月線破 MA12 + 外資大額賣超）→ 黃燈升紅燈")
+        if result.double_warning:
+            special.append("⚠️ 基本面與技術面雙重預警")
+
+        if result.alert_level == "green":
+            if markdown:
+                return ("\n\n### 🟢 綜合燈號拉低原因\n\n"
+                        f"> 綜合得分 **{comprehensive_score:.1f}**，各面向無顯著拖累，燈號為綠燈。")
+            return ("--- 綜合燈號拉低原因 ---\n"
+                    f"  綜合得分 {comprehensive_score:.1f}，各面向無顯著拖累，燈號為綠燈。")
+
+        level_label = result.alert_label
+        if markdown:
+            lines = ["### 🔻 綜合燈號拉低原因", ""]
+            lines.append(
+                f"> 綜合燈號為 **{level_label}**（綜合得分 {comprehensive_score:.1f}），"
+                f"以下面向依拖累程度排序拖累燈號：")
+            lines.append("")
+            for name, sc, wt, details in ranked:
+                lvl = "紅燈區" if sc < R else "黃燈區"
+                drag = wt * (100 - sc)
+                lines.append(f"- **{name}**：{sc:.0f} 分（{lvl}），權重 {wt*100:.0f}%，"
+                             f"較滿分拖累 **{drag:.1f}** 分")
+                for d in details[:4]:
+                    lines.append(f"  - {d}")
+            if special:
+                lines.append("")
+                lines.append("**結構性 / 特殊訊號：** " + "；".join(special))
+            return "\n".join(lines)
+
+        # console 純文字
+        lines = ["--- 綜合燈號拉低原因 ---",
+                 f"  綜合燈號為 {level_label}（綜合得分 {comprehensive_score:.1f}），"
+                 f"以下面向拖累燈號（依拖累程度排序）："]
+        for name, sc, wt, details in ranked:
+            lvl = "紅燈區" if sc < R else "黃燈區"
+            drag = wt * (100 - sc)
+            lines.append(f"  · {name}：{sc:.0f} 分（{lvl}）權重 {wt*100:.0f}% → "
+                         f"較滿分拖累 {drag:.1f} 分")
+            for d in details[:4]:
+                lines.append(f"      - {d}")
+        if special:
+            lines.append("  結構性 / 特殊訊號：" + "；".join(special))
+        return "\n".join(lines)
+
+    def _tech_drag_detail(self, tech_flags: Dict) -> List[str]:
+        """技術面拉低綜合燈號的具體成因。"""
+        d: List[str] = []
+        if tech_flags.get("ma20_cross_below"):
+            d.append("20MA 轉負（短期均線下彎）")
+        if tech_flags.get("monthly_break_ma12"):
+            d.append("月線收盤跌破 MA12（長期轉空）")
+        if tech_flags.get("bb_squeeze_break"):
+            d.append("布林通道壓縮後破位")
+        if tech_flags.get("position_zone") == "高檔" and tech_flags.get("high_zone_healthy") is False:
+            d.append("高檔區量價不健康（下跌未量縮 / 突破未帶量）")
+        return d
+
+    def _chip_drag_detail(self, chip_flags: Dict) -> List[str]:
+        """籌碼面拉低綜合燈號的具體成因。"""
+        d: List[str] = []
+        sell = float(chip_flags.get("foreign_2m_net_shares", 0.0) or 0.0)
+        if sell < 0:
+            pct = abs(sell) / CONFIG.chip.tsmc_float_shares * 100
+            d.append(f"外資近兩個月淨賣超 {abs(sell)/1000:,.0f} 张（佔流通股 {pct:.2f}%）")
+        if chip_flags.get("extreme_sell"):
+            d.append("外資 5 日累計大幅賣超（≥ 5,000 張）")
+        elif chip_flags.get("big_foreign_sell"):
+            d.append("外資 5 日累計賣超（≥ 1,000 張）")
+        cons = chip_flags.get("max_consecutive_sell", 0)
+        if cons and cons >= 3:
+            d.append(f"外資最長連續賣超 {cons} 日")
+        sr = chip_flags.get("sell_ratio", 0)
+        if sr and sr > 60:
+            d.append(f"外資賣超比例 {sr:.0f}%（> 60%）")
+        return d
 
     def _estimate_earnings_date(self, today: dt.date) -> Tuple[str, int, str]:
         """
@@ -2562,6 +2704,10 @@ class Orchestrator:
             + "\n\n"
             + "### ⚠️ 主要警示\n\n"
             + (warn_block if warn_block else "- 無重大警示")
+            + "\n\n"
+            + self._format_drag_reasons(
+                result, CONFIG.weights, chip_flags, tech_flags, comprehensive_score, markdown=True,
+            )
         )
 
         # ═══ 二、財務面分析 ═══
@@ -2718,6 +2864,29 @@ class Orchestrator:
         dealer_match = _re.search(r"自營商: 買超 ([\d,]+) 張", chip_report)
         dealer_val = dealer_match.group(1) if dealer_match else "N/A"
 
+        # 外資近兩個月累計買賣超（高檔出貨監測）
+        f2m = float(chip_flags.get("foreign_2m_net_shares", 0.0) or 0.0)
+        f2m_start = chip_flags.get("foreign_2m_window_start")
+        f2m_end = chip_flags.get("foreign_2m_window_end")
+        if f2m_start:
+            f2m_dir = "🔴 淨賣超" if f2m < 0 else "🟢 淨買超"
+            f2m_lots = abs(f2m) / 1000
+            f2m_pct = abs(f2m) / CONFIG.chip.tsmc_float_shares * 100
+            f2m_thr = CONFIG.chip.two_month_high_sellout_pct * CONFIG.chip.tsmc_float_shares
+            f2m_trig = (pe_ratio > 30 and f2m < -f2m_thr)
+            two_month_block = (
+                "\n\n### 外資近兩個月累計買賣超（高檔出貨監測）\n\n"
+                + _md_table(["指標", "數值"], [
+                    ["監測區間", f"{f2m_start} ~ {f2m_end}"],
+                    ["累計淨買賣", f"{f2m_dir} {f2m_lots:,.0f} 張"],
+                    ["佔流通股比例", f"{f2m_pct:.2f}%"],
+                    ["紅燈門檻", f"淨賣超 > {f2m_thr/1000:,.0f} 張（{CONFIG.chip.two_month_high_sellout_pct*100:.2f}%）且 P/E > 30"],
+                    ["高檔出貨紅燈", "🔴 觸發" if f2m_trig else "未觸發"],
+                ])
+            )
+        else:
+            two_month_block = ""
+
         sections.append(
             "---\n\n"
             "<a id=\"ch5\"></a>\n\n## 五、籌碼面分析\n\n"
@@ -2731,6 +2900,7 @@ class Orchestrator:
                 ["自營商", "🟢 買超" if dealer_val != "N/A" else "N/A",
                  dealer_val if dealer_val != "N/A" else "N/A", ""],
             ])
+            + two_month_block
             + "\n\n"
             + _demote_headings(chip_report)
         )
