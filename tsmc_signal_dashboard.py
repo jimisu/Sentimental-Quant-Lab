@@ -27,6 +27,7 @@ from data_cache import fetch_with_cache
 from tsmc_ai_agents import Orchestrator
 from sal import get_finmind, get_twse, get_yahoo, get_sec, get_cache
 from adr_radar import scan_overnight_risk
+from trend_protection import evaluate_trend_protection
 
 load_dotenv()
 
@@ -1081,6 +1082,41 @@ def print_overnight_risk_banner(report) -> None:
     ))
 
 
+def print_trend_protection_banner(sig) -> None:
+    """以醒目 Panel 顯示趨勢保護信號（價格保護）。"""
+    from rich.panel import Panel
+    from rich.console import Console
+    console = Console()
+
+    if not getattr(sig, "available", False):
+        console.print(f"[dim]🛡️ 趨勢保護：{getattr(sig, 'note', '資料不足')}，略過。[/dim]")
+        return
+
+    color = {"red": "red", "yellow": "yellow", "green": "green"}.get(sig.level, "green")
+    lines = [f"[bold]{sig.headline}[/bold]", "", sig.recommendation, ""]
+    lines.append(f"  · 收盤價：{sig.close:.2f}")
+    if sig.ma20 is not None:
+        lines.append(f"  · MA20：{sig.ma20:.2f}"
+                     f"({'⬇ 下彎' if sig.ma20_slope_down else '⬆/平'}）")
+    if sig.ma60 is not None:
+        lines.append(f"  · MA60：{sig.ma60:.2f}")
+    if sig.swing_low is not None:
+        lines.append(f"  · 近 {20} 日低點：{sig.swing_low:.2f}")
+    lines.append(f"  · 下跌量增：{'是 🔻' if sig.volume_spike_on_down else '否'}")
+    if sig.reasons:
+        lines.append("")
+        lines.append("觸發理由：")
+        for r in sig.reasons:
+            lines.append(f"   - {r}")
+
+    console.print(Panel(
+        "\n".join(lines),
+        title=f"{sig.emoji} 趨勢保護信號（價格保護）",
+        border_style=color,
+        expand=False,
+    ))
+
+
 def main():
     """
     主程式流程。
@@ -1138,6 +1174,17 @@ def main():
         revenue_by_date = future_revenue.result()
         quarterly_margins = future_margins.result()
 
+    # ── 趨勢保護信號（價格保護）──
+    # 即便基本面仍綠，價格跌破關鍵均線 / 近期支撐即強制降級燈號。
+    # 承認「綠燈 ≠ 不會跌」，補強原系統無法預警單日大跌的缺口。
+    trend_protection = None
+    try:
+        trend_protection = evaluate_trend_protection(value_df)
+        if trend_protection is not None:
+            print_trend_protection_banner(trend_protection)
+    except Exception as exc:  # noqa: BLE001 — 保護信號失敗不該中斷主流程
+        print(f"[趨勢保護] 評估失敗：{exc}", file=sys.stderr)
+
     # 月營收快取已暖，此處僅讀取快取計算 YoY，不再觸發額外網路抓取。
     revenue_yoy = get_monthly_revenue_yoy(token)
 
@@ -1174,6 +1221,7 @@ def main():
         market_sentiment_red=market_sentiment_red,
         revenue_by_date=revenue_by_date,
         overnight_risk=overnight_risk,
+        trend_protection=trend_protection,
     )
 
     print(f"\n{dashboard_summary}")

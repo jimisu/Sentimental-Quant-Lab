@@ -18,6 +18,11 @@ from typing import Dict, List, Optional, Tuple
 from config import CONFIG
 
 
+def _level_rank(level: str) -> int:
+    """燈號嚴重度排名：green=0, yellow=1, red=2。"""
+    return {"green": 0, "yellow": 1, "red": 2}.get(level, 0)
+
+
 # ══════════════════════════════════════════════════════════════
 # 資料容器
 # ══════════════════════════════════════════════════════════════
@@ -381,6 +386,7 @@ class AlertLevelDetector:
         reversal_advanced: bool = False,
         chip_score: float = 100.0,
         market_sentiment_score: float = 100.0,
+        protect_override: Optional[str] = None,
     ) -> Tuple[str, str, str, str]:
         """
         偵測燈號。
@@ -442,6 +448,16 @@ class AlertLevelDetector:
         else:
             full_msg = base_msg
 
+        # ── 趨勢保護 override（價格保護，可強制降級燈號）──
+        # 即便基本面仍綠，若價格跌破關鍵支撐（trend_protection 評為黃/紅），
+        # 強制將燈號升級，承認「綠燈 ≠ 不會跌」。不動 config 權重。
+        if protect_override in ("yellow", "red") and _level_rank(protect_override) > _level_rank(level):
+            level = protect_override
+            label = "黃燈" if level == "yellow" else "紅燈"
+            emoji = "🟡" if level == "yellow" else "🔴"
+            prefix = (full_msg + "；") if full_msg else ""
+            full_msg = f"{prefix}🛡️ 趨勢保護：價格跌破關鍵支撐，強制降級燈號"
+
         return level, label, emoji, full_msg
 
 
@@ -468,6 +484,7 @@ class SignalEngine:
         tech_signals: TechnicalSignals,
         chip_signals: ChipSignals,
         market_sentiment_signals: MarketSentimentSignals,
+        protect_override: Optional[str] = None,
     ) -> ComprehensiveResult:
         """
         完整分析流程：
@@ -527,6 +544,7 @@ class SignalEngine:
             reversal_advanced=reversal_advanced,
             chip_score=chip_signals.score,
             market_sentiment_score=market_sentiment_signals.score,
+            protect_override=protect_override,
         )
         result.alert_level = level
         result.alert_label = label

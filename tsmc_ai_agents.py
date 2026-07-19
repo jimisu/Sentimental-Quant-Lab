@@ -1541,7 +1541,8 @@ class Orchestrator:
                           styled_df: pd.DataFrame,
                           market_sentiment_red: bool = False,
                           revenue_by_date: Optional[Dict[str, float]] = None,
-                          overnight_risk=None) -> str:
+                          overnight_risk=None,
+                          trend_protection=None) -> str:
         """
         執行完整分析並回傳 dashboard_summary 字串。
         綜合得分燈號邏輯統一由 signal_engine 處理。
@@ -1594,9 +1595,16 @@ class Orchestrator:
         )
 
         # ── Step 3: Signal Engine 整合計算 ──
+        # 趨勢保護：價格跌破關鍵支撐時強制降級燈號（不動 config 權重）
+        protect_override = (
+            trend_protection.level
+            if trend_protection is not None and getattr(trend_protection, "available", False)
+            and trend_protection.level in ("yellow", "red")
+            else None
+        )
         result = self.signal_engine.analyze(
             financial_signals, bigtech_signals, tech_signals, chip_signals,
-            market_sentiment_signals
+            market_sentiment_signals, protect_override=protect_override
         )
 
         # ── Step 4: 組合報告 ──
@@ -1831,6 +1839,7 @@ class Orchestrator:
             fx_averages=fx_averages,
             revenue_by_date=revenue_by_date or {},
             overnight_risk_md=overnight_risk.to_markdown() if overnight_risk else "",
+            trend_protection_md=trend_protection.to_markdown() if trend_protection else "",
         )
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
@@ -2341,6 +2350,7 @@ class Orchestrator:
                        fx_averages: Optional[Dict[str, float]] = None,
                        revenue_by_date: Optional[Dict[str, float]] = None,
                        overnight_risk_md: str = "",
+                       trend_protection_md: str = "",
                        ) -> None:
         """將分析結果以 Markdown 格式附加到檔案（重構版：直接產出結構化報告）"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2497,6 +2507,11 @@ class Orchestrator:
         # 單日大跌」的缺口。置於報告最前，確保使用者先看到跳空風險再讀綠燈。
         if overnight_risk_md:
             sections.append("---\n\n" + overnight_risk_md)
+
+        # ═══ 趨勢保護信號（價格保護）═══
+        # 即便基本面仍綠，價格跌破關鍵支撐即強制降級燈號。承認「綠燈 ≠ 不會跌」。
+        if trend_protection_md:
+            sections.append("---\n\n" + trend_protection_md)
 
         # ═══ 一、總覽儀表板 ═══
         score_rows = [
