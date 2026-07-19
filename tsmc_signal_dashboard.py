@@ -23,8 +23,15 @@ from dotenv import load_dotenv
 from rich import box
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
 from data_cache import fetch_with_cache
 from tsmc_ai_agents import Orchestrator
+from signal_engine import (
+    LeadingIndicator,
+    compute_leading_indicator,
+    compute_trailing_pe,
+)
 from sal import get_finmind, get_twse, get_yahoo, get_sec, get_cache
 
 load_dotenv()
@@ -944,6 +951,70 @@ def print_dashboard(
     console.print(value_table)
 
 
+def print_leading_indicator_panel(leading: LeadingIndicator) -> None:
+    """
+    終端儀表板顯示領先指標（預測用）及其強制紅燈狀態。
+    與報告最前方的「🔮 領先指標預警」章節同源：同一份 compute_leading_indicator 結果。
+    """
+    console = Console()
+
+    pe_th = leading.pe_threshold
+    pct_th = leading.pct_threshold * 100
+    condition = (
+        f"外資近 {len(leading.last_dates) or 2} 日連續賣超 "
+        f"＋ 往前兩個月累計賣超佔{leading.denom_label} > {pct_th:.0f}% ＋ 本益比 > {pe_th:.0f} 倍"
+    )
+
+    if not leading.available:
+        status = Text("⚪ 資料不足，無法判斷領先指標", style="dim")
+        detail = leading.note or "無籌碼資料"
+        border = "dim"
+    elif leading.triggered:
+        status = Text("🔴 觸發｜強制紅燈", style="bold red")
+        pct = leading.sell_pct if leading.sell_pct is not None else 0.0
+        last_parts = []
+        for d, v in zip(leading.last_dates, leading.last_net_shares):
+            tag = "賣超" if v < 0 else "買超"
+            last_parts.append(f"{d} {tag} {abs(v)/1000:,.0f} 張")
+        detail = (
+            f"近 {len(leading.last_dates)} 日：{'、'.join(last_parts)}　｜　"
+            f"兩個月（{leading.window_start}~{leading.window_end}）累計賣超 "
+            f"{leading.cumulative_sell_shares/1000:,.0f} 張（佔{leading.denom_label} {pct:.2f}%）　｜　"
+            f"本益比 {leading.pe_ratio:.1f} 倍"
+        )
+        border = "red"
+    else:
+        status = Text("🟢 未觸發", style="bold green")
+        pct_str = f"{leading.sell_pct:.2f}%" if leading.sell_pct is not None else "N/A"
+        last_parts = []
+        for d, v in zip(leading.last_dates, leading.last_net_shares):
+            tag = "賣超" if v < 0 else "買超"
+            last_parts.append(f"{d} {tag} {abs(v)/1000:,.0f} 張")
+        detail = (
+            f"近 {len(leading.last_dates)} 日：{'、'.join(last_parts) or '無資料'}　｜　"
+            f"兩個月累計賣超佔比 {pct_str}（門檻 >{pct_th:.0f}%，視窗 {leading.window_start}~{leading.window_end}）　｜　"
+            f"本益比 {leading.pe_ratio:.1f} 倍（門檻 >{pe_th:.0f}）"
+        )
+        border = "green"
+
+    body = Text()
+    body.append("觸發條件：", style="bold")
+    body.append(f"{condition}\n")
+    body.append("狀態：", style="bold")
+    body.append_text(status)
+    body.append(f"\n{detail}")
+
+    console.print()
+    console.print(
+        Panel(
+            body,
+            title="🔮 領先指標預警（預測用）",
+            border_style=border,
+            expand=False,
+        )
+    )
+
+
 def run_self_test():
     """
     執行系統診斷測試，驗證環境、目錄權限與外部 API 連線。
@@ -1074,17 +1145,28 @@ def main():
     except Exception as exc:
         print(f"警告：未能取得外資持股（{exc}），強制紅燈分母回退總流通股。", file=sys.stderr)
 
+    # ── 領先指標（預測用）──
+    # 終端與報告共用同一份計算結果：以當日收盤價 + 近四季 EPS 算 TTM 本益比，
+    # 再結合外資近 2 日買賣超與外資持股，判斷是否觸發強制紅燈領先訊號。
+    tw_price = value_df["台積電收盤價"].iloc[-1] if not value_df.empty else 0
+    pe_main = compute_trailing_pe(float(tw_price) if tw_price == tw_price else 0.0, quarterly_margins)
+    leading = compute_leading_indicator(chip_data, foreign_shares, pe_main)
+
     # 呼叫 AI Agent 編排器
     orchestrator = Orchestrator()
 
     # 輸出儀表板
     print_dashboard(styled_df, value_df.tail(10))
 
+    # 終端儀表板顯示領先指標（與報告最前方章節同源）
+    print_leading_indicator_panel(leading)
+
     # 執行 Agent 深度分析（統一由 signal_engine 計算綜合燈號）
     dashboard_summary = orchestrator.run_full_analysis(
         quarterly_margins, value_df, chip_data, styled_df,
         revenue_by_date=revenue_by_date,
         foreign_shares=foreign_shares,
+        leading_indicator=leading,
     )
 
     print(f"\n{dashboard_summary}")
