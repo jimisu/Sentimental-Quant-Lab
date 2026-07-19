@@ -946,8 +946,7 @@ class TestInstitutionalInvestorAgentAnalyzeFlow:
             chip_data.append({"date": d, "type": "Investment_Trust", "buy": 2000, "sell": 1000})
             chip_data.append({"date": d, "type": "Dealer", "buy": 1500, "sell": 1000})
         df = pd.DataFrame()
-        with patch.object(agent, "_generate_chip_chart", return_value=""):
-            report, flags, score = agent.analyze_flow(chip_data, df)
+        report, flags, score = agent.analyze_flow(chip_data, df)
         assert "賣超" in report
         assert score < 100
 
@@ -959,15 +958,13 @@ class TestInstitutionalInvestorAgentAnalyzeFlow:
             chip_data.append({"date": d, "type": "Investment_Trust", "buy": 3000, "sell": 1000})
             chip_data.append({"date": d, "type": "Dealer", "buy": 2000, "sell": 1000})
         df = pd.DataFrame()
-        with patch.object(agent, "_generate_chip_chart", return_value=""):
-            report, flags, score = agent.analyze_flow(chip_data, df)
+        report, flags, score = agent.analyze_flow(chip_data, df)
         assert "平穩" in report or "買盤" in report
 
     def test_return_structure(self, agent):
         chip_data = make_chip_data(7)
         df = pd.DataFrame()
-        with patch.object(agent, "_generate_chip_chart", return_value=""):
-            report, flags, score = agent.analyze_flow(chip_data, df)
+        report, flags, score = agent.analyze_flow(chip_data, df)
         assert isinstance(report, str)
         assert isinstance(flags, dict)
         assert isinstance(score, (int, float))

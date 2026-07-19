@@ -167,10 +167,12 @@ class MarketDynamicsAgent(TSMCBaseAgent):
             ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
             ax.tick_params(axis='x', rotation=45)
 
-        plt.tight_layout()
+        # 使用物件導向 API（fig 而非全域 plt 狀態），避免與其他並行執行的
+        # Agent 共用 matplotlib 全域狀態而互相干擾，導出空白/錯置的圖表。
+        fig.tight_layout()
         filepath = prepare_daily_chart_path(self.charts_dir, "tech_chart")
-        plt.savefig(filepath, dpi=100, bbox_inches='tight')
-        plt.close()
+        fig.savefig(filepath, dpi=100, bbox_inches='tight')
+        plt.close(fig)
         keep_latest_daily_charts(self.charts_dir, "tech_chart",
                                 datetime.now().strftime("%Y%m%d"), keep=1)
         return filepath
@@ -1125,52 +1127,6 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             return f"法人動向分歧：{'、'.join(significant_labels)}"
         return ""
 
-    def _generate_chip_chart(self, df: pd.DataFrame) -> str:
-        """產生籌碼流向圖"""
-        if df.empty or not HAS_MATPLOTLIB: return ""
-        
-        # 計算外資淨買賣超
-        df['net_buy'] = pd.to_numeric(df['buy']) - pd.to_numeric(df['sell'])
-        df = df.sort_values('date')
-        # 轉為 datetime 軸，避免字串類別繪圖的 StrCategoryConverter 錯誤
-        df['_x'] = pd.to_datetime(df['date'])
-
-        plt.figure(figsize=(10, 4))
-        colors = ['red' if x >= 0 else 'green' for x in df['net_buy']]
-        bars = plt.bar(df['_x'], df['net_buy'] / 1000, color=colors, alpha=0.7)
-        plt.title("Foreign Investor Net Buy/Sell (TSMC)")
-        plt.ylabel("Net Quantity (Lots/張)")
-        plt.axhline(0, color='black', linewidth=0.8)
-
-        chip_ax = plt.gca()
-        chip_ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        chip_ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-
-        if not df.empty:
-            summary_idx = (df['net_buy'].abs() / 1000).idxmax()
-            summary_date = df.loc[summary_idx, '_x']
-            summary_value = df.loc[summary_idx, 'net_buy'] / 1000
-            summary_label = f"最大{'買超' if summary_value >= 0 else '賣超'} {abs(summary_value):.0f} 張"
-            plt.text(
-                summary_date,
-                summary_value,
-                summary_label,
-                ha='center',
-                va='bottom' if summary_value >= 0 else 'top',
-                color='black',
-                fontsize=9,
-                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.2')
-            )
-
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        
-        filepath = prepare_daily_chart_path(self.charts_dir, "chip_chart")
-        plt.savefig(filepath)
-        plt.close()
-        keep_latest_daily_charts(self.charts_dir, "chip_chart", datetime.now().strftime("%Y%m%d"), keep=1)
-        return filepath
-
     def _normalize_institution_label(self, raw_label) -> Optional[str]:
         label = str(raw_label).strip()
         return self.institution_type_labels.get(label)
@@ -1262,9 +1218,8 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
 
         df["institution_label"] = df[type_col].apply(self._normalize_institution_label)
 
-        # 篩選外資資料用於繪圖與分析
+        # 篩選外資資料用於分析
         foreign_all = df[df["institution_label"] == '外資'].sort_values('date', ascending=True)
-        chart_path = self._generate_chip_chart(foreign_all)
         resonance_report, resonance_flags = self._analyze_three_institution_resonance(df, type_col)
 
         # 依日期加總外資淨買賣股數
@@ -1286,7 +1241,8 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         recent_5d_net_shares = float(foreign_daily.head(5).sum())
         total_sell_lots = abs(recent_5d_net_shares) / 1000
 
-        image_md = f"\n![Chip Chart]({chart_path})" if chart_path else ""
+        # 籌碼面圖表已依需求移除（見 _generate_chip_chart 之移除）
+        image_md = ""
 
         # ── 三大法人個別趨勢 ────────────────────────────────────────
         individual_trends = self._analyze_individual_trends(df, type_col)
