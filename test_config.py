@@ -112,13 +112,17 @@ class TestScoreWeightsConfig:
         assert ScoreWeightsConfig().chip == 0.10
 
     def test_market_sentiment_weight(self):
-        assert ScoreWeightsConfig().market_sentiment == 0.10
+        """市場情緒已移出燈號計算（量能為落後指標），權重應為 0.0。"""
+        assert ScoreWeightsConfig().market_sentiment == 0.0
 
-    def test_main_weights_sum_to_1(self):
-        """The five main weights must total exactly 1.0."""
+    def test_main_weights_sum_to_point_90(self):
+        """四面向加總 = 0.90（市場情緒 10% 已移出燈號計算）。
+
+        刻意不重新歸一化為 1.0，以保留綜合得分門檻（紅 <50 / 黃 <70）
+        的既有校準。"""
         w = ScoreWeightsConfig()
         total = w.financial + w.bigtech + w.tech + w.chip + w.market_sentiment
-        assert total == pytest.approx(1.0)
+        assert total == pytest.approx(0.90)
 
     def test_early_weight(self):
         assert ScoreWeightsConfig().early == 0.07
@@ -148,7 +152,7 @@ class TestScoreWeightsConfig:
         assert d["bigtech"] == 0.30
         assert d["tech"] == 0.20
         assert d["chip"] == 0.10
-        assert d["market_sentiment"] == 0.10
+        assert d["market_sentiment"] == 0.0
 
 
 # ══════════════════════════════════════════════════════════════

@@ -547,7 +547,7 @@ def parse_valuation(block: str) -> Dict[str, str]:
 def build_valuation_section(block: str) -> str:
     valuation = parse_valuation(block)
     return "\n".join([
-        "## 五、估值定位",
+        "## 六、估值定位",
         "",
         markdown_table(["指標", "數值", "解讀"], [
             ["當前 P/E（TTM）", f"**{valuation['pe']} 倍**", f"歷史 {valuation['percentile']} 百分位"],
@@ -568,7 +568,7 @@ def build_recommendation_section(block: str, days_to_earnings: int) -> str:
     support = tech["support"]
     resistance = tech["resistance"]
     return "\n".join([
-        "## 六、操作建議",
+        "## 七、操作建議",
         "",
         "### 時間框架",
         "",
@@ -600,7 +600,7 @@ def build_recommendation_section(block: str, days_to_earnings: int) -> str:
 
 def build_causal_chain_section() -> str:
     return "\n".join([
-        "## 七、因果鏈總覽",
+        "## 八、因果鏈總覽",
         "",
         "```text",
         "Apple/NVIDIA 訂單能見度",

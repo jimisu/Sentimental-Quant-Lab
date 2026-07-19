@@ -51,7 +51,9 @@ from signal_engine import (
     TechnicalSignals,
     ChipSignals,
     MarketSentimentSignals,
+    score_to_alert,
 )
+import macro_risk
 
 
 def prepare_daily_chart_path(charts_dir: str, prefix: str) -> str:
@@ -1288,6 +1290,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             "extreme_sell": extreme_sell,
             "sell_ratio": foreign_analysis["sell_ratio"],
             "max_consecutive_sell": foreign_analysis["max_consecutive_sell"],
+            "foreign_net_sell_shares": recent_5d_net_shares,  # 負值表示淨賣超
             **resonance_flags,
         }
 
@@ -1503,7 +1506,6 @@ class Orchestrator:
 
     def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict],
                           styled_df: pd.DataFrame,
-                          market_sentiment_red: bool = False,
                           revenue_by_date: Optional[Dict[str, float]] = None) -> str:
         """
         執行完整分析並回傳 dashboard_summary 字串。
@@ -1551,15 +1553,10 @@ class Orchestrator:
         chip_flags["vol_price_divergence"] = vol_price_divergence
         chip_signals = ChipSignals(score=chip_score, flags=chip_flags)
 
-        # 市場情緒信號
-        market_sentiment_signals = self._build_market_sentiment_signals(
-            trading_df, market_sentiment_red
-        )
-
         # ── Step 3: Signal Engine 整合計算 ──
+        # 註：市場情緒（量能）已移出綜合燈號計算，不參與燈號判定。
         result = self.signal_engine.analyze(
-            financial_signals, bigtech_signals, tech_signals, chip_signals,
-            market_sentiment_signals
+            financial_signals, bigtech_signals, tech_signals, chip_signals
         )
 
         # ── Step 4: 組合報告 ──
@@ -1569,16 +1566,14 @@ class Orchestrator:
         alert_level = result.alert_level
         alert_message = result.alert_message
 
-        # 建構 score_summary（顯示新權重）
+        # 建構 score_summary（顯示新權重；市場情緒已移出綜合燈號計算）
         w = CONFIG.weights
         breakdown = result.details["breakdown"]
-        bs = market_sentiment_signals
         score_summary = (
             f"● 財務面({result.financial_score:.0f})*{w.financial*100:.0f}% = {breakdown['financial']:.1f}/{w.financial*100:.0f}\n"
             f"● 大廠基本面({result.bigtech_score:.0f})*{w.bigtech*100:.0f}% = {breakdown['bigtech']:.1f}/{w.bigtech*100:.0f}\n"
             f"● 技術面({result.tech_score:.0f})*{w.tech*100:.0f}% = {breakdown['tech']:.1f}/{w.tech*100:.0f}\n"
-            f"● 籌碼面({chip_score})*{w.chip*100:.0f}% = {breakdown['chip']:.1f}/{w.chip*100:.0f}\n"
-            f"● 市場情緒({bs.score})*{w.market_sentiment*100:.0f}% = {breakdown['market_sentiment']:.1f}/{w.market_sentiment*100:.0f}\n"
+            f"● 簱碼面({chip_score})*{w.chip*100:.0f}% = {breakdown['chip']:.1f}/{w.chip*100:.0f}\n"
             f"● 綜合健康得分: {comprehensive_score:.1f}/100"
         )
 
@@ -1616,19 +1611,8 @@ class Orchestrator:
         print(f"[機構 13F] > {tracker_report}")
         print()
 
-        # 市場情緒
-        ms = market_sentiment_signals
-        sentiment_label = "🔴 量能衰退" if ms.score <= 40 else "🟡 量能偏弱" if ms.score <= 70 else "🟢 量能正常"
-        sentiment_detail = []
-        if ms.triple_decline:
-            sentiment_detail.append("個股+大盤連三降")
-        elif ms.tsmc_volume_declining:
-            sentiment_detail.append("個股連三降")
-        elif ms.market_volume_declining:
-            sentiment_detail.append("大盤連三降")
-        detail_str = f"（{', '.join(sentiment_detail)}）" if sentiment_detail else ""
-        print(f"[市場情緒] {sentiment_label} {ms.score}/100{detail_str}")
-        print()
+        # 市場情緒（量能）已移出燈號計算，僅供觀察，不參與判定
+        # 註：量能為落後指標，會在技術/籌碼已轉弱時仍因「量能未萎縮」顯示綠燈，造成失真。
 
         print(f"{'='*50}")
         print(f"{alert_emoji} 燈號：{alert_label}")
@@ -1677,27 +1661,18 @@ class Orchestrator:
                     eps_count += 1
             if eps_count >= 2 and trailing_4q_eps > 0:
                 pe_ratio = current_price / trailing_4q_eps
-                # 判斷各面向是否同時偏空
+                # 判斷各面向是否同時偏空（量能/情緒已移出，不再參與）
                 has_vol_price_div = chip_flags.get("vol_price_divergence", False)
                 has_chip_sell = chip_flags.get("big_foreign_sell", False) or chip_flags.get("extreme_sell", False)
-                has_bad_sentiment = market_sentiment_signals.score <= 60
 
-                if pe_ratio > 31 and has_vol_price_div and has_chip_sell and has_bad_sentiment:
+                if pe_ratio > 31 and has_vol_price_div and has_chip_sell:
                     print(f"\033[1;37;41m【🚨 高檔全面警示 🚨】\033[0m")
                     print(f"\033[1;31m   本益比 {pe_ratio:.1f} 倍（股價 {current_price:.0f} / 過去四季 EPS {trailing_4q_eps:.2f}）> 31 倍\033[0m")
                     print(f"\033[1;31m   + 技術面量價背離\033[0m")
                     print(f"\033[1;31m   + 籌碼面外資賣超\033[0m")
-                    print(f"\033[1;31m   + 市場情緒量能衰退（{market_sentiment_signals.score}/100）\033[0m")
                     print(f"\033[1;33m   → 建議：高檔全面偏空，留意追高風險\033[0m")
                 elif pe_ratio > 31:
                     print(f"\n⚠️ 本益比偏高（>31 倍）：{pe_ratio:.1f} 倍（股價 {current_price:.0f} / 過去四季 EPS {trailing_4q_eps:.2f}）")
-
-        # 市場情緒警示
-        ms = market_sentiment_signals
-        if ms.score <= 60:
-            print(f"\n⚠️ 市場情緒警示: 量能衰退（{ms.score}/100）")
-            if ms.triple_decline:
-                print(f"   · 個股與大盤連續三日量縮")
 
         # 燈號顏色顯示綜合分數
         console_summary = score_summary
@@ -1733,15 +1708,13 @@ class Orchestrator:
                 pe_ratio = current_price / trailing_4q_eps
                 has_vol_price_div = chip_flags.get("vol_price_divergence", False)
                 has_chip_sell = chip_flags.get("big_foreign_sell", False) or chip_flags.get("extreme_sell", False)
-                has_bad_sentiment = market_sentiment_signals.score <= 60
 
-                if pe_ratio > 31 and has_vol_price_div and has_chip_sell and has_bad_sentiment:
+                if pe_ratio > 31 and has_vol_price_div and has_chip_sell:
                     pe_warning_md = (
                         f"\n\n### 🚨 高檔全面警示\n\n"
                         f"> **本益比 {pe_ratio:.1f} 倍**（股價 {current_price:.0f} / 過去四季 EPS {trailing_4q_eps:.2f}）> 31 倍  \n"
                         f"> + 技術面量價背離  \n"
                         f"> + 籌碼面外資賣超  \n"
-                        f"> + 市場情緒量能衰退（{market_sentiment_signals.score}/100）  \n"
                         f"> → **建議：高檔全面偏空，留意追高風險**\n"
                     )
                 elif pe_ratio > 31:
@@ -1760,7 +1733,6 @@ class Orchestrator:
             tech_scores=tech_scores,
             macro_report=macro_report,
             bigtech_data=bigtech_data,
-            market_sentiment_signals=market_sentiment_signals,
             result=result,
             tw_price=tw_price,
             fx_averages=fx_averages,
@@ -1773,10 +1745,10 @@ class Orchestrator:
             tech_report=tech_report,
             chip_report=chip_report,
             macro_report=macro_report,
+            bigtech_report=bigtech_report,
             score_summary=score_summary,
             fin_table=fin_table_md,
             vol_table=vol_table_md,
-            market_sentiment_red=market_sentiment_red,
             pe_warning_md=pe_warning_md,
             industry_analysis_md=industry_analysis_md,
             fin_report_structured=fin_report_structured,
@@ -1788,11 +1760,11 @@ class Orchestrator:
             tech_flags=tech_flags,
             tech_scores=tech_scores,
             bigtech_data=bigtech_data,
-            market_sentiment_signals=market_sentiment_signals,
             result=result,
             tw_price=tw_price,
             fx_averages=fx_averages,
             revenue_by_date=revenue_by_date or {},
+            price_df=trading_df,
         )
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
@@ -1833,6 +1805,38 @@ class Orchestrator:
         else:
             return "未知", 0, "法說會日期未定"
 
+    def _revenue_yoy_dynamic_trigger(self, revenue_by_date: Optional[Dict[str, float]]) -> str:
+        """
+        以「近 12 個月月營收 YoY 的動態均值 ± 標準差」取代固定 10% 門檻。
+
+        回傳一段文字，描述觸發轉空的月營收 YoY 條件；若資料不足 13 個月
+        （無法計算至少 12 個 YoY 樣本）則回退到保守的固定門檻說明。
+        """
+        if not revenue_by_date or len(revenue_by_date) < 13:
+            return "月營收 YoY 轉負或較前月顯著下滑（資料不足 13 個月，暫採保守門檻）"
+        try:
+            months = sorted(revenue_by_date.keys())
+            yoys = []
+            for i in range(1, len(months)):
+                cur = revenue_by_date.get(months[i])
+                prev = revenue_by_date.get(months[i - 1])
+                if cur is not None and prev not in (None, 0):
+                    yoys.append((cur - prev) / prev * 100.0)
+            if len(yoys) < 12:
+                return "月營收 YoY 轉負或較前月顯著下滑（YoY 樣本不足，暫採保守門檻）"
+            window = yoys[-12:]
+            mean = sum(window) / len(window)
+            var = sum((x - mean) ** 2 for x in window) / len(window)
+            std = var ** 0.5
+            # 觸發：較近 12 月均值下滑超過 1 個標準差（且均值本身為正時才看下滑）
+            threshold = mean - std
+            return (
+                f"月營收 YoY 較近 12 月均值（{mean:.1f}%）下滑超過 1 個標準差"
+                f"（σ={std:.1f}%，觸發線 ≈ {threshold:.1f}%）"
+            )
+        except Exception:
+            return "月營收 YoY 轉負或較前月顯著下滑（計算異常，暫採保守門檻）"
+
     def _build_industry_analysis_section(
         self,
         quarterly_data: Dict,
@@ -1843,7 +1847,6 @@ class Orchestrator:
         tech_scores: Dict,
         macro_report: str,
         bigtech_data: Dict,
-        market_sentiment_signals,
         result,
         tw_price: float,
         fx_averages: Optional[Dict[str, float]] = None,
@@ -2284,8 +2287,7 @@ class Orchestrator:
 
     def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str,
                        chip_report: str, macro_report: str, score_summary: str,
-                       fin_table: str, vol_table: str,
-                       market_sentiment_red: bool = False,
+                       fin_table: str, vol_table: str, bigtech_report: str = "",
                        pe_warning_md: str = "",
                        industry_analysis_md: str = "",
                        fin_report_structured: str = "",
@@ -2297,11 +2299,11 @@ class Orchestrator:
                        tech_flags: Dict = None,
                        tech_scores: Dict = None,
                        bigtech_data: Dict = None,
-                       market_sentiment_signals = None,
                        result = None,
                        tw_price: float = 0,
                        fx_averages: Optional[Dict[str, float]] = None,
                        revenue_by_date: Optional[Dict[str, float]] = None,
+                       price_df: Optional[pd.DataFrame] = None,
                        ) -> None:
         """將分析結果以 Markdown 格式附加到檔案（重構版：直接產出結構化報告）"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2444,7 +2446,6 @@ class Orchestrator:
         fin_score = result.financial_score if result else 0
         bigtech_score = result.bigtech_score if result else 0
         tech_score_val = result.tech_score if result else 0
-        ms_score = market_sentiment_signals.score if market_sentiment_signals else 0
 
         # 法說會日期
         from datetime import date as _date
@@ -2452,20 +2453,39 @@ class Orchestrator:
         earnings_str, days_offset, earnings_desc = self._estimate_earnings_date(today)
         days_to_earnings = max(days_offset, 0)
 
+        # ── 外部系統性風險判讀（macro_risk.py）──
+        # 區分「台積電自身基本面 / 籌碼變化」與「跨市場連動、槓桿商品斷鏈
+        # 所驅動的外部系統性風險」。此判讀決定 ch7/ch8 是否標註「此次下跌
+        # 主因為外部系統性風險，非台積電基本面轉弱」。
+        try:
+            analysis_day = _date.fromisoformat(analysis_date)
+        except Exception:
+            analysis_day = today
+        try:
+            earnings_date = _date.fromisoformat(earnings_str) if earnings_str not in ("未知", "", None) else None
+        except Exception:
+            earnings_date = None
+
+        macro_signal = macro_risk.assess_macro_risk(price_df=price_df, as_of=analysis_day)
+        is_systemic_risk = bool(macro_signal.is_red)
+        is_systemic_event_day = bool(macro_risk.is_systemic_event_day(price_df, analysis_day))
+        days_since_earn = macro_risk.days_since_earnings(earnings_date, as_of=today) if earnings_date else 0
+
         # ── 報告各節 ──────────────────────────────────────────────────
         sections = []
         present_chapters = set()
         CHAPTERS = [
             ("ch1", "一、總覽儀表板"),
             ("ch2", "二、財務面分析"),
-            ("ch3", "三、技術面分析"),
-            ("ch4", "四、籌碼面分析"),
-            ("ch5", "五、宏觀與 ADR 分析"),
-            ("ch6", "六、機構法人 13F 持倉追蹤"),
-            ("ch7", "七、產業深度解讀"),
-            ("ch8", "八、估值定位"),
-            ("ch9", "九、風險管理與操作建議"),
-            ("ch10", "十、分析師整合結論"),
+            ("ch3", "三、基本面分析（大廠基本面 / CAPEX）"),
+            ("ch4", "四、技術面分析"),
+            ("ch5", "五、籌碼面分析"),
+            ("ch6", "六、估值定位"),
+            ("ch7", "七、風險管理與操作建議"),
+            ("ch8", "八、分析師整合結論"),
+            ("ch9", "九、宏觀與 ADR 分析（參考資料）"),
+            ("ch10", "十、機構法人 13F 持倉追蹤（參考資料）"),
+            ("ch11", "十一、產業深度解讀（參考資料）"),
         ]
 
         # ═══ 標題 ═══
@@ -2479,19 +2499,37 @@ class Orchestrator:
         )
 
         # ═══ 一、總覽儀表板 ═══
+        # 各面向分數（優先取 SignalEngine 結果，確保與綜合得分一致）
+        fin_s   = result.financial_score if result else fin_score
+        bt_s    = result.bigtech_score if result else bigtech_score
+        tech_s  = result.tech_score if result else tech_score_val
+        chip_s  = result.chip_score if result else chip_score
+
+        # 燈號分組：基本面 = 財務面 + 大廠基本面；技術籌碼 = 技術面 + 籌碼面
+        # 合併分數依各面向原有權重加權平均，與綜合得分邏輯一致。
+        fin_w, bt_w   = w.financial, w.bigtech
+        tech_w, chip_w = w.tech, w.chip
+
+        def _combine(s1, w1, s2, w2):
+            tot = w1 + w2
+            if tot <= 0:
+                return (s1 + s2) / 2
+            return (s1 * w1 + s2 * w2) / tot
+
+        fundamental_score = _combine(fin_s, fin_w, bt_s, bt_w)
+        techchip_score    = _combine(tech_s, tech_w, chip_s, chip_w)
+
+        fund_emoji     = score_to_alert(fundamental_score)[2]
+        techchip_emoji = score_to_alert(techchip_score)[2]
+
         score_rows = [
-            ["財務面", "100", f"{w.financial*100:.0f}%", f"{fin_score * w.financial:.1f}"],
-            ["大廠基本面", "100", f"{w.bigtech*100:.0f}%", f"{bigtech_score * w.bigtech:.1f}"],
-            ["技術面", "100", f"{w.tech*100:.0f}%", f"{tech_score_val * w.tech:.1f}"],
-            ["籌碼面", "100", f"{w.chip*100:.0f}%", f"{chip_score * w.chip:.1f}"],
-            ["市場情緒", "100", f"{w.market_sentiment*100:.0f}%", f"{ms_score * w.market_sentiment:.1f}"],
-            ["**合計**", "—", "100%", f"**{comprehensive_score:.1f}**"],
+            [f"基本面（財務 + 大廠）", "100", f"{(fin_w+bt_w)*100:.0f}%", f"{fundamental_score:.1f}", fund_emoji],
+            [f"技術籌碼（技術 + 籌碼）", "100", f"{(tech_w+chip_w)*100:.0f}%", f"{techchip_score:.1f}", techchip_emoji],
+            ["**合計**", "—", "100%", f"**{comprehensive_score:.1f}**", alert_emoji],
         ]
 
         # 主要警示
         warnings = []
-        if market_sentiment_red:
-            warnings.append("🔴 **量能連三降**：個股與大盤成交金額同步萎縮，短期資金動能轉弱")
         if pe_ratio > 31:
             warnings.append(f"🟡 **本益比偏高**：TTM P/E {pe_ratio:.1f} 倍，處於歷史 70–80 百分位，估值擴張空間有限")
         if chip_flags.get("extreme_sell") or chip_flags.get("big_foreign_sell"):
@@ -2505,7 +2543,7 @@ class Orchestrator:
             "---\n\n"
             "<a id=\"ch1\"></a>\n\n## 一、總覽儀表板\n\n"
             f"### {alert_emoji} 綜合健康得分：{comprehensive_score:.1f} / 100（{alert_label}）\n\n"
-            + _md_table(["面向", "滿分", "權重", "得分"], score_rows)
+            + _md_table(["面向", "滿分", "權重", "得分", "燈號"], score_rows)
             + "\n\n"
             + "### ⚠️ 主要警示\n\n"
             + (warn_block if warn_block else "- 無重大警示")
@@ -2583,7 +2621,16 @@ class Orchestrator:
             + eps_decomp
         )
 
-        # ═══ 三、技術面分析 ═══
+        # ═══ 三、基本面分析（大廠基本面 / CAPEX）═══
+        sections.append(
+            "---\n\n"
+            "<a id=\"ch3\"></a>\n\n## 三、基本面分析（大廠基本面 / CAPEX）\n\n"
+            "**資料來源：** 各大廠（MSFT / META / GOOGL / AMZN）資本支出趨勢、"
+            "NVIDIA 財報營收 YoY（FinMind / SEC 10-K / 財報披露）\n\n"
+            + _demote_headings(bigtech_report)
+        )
+
+        # ═══ 四、技術面分析 ═══
         # 技術指標摘要
         tech_zone = tech_flags.get("position_zone", "未知")
         tech_zone_score = tech_flags.get("position_zone_score", 50)
@@ -2621,7 +2668,7 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "<a id=\"ch3\"></a>\n\n## 三、技術面分析\n\n"
+            "<a id=\"ch4\"></a>\n\n## 四、技術面分析\n\n"
             "**資料來源：** TWSE 每日收盤行情（STOCK_DAY）、大盤統計（FMTQIK）\n\n"
             "### 近 10 個交易日成交金額（單位：元）\n\n"
             + vol_table_block + "\n\n"
@@ -2640,7 +2687,7 @@ class Orchestrator:
             + _demote_headings(tech_report)
         )
 
-        # ═══ 四、籌碼面分析 ═══
+        # ═══ 五、籌碼面分析 ═══
         # 從 chip_report 解析三大法人數據
         foreign_5d_match = _re.search(r"外資 5 日累計: 賣超 ([\d,]+) 張", chip_report)
         foreign_5d_val = foreign_5d_match.group(1) if foreign_5d_match else "N/A"
@@ -2658,7 +2705,7 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "<a id=\"ch4\"></a>\n\n## 四、籌碼面分析\n\n"
+            "<a id=\"ch5\"></a>\n\n## 五、籌碼面分析\n\n"
             "**資料來源：** FinMind 三大法人買賣超資料集（TaiwanStockInstitutionalInvestorsBuySell）\n\n"
             "### 三大法人近況\n\n"
             + _md_table(["法人", "方向", "張數", "備註"], [
@@ -2673,50 +2720,10 @@ class Orchestrator:
             + _demote_headings(chip_report)
         )
 
-        # ═══ 五、宏觀與 ADR 分析 ═══
-        # 從 macro_report 解析 ADR 數據
-        adr_premium = _re.search(r"溢價 ([\d.]+%)", macro_report)
-        adr_premium_val = adr_premium.group(1) if adr_premium else "N/A"
-        adr_price = _re.search(r"ADR折算價: ([\d.]+)", macro_report)
-        adr_price_val = adr_price.group(1) if adr_price else "N/A"
-        fx_ref = _re.search(r"匯率參考: ([\d.]+)", macro_report)
-        fx_ref_val = fx_ref.group(1) if fx_ref else "N/A"
-
+        # ═══ 六、估值定位 ═══
         sections.append(
             "---\n\n"
-            "<a id=\"ch5\"></a>\n\n## 五、宏觀與 ADR 分析\n\n"
-            "**資料來源：** Yahoo Finance（TSM ADR、TWD=X）\n\n"
-            + _md_table(["項目", "數值"], [
-                ["台股現價", price_str],
-                ["ADR 折算價", f"NT${adr_price_val}" if adr_price_val != "N/A" else "N/A"],
-                ["ADR 溢價", f"**{adr_premium_val}**" if adr_premium_val != "N/A" else "N/A"],
-                ["匯率參考", f"{fx_ref_val} USD/TWD" if fx_ref_val != "N/A" else "N/A"],
-            ])
-            + "\n\n"
-            + _demote_headings(macro_report)
-        )
-
-        # ═══ 六、機構法人 13F 持倉追蹤 ═══
-        if tracker_report:
-            sections.append(
-                "---\n\n"
-                "<a id=\"ch6\"></a>\n\n## 六、機構法人 13F 持倉追蹤\n\n"
-                "**資料來源：** SEC EDGAR Form 13F-HR（infotable.xml）\n\n"
-                + _demote_headings(tracker_report)
-            )
-
-        # ═══ 七、產業深度解讀 ═══
-        if industry_analysis_md:
-            # 將舊的 ## 📊 五、產業分析框架 改為 ## 七、產業深度解讀
-            ia_clean = industry_analysis_md.replace(
-                "## 📊 五、產業分析框架與深度解讀", "<a id=\"ch7\"></a>\n\n## 七、產業深度解讀"
-            )
-            sections.append("---\n\n" + ia_clean)
-
-        # ═══ 八、估值定位 ═══
-        sections.append(
-            "---\n\n"
-            "<a id=\"ch8\"></a>\n\n## 八、估值定位\n\n"
+            "<a id=\"ch6\"></a>\n\n## 六、估值定位\n\n"
             + _md_table(["指標", "數值", "解讀"], [
                 ["當前 P/E（TTM）", f"**{pe_str} 倍**" if pe_ratio > 0 else "N/A",
                  "歷史 70–80 百分位" if pe_ratio > 0 else "N/A"],
@@ -2730,52 +2737,117 @@ class Orchestrator:
                if pe_ratio > 0 else "> 估值資料不足")
         )
 
-        # ═══ 九、風險管理與操作建議 ═══
+        # ═══ 七、風險管理與操作建議 ═══
         support_level = int(tw_price * 0.85) if tw_price > 0 else 0
         resist_level = int(tw_price * 1.08) if tw_price > 0 else 0
 
+        # ── 外部系統性風險標註（區分基本面 vs. 外部連動）──
+        if is_systemic_risk:
+            systemic_banner = (
+                "\n> 🔴 **外部系統性風險警示（紅燈）：** 當前價格波動主要反映外部風險"
+                f"（{macro_signal.reason}），非台積電法說會內容或基本面轉弱所致。"
+                "操作建議以「風險控管、避免追殺」為主，待跨市場連動 / 槓桿斷鏈平息後再評估回補。\n"
+            )
+        else:
+            systemic_banner = ""
+
+        # ── 操作時間框架表（移除過期的「法說會前」敘事，改為動態「法說會後 N 個交易日」）──
+        if earnings_date and days_since_earn > 0:
+            post_earnings_row = [
+                f"法說會後 {days_since_earn} 個交易日",
+                "依指引方向操作",
+                f"上修 → 回補；下修 → 減碼（法說會 {earnings_str} 已召開）",
+            ]
+        else:
+            post_earnings_row = ["法說會後", "依指引方向操作", "上修 → 回補；下修 → 減碼"]
+
+        op_rows = [
+            post_earnings_row,
+            ["中期", "拉回至支撐區分批佈局", "AI 結構性成長邏輯不變"],
+            ["止損", "跌破 20MA 減碼 30–50%", "短期趨勢轉弱確認"],
+        ]
+
+        # ── 關鍵價位表（新增「此價位形成原因」欄，區分正常修正 vs. 外部系統性事件）──
+        if is_systemic_event_day:
+            current_cause = f"此為 {analysis_date} 外部風險事件後價格，非台積電獨立基本面定價結果"
+        else:
+            current_cause = "正常估值修正 / 技術性回檔"
+        price_rows = [
+            [f"{price_str}（現價）", "當前位置", current_cause, "不追高，觀察"],
+            [f"{resist_level}（+8%）" if resist_level > 0 else "N/A", "前高壓力區", "技術壓力位", "突破則確認多頭延續"],
+            ["跌破 20MA", "短期趨勢轉弱", "技術轉弱訊號", "減碼 30–50%"],
+            [f"{support_level}（-15%）" if support_level > 0 else "N/A", "近 60 日支撐區", "技術支撐位", "可分批佈局"],
+        ]
+
+        # ── 反轉觸發條件（重校準：月營收 YoY 改用動態標準差；外資賣超需經 macro_risk 判因）──
+        yoy_trigger = self._revenue_yoy_dynamic_trigger(revenue_by_date)
+        # 外資賣超成因分類：若為系統性事件日驅動，標註「系統性風險驅動」且不計入轉空判讀
+        foreign_sell_shares = 0.0
+        recent_net = chip_flags.get("foreign_net_sell_shares", 0.0) or 0.0
+        if recent_net < 0:
+            foreign_sell_shares = abs(recent_net)
+        sell_class = macro_risk.classify_sell_pressure(
+            foreign_sell_shares, analysis_day, is_systemic=is_systemic_event_day
+        )
+        if foreign_sell_shares > 0 and sell_class["driven_by"] == "systemic":
+            sell_trigger_txt = "外資賣超經判讀為「系統性風險驅動」（外部連動 / 槓桿斷鏈），不計入轉空判讀"
+        else:
+            sell_trigger_txt = "外資 5 日累計賣超 > 5 萬張"
+        turn_bearish_cond = f"{sell_trigger_txt} + 週線 MACD 死亡交叉 + {yoy_trigger}"
+
         sections.append(
             "---\n\n"
-            "<a id=\"ch9\"></a>\n\n## 九、風險管理與操作建議\n\n"
-            "### 操作時間框架\n\n"
-            + _md_table(["時間框架", "建議", "核心邏輯"], [
-                [f"法說會前（{days_to_earnings} 天內）", "不追高、不追空", "等待法說會內容確認方向"],
-                ["法說會後", "依指引方向操作", "上修 → 回補；下修 → 減碼"],
-                ["中期", "拉回至支撐區分批佈局", "AI 結構性成長邏輯不變"],
-                ["止損", "跌破 20MA 減碼 30–50%", "短期趨勢轉弱確認"],
-            ])
+            "<a id=\"ch7\"></a>\n\n## 七、風險管理與操作建議\n\n"
+            + systemic_banner
+            + "### 操作時間框架\n\n"
+            + _md_table(["時間框架", "建議", "核心邏輯"], op_rows)
             + "\n\n"
             "### 關鍵價位參考\n\n"
-            + _md_table(["價位", "意義", "操作建議"], [
-                [f"{price_str}（現價）", "當前位置", "不追高，觀察"],
-                [f"{resist_level}（+8%）" if resist_level > 0 else "N/A", "前高壓力區", "突破則確認多頭延續"],
-                ["跌破 20MA", "短期趨勢轉弱", "減碼 30–50%"],
-                [f"{support_level}（-15%）" if support_level > 0 else "N/A", "近 60 日支撐區", "可分批佈局"],
-            ])
+            + _md_table(["價位", "意義", "此價位形成原因", "操作建議"], price_rows)
             + "\n\n"
             "### 結論反轉觸發條件\n\n"
             + _md_table(["情境", "觸發條件", "操作建議"], [
                 ["**轉多**", "外資連續 3 日淨買入 + 收盤站穩 20MA + 量能回升至 5 日均量以上", "建立 30% 基本部位"],
-                ["**轉空**", "外資累計賣超 > 5 萬張 + 週線 MACD 死亡交叉 + 月營收 YoY < 10%", "全面減碼至 10% 以下"],
+                ["**轉空**", turn_bearish_cond, "全面減碼至 10% 以下"],
                 ["**維持觀望**", "以上條件均未觸發", "持有現金，等待方向明確"],
             ])
             + "\n\n"
             + f"> **校準說明：** 5 萬張約佔台積電流通股（~259 億股）的 0.19%。"
             f"對照 2022 年修正期外資單月最大賣超 80 萬張、2024 年 AI 拉回期約 30–40 萬張，"
             f"5 萬張為「持續性賣超」而非「單日異常」的門檻，需搭配週線 MACD 死亡交叉確認趨勢。"
+            + (f"\n> **外資賣超判因：** {sell_class['note']}" if foreign_sell_shares > 0 else "")
         )
 
-        # ═══ 十、分析師整合結論 ═══
+        # ═══ 八、分析師整合結論 ═══
+        # 核心矛盾：不得逕自斷言「外資在高檔系統性出貨」。若 macro_risk 判讀為
+        # 外部系統性風險（紅燈），則明確標註此次下跌主因為外部風險；否則以外資
+        # 賣超「原因待確認」措辭，並建議搭配 macro_risk.py 燈號判讀。
+        if is_systemic_risk:
+            foreign_note = (
+                "但當前股價重挫主因為外部系統性風險（跨市場連動 / 槓桿商品斷鏈），"
+                "非台積電基本面轉弱；外資賣超原因待確認，可能為基本面轉弱或外部連動效應，"
+                "建議搭配 macro_risk.py 燈號判讀"
+            )
+        elif foreign_sell_shares > 0:
+            foreign_note = (
+                "且外資近期呈淨賣超（籌碼結構轉弱）；外資賣超原因待確認，"
+                "可能為基本面轉弱或外部連動效應，建議搭配 macro_risk.py 燈號判讀"
+            )
+        else:
+            foreign_note = "技術面價量關係反映短期資金動向，需與籌碼面交叉驗證"
+
+        contradiction = (
+            f"> **台積電當前的核心矛盾是：AI 結構性成長邏輯完整，{foreign_note}。**\n\n"
+        )
+
         sections.append(
             "---\n\n"
-            "<a id=\"ch10\"></a>\n\n## 十、分析師整合結論\n\n"
+            "<a id=\"ch8\"></a>\n\n## 八、分析師整合結論\n\n"
             "### 核心矛盾\n\n"
-            "> **台積電當前的核心矛盾是：AI 結構性成長邏輯完整，但外資在高檔系統性出貨，"
-            "市場在等待一個催化劑（法說會上修展望或 N2 量產確認）來打破這個僵局。**\n\n"
-            "- 技術面多頭排列反映的是**慣性，而非新的買入訊號**\n"
-            "- 外資 5 日累計大幅賣超，**籌碼結構正在惡化**\n"
+            + contradiction
+            + "- 技術面多頭排列反映的是**慣性，而非新的買入訊號**\n"
             + (f"- P/E {pe_ratio:.1f} 倍已反映多數利多，**估值擴張空間有限**\n" if pe_ratio > 0 else "")
-            + (f"- 市場等待 **{earnings_str} 法說會**作為打破僵局的催化劑\n" if days_to_earnings > 0 and days_to_earnings <= 45 else "")
+            + (f"- 法說會 **{earnings_str}** 已召開，方向由法說會指引與後續營收驗證主導\n" if earnings_date else "")
             + "\n"
             "### 各維度因果鏈\n\n"
             "```text\n"
@@ -2791,16 +2863,62 @@ class Orchestrator:
             "        ↓\n"
             "技術面價量關係 → 散戶 vs. 法人博弈\n"
             "        ↓\n"
+            "外部系統性風險（跨市場連動、槓桿商品斷鏈）\n"
+            "        ↓  （與台積電自身基本面無關，但可能短期主導股價波動方向）\n"
             "ADR 溢價（需過濾匯率因子）\n"
             "```"
         )
 
-        # ── 報告目錄（TOC）────────────────────────────────────────────
-        present_chapters.update({"ch1", "ch2", "ch3", "ch4", "ch5", "ch8", "ch9", "ch10"})
+        # ═══ 九、宏觀與 ADR 分析（參考資料）═══
+        # 從 macro_report 解析 ADR 數據
+        adr_premium = _re.search(r"溢價 ([\d.]+%)", macro_report)
+        adr_premium_val = adr_premium.group(1) if adr_premium else "N/A"
+        adr_price = _re.search(r"ADR折算價: ([\d.]+)", macro_report)
+        adr_price_val = adr_price.group(1) if adr_price else "N/A"
+        fx_ref = _re.search(r"匯率參考: ([\d.]+)", macro_report)
+        fx_ref_val = fx_ref.group(1) if fx_ref else "N/A"
+
+        sections.append(
+            "---\n\n"
+            "<a id=\"ch9\"></a>\n\n## 九、宏觀與 ADR 分析（參考資料）\n\n"
+            "**資料來源：** Yahoo Finance（TSM ADR、TWD=X）\n\n"
+            + _md_table(["項目", "數值"], [
+                ["台股現價", price_str],
+                ["ADR 折算價", f"NT${adr_price_val}" if adr_price_val != "N/A" else "N/A"],
+                ["ADR 溢價", f"**{adr_premium_val}**" if adr_premium_val != "N/A" else "N/A"],
+                ["匯率參考", f"{fx_ref_val} USD/TWD" if fx_ref_val != "N/A" else "N/A"],
+            ])
+            + "\n\n"
+            + _demote_headings(macro_report)
+        )
+
+        # ═══ 十、機構法人 13F 持倉追蹤（參考資料）═══
         if tracker_report:
-            present_chapters.add("ch6")
+            sections.append(
+                "---\n\n"
+                "<a id=\"ch10\"></a>\n\n## 十、機構法人 13F 持倉追蹤（參考資料）\n\n"
+                "**資料來源：** SEC EDGAR Form 13F-HR（infotable.xml）\n\n"
+                + _demote_headings(tracker_report)
+            )
+
+        # ═══ 十一、產業深度解讀（參考資料）═══
         if industry_analysis_md:
-            present_chapters.add("ch7")
+            # 將舊的 ## 📊 五、產業分析框架 改為 ## 十一、產業深度解讀（參考資料）
+            ia_clean = industry_analysis_md.replace(
+                "## 📊 五、產業分析框架與深度解讀",
+                "<a id=\"ch11\"></a>\n\n## 十一、產業深度解讀（參考資料）"
+            )
+            sections.append("---\n\n" + ia_clean)
+
+        # ── 報告目錄（TOC）────────────────────────────────────────────
+        # 核心章節固定出現；追蹤（ch10）與產業（ch11）為條件式參考資料。
+        present_chapters.update(
+            {"ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8", "ch9"}
+        )
+        if tracker_report:
+            present_chapters.add("ch10")
+        if industry_analysis_md:
+            present_chapters.add("ch11")
         toc_lines = ["## 📑 報告目錄\n"]
         for _anchor, _label in CHAPTERS:
             if _anchor in present_chapters:
