@@ -2392,7 +2392,7 @@ class Orchestrator:
             narrative_parts.append(f"市場正在等待 {earnings_str} 法說會作為打破僵局的催化劑")
 
         # 估值描述
-        if pe_ratio > 30:
+        if pe_ratio > CONFIG.chip.high_sellout_pe_threshold:
             narrative_parts.append(f"P/E {pe_ratio:.1f} 倍已反映多數利多，估值擴張空間有限")
 
         if narrative_parts:
@@ -2667,7 +2667,7 @@ class Orchestrator:
         chip_high_sellout = False
         foreign_2m_sell = float(chip_flags.get("foreign_2m_net_shares", 0.0) or 0.0)
         sellout_threshold = CONFIG.chip.two_month_high_sellout_pct * CONFIG.chip.tsmc_float_shares
-        if pe_ratio > 30 and foreign_2m_sell < -sellout_threshold:
+        if pe_ratio > CONFIG.chip.high_sellout_pe_threshold and foreign_2m_sell < -sellout_threshold:
             chip_level, chip_label, chip_emoji = "red", "紅燈", "🔴"
             chip_high_sellout = True
 
@@ -2873,14 +2873,14 @@ class Orchestrator:
             f2m_lots = abs(f2m) / 1000
             f2m_pct = abs(f2m) / CONFIG.chip.tsmc_float_shares * 100
             f2m_thr = CONFIG.chip.two_month_high_sellout_pct * CONFIG.chip.tsmc_float_shares
-            f2m_trig = (pe_ratio > 30 and f2m < -f2m_thr)
+            f2m_trig = (pe_ratio > CONFIG.chip.high_sellout_pe_threshold and f2m < -f2m_thr)
             two_month_block = (
                 "\n\n### 外資近兩個月累計買賣超（高檔出貨監測）\n\n"
                 + _md_table(["指標", "數值"], [
                     ["監測區間", f"{f2m_start} ~ {f2m_end}"],
                     ["累計淨買賣", f"{f2m_dir} {f2m_lots:,.0f} 張"],
                     ["佔流通股比例", f"{f2m_pct:.2f}%"],
-                    ["紅燈門檻", f"淨賣超 > {f2m_thr/1000:,.0f} 張（{CONFIG.chip.two_month_high_sellout_pct*100:.2f}%）且 P/E > 30"],
+                    ["紅燈門檻", f"淨賣超 > {f2m_thr/1000:,.0f} 張（{CONFIG.chip.two_month_high_sellout_pct*100:.2f}%）且 P/E > {CONFIG.chip.high_sellout_pe_threshold:.0f}"],
                     ["高檔出貨紅燈", "🔴 觸發" if f2m_trig else "未觸發"],
                 ])
             )

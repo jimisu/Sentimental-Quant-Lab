@@ -49,6 +49,7 @@ from dotenv import load_dotenv
 
 import historical_crash_days as hcd
 from config import CONFIG
+from sal.providers import get_finmind
 from signal_engine import (
     BigTechSignals,
     ChipSignals,
@@ -240,6 +241,47 @@ def build_tech_df(slice_df: pd.DataFrame, twii: Dict[dt.date, float]) -> pd.Data
 
 
 # ──────────────────────────────────────────────
+# 歷史本益比（用於回測各 as-of 的 P/E）
+# ──────────────────────────────────────────────
+def load_quarterly_eps(use_cache: bool = True) -> Dict[dt.date, float]:
+    """回傳 {季度末日: 基本EPS}，取自 FinMind TaiwanStockFinancialStatements。
+
+    拉取較寬區間（2023-01-01 起）以涵蓋較早 as-of 當時可得的前四季 EPS。
+    """
+    fm = get_finmind()
+    raw = fm._fetch(
+        "TaiwanStockFinancialStatements", "2330",
+        "2023-01-01", dt.date.today().isoformat(),
+        cache_key="finmind_TaiwanStockFinancialStatements_2330_wide_backtest",
+        cache_hours=168,
+    )
+    qend_eps: Dict[dt.date, float] = {}
+    for r in raw:
+        d = r.get("date", "")
+        if not d or r.get("type") != "EPS":
+            continue
+        try:
+            v = float(r.get("value")) if r.get("value") is not None else None
+            qend = dt.date.fromisoformat(d)
+        except (ValueError, TypeError):
+            continue
+        if v is not None:
+            qend_eps[qend] = v
+    return qend_eps
+
+
+def compute_pe_ratio(as_of: dt.date, close: float,
+                     qend_eps: Dict[dt.date, float]) -> Optional[float]:
+    """本益比 = 收盤價 / 過去四季 EPS 加總（取的四季為 as-of 當時已公告、最近者）。"""
+    usable = sorted(d for d in qend_eps if d <= as_of)
+    trailing = usable[-4:] if len(usable) >= 4 else usable
+    ttm_eps = sum(qend_eps[d] for d in trailing)
+    if ttm_eps > 0:
+        return close / ttm_eps
+    return None
+
+
+# ──────────────────────────────────────────────
 # 回測主流程
 # ──────────────────────────────────────────────
 def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
@@ -259,6 +301,8 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
     print(f"[*] 抓取 FinMind 外資持股 (2330) ...")
     shareholding = fetch_finmind_shareholding("2330", start, today, use_cache)
     shareholding.sort(key=lambda x: x["date"])
+    print(f"[*] 抓取 FinMind 財務報表 (2330) 用於歷史本益比 ...")
+    qend_eps = load_quarterly_eps(use_cache)
 
     price_dates = [ts.date() for ts in ohlcv.index]
     engine = SignalEngine()
@@ -292,6 +336,9 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
             tech_slice = ohlcv[ohlcv.index <= pd.Timestamp(as_of)]
             df = build_tech_df(tech_slice, twii)
             _, tech_flags, tech_scores, _ = tech_agent.analyze_sentiment(df)
+            # 歷史本益比（收盤價 / 過去四季 EPS）
+            close = float(tech_slice.iloc[-1]["close"])
+            pe_ratio = compute_pe_ratio(as_of, close, qend_eps)
             # 籌碼面
             as_of_str = as_of.isoformat()
             chip_data = [r for r in inst_rows if r["date"] <= as_of_str]
@@ -308,6 +355,11 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
                 if r["name"] == "Foreign_Investor" and cutoff <= r["date"] <= as_of_str
             )
             foreign_2m_lots = net_2m_shares / 1000.0
+            # 外資高檔出貨強制紅燈：P/E > 門檻 且 兩月淨賣超超門檻
+            sellout_threshold = CONFIG.chip.two_month_high_sellout_pct * CONFIG.chip.tsmc_float_shares
+            forced_red = (pe_ratio is not None
+                          and pe_ratio > CONFIG.chip.high_sellout_pe_threshold
+                          and net_2m_shares < -sellout_threshold)
             hold = next((sh for sh in reversed(shareholding) if sh["date"] <= as_of_str), None)
             if hold and hold["foreign_shares"] > 0:
                 foreign_holdings_lots = hold["foreign_shares"] / 1000.0
@@ -339,6 +391,9 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
                 "foreign_holdings_lots": foreign_holdings_lots,
                 "pct_of_foreign_holdings": pct_of_foreign_holdings,
                 "pct_of_total_shares": pct_of_total_shares,
+                "pe_ratio": pe_ratio,
+                "pe_threshold": CONFIG.chip.high_sellout_pe_threshold,
+                "forced_red": forced_red,
                 "reversal_basic": res.reversal_signal,
                 "reversal_advanced": res.reversal_advanced,
                 "ma20_cross": tech_flags.get("ma20_cross_below", False),
@@ -365,10 +420,12 @@ def to_markdown(results: List[dict]) -> str:
     lines = []
     lines.append("# 崩盤日前一日 綜合燈號 / 籌碼面燈號 回測")
     lines.append("")
-    lines.append("範圍：七個崩盤日的前一個交易日（as-of）。財務/大廠以最新代表值(=100)代入。")
+    lines.append("範圍：七個崩盤日的前一個交易日（as-of）。財務/大廠以最新代表值(=100)代入；")
+    lines.append(f"本益比為各 as-of 當時真實收盤價 / 過去四季 EPS。強制紅燈條件：P/E > {CONFIG.chip.high_sellout_pe_threshold:.0f} "
+                 f"且外資兩月淨賣超 > {CONFIG.chip.two_month_high_sellout_pct*100:.0f}% 流通股（{CONFIG.chip.two_month_high_sellout_pct*CONFIG.chip.tsmc_float_shares/1000:,.0f} 張）。")
     lines.append("")
-    lines.append("| 崩盤日 | as-of(前一日) | 次日跌幅 | 綜合燈號 | 綜合分 | 籌碼面燈號 | 籌碼分 | 技術(早/短/中/長) | 外資5日(張) | 賣超比 | 連續賣超 | 外資2月(張) | 佔外資持股% | 佔總股% | 轉折 | 警示 |")
-    lines.append("|------|------|------:|------|------:|------|------:|------|------:|------:|------:|------:|------:|------:|------|------|")
+    lines.append("| 崩盤日 | as-of(前一日) | 次日跌幅 | 綜合燈號 | 綜合分 | 籌碼面燈號 | 籌碼分 | 技術(早/短/中/長) | 外資5日(張) | 賣超比 | 連續賣超 | 外資2月(張) | 佔外資持股% | 佔總股% | 本益比 | 強制紅燈? | 轉折 | 警示 |")
+    lines.append("|------|------|------:|------|------:|------|------:|------|------:|------:|------:|------:|------:|------:|------:|------|------|------|")
     for r in results:
         if r.get("error"):
             lines.append(f"| {r['crash_date']} | {r['as_of']} | {r['crash_ret']:+.2f}% | "
@@ -379,12 +436,15 @@ def to_markdown(results: List[dict]) -> str:
         warn = "⚠️" if r["warned"] else "—"
         pct_f = f"{r['pct_of_foreign_holdings']:+.2f}%" if r["pct_of_foreign_holdings"] is not None else "資料缺漏"
         pct_t = f"{r['pct_of_total_shares']:+.2f}%" if r["pct_of_total_shares"] is not None else "資料缺漏"
+        pe_s = f"{r['pe_ratio']:.1f}" if r.get("pe_ratio") is not None else "資料缺漏"
+        fred = "🔴強制" if r.get("forced_red") else "-"
         lines.append(
             f"| {r['crash_date']} | {r['as_of']} | {r['crash_ret']:+.2f}% | "
             f"{r['composite_emoji']}{r['composite_label']} | {r['composite_score']:.1f} | "
             f"{r['chip_emoji']}{r['chip_label']} | {r['chip_score']:.0f} | "
             f"{tech} | {r['foreign_5d_lots']:+,.0f} | {r['sell_ratio']:.0f}% | "
-            f"{r['max_consecutive_sell']}日 | {r['foreign_2m_lots']:+,.0f} | {pct_f} | {pct_t} | {rev} | {warn} |"
+            f"{r['max_consecutive_sell']}日 | {r['foreign_2m_lots']:+,.0f} | {pct_f} | {pct_t} | "
+            f"{pe_s} | {fred} | {rev} | {warn} |"
         )
     # 小計
     n = len([r for r in results if not r.get("error")])
@@ -401,14 +461,14 @@ def to_csv(results: List[dict], path: str) -> None:
         w.writerow(["崩盤日", "as_of前一日", "次日跌幅%", "綜合燈號", "綜合分",
                     "籌碼面燈號", "籌碼分", "技術早", "技術短", "技術中", "技術長",
                     "外資5日淨張", "賣超比%", "連續賣超日", "外資2月淨張",
-                    "外資總持股張", "佔外資持股%", "佔總股%",
+                    "外資總持股張", "佔外資持股%", "佔總股%", "本益比", "PE門檻", "強制紅燈",
                     "轉折基礎", "轉折進階", "ma20破", "月線破MA12", "布林壓縮破",
                     "警示", "錯誤"])
         for r in results:
             if r.get("error"):
                 w.writerow([r["crash_date"], r["as_of"], f"{r['crash_ret']:.2f}",
                             "ERROR", "", "", "", "", "", "", "", "", "", "", "",
-                            "", "", "",
+                            "", "", "", "", "", "", "",
                             "", "", "", "", "", r["error"]])
                 continue
             w.writerow([
@@ -421,6 +481,8 @@ def to_csv(results: List[dict], path: str) -> None:
                 f"{(r['foreign_holdings_lots'] or 0):.0f}",
                 f"{(r['pct_of_foreign_holdings'] or 0):.2f}",
                 f"{(r['pct_of_total_shares'] or 0):.2f}",
+                f"{r['pe_ratio']:.1f}" if r.get("pe_ratio") is not None else "",
+                f"{r['pe_threshold']:.0f}", r["forced_red"],
                 r["reversal_basic"], r["reversal_advanced"],
                 r["ma20_cross"], r["monthly_break"], r["bb_squeeze_break"],
                 r["warned"], "",

@@ -121,6 +121,7 @@ class ChipAlertConfig:
     tsmc_float_shares:          int   = 25_900_000_000  # 台積電流通股約 259 億股
     two_month_high_sellout_pct: float = 0.01  # 紅燈門檻：兩月淨賣超佔流通股比例
     two_month_window_days:      int   = 60     # 兩個月監測視窗（自然日）
+    high_sellout_pe_threshold:  float = 25.0  # 強制紅燈 PE 門檻：P/E 高於此值且兩月淨賣超超門檻時籌碼面強制紅燈
 
 
 @dataclass
