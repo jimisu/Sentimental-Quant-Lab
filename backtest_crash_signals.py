@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import glob
+import json
 import sys
 import time
 from typing import Dict, List, Optional, Tuple
@@ -284,6 +286,160 @@ def compute_pe_ratio(as_of: dt.date, close: float,
 # ──────────────────────────────────────────────
 # 回測主流程
 # ──────────────────────────────────────────────
+def load_quarterly_financials(use_cache: bool = True) -> Dict[dt.date, dict]:
+    """回傳 {季末日: {Revenue, GrossProfit, OperatingIncome, IncomeAfterTaxes, EPS}}，
+    取自 FinMind TaiwanStockFinancialStatements（2330）。用於各 as-of 當時真實財務三率。
+    """
+    fm = get_finmind()
+    raw = fm._fetch(
+        "TaiwanStockFinancialStatements", "2330",
+        "2023-01-01", dt.date.today().isoformat(),
+        cache_key="finmind_TaiwanStockFinancialStatements_2330_wide_backtest",
+        cache_hours=168,
+    )
+    qfin: Dict[dt.date, dict] = {}
+    for r in raw:
+        d = r.get("date", "")
+        t = r.get("type", "")
+        if not d or t not in ("Revenue", "GrossProfit", "OperatingIncome",
+                               "IncomeAfterTaxes", "EPS"):
+            continue
+        try:
+            v = float(r.get("value")) if r.get("value") is not None else None
+            qd = dt.date.fromisoformat(d)
+        except (ValueError, TypeError):
+            continue
+        if v is not None:
+            qfin.setdefault(qd, {})[t] = v
+    return qfin
+
+
+def compute_financial_signals_asof(as_of: dt.date,
+                                   qfin: Dict[dt.date, dict]) -> FinancialSignals:
+    """依 as-of 當時已公告的最新季度財報，建出 FinancialSignals。
+
+    - q0 = 季末日 ≤ as_of 的最近一季；q_prev = 前一季；q_yoy = 去年同期（4 季前）。
+    - 三率 = 各利益 / 營收 ×100；營收 YoY 由季度營收推算（避免月營收快取缺口）。
+    - *_drop = 與前一季毛利率差（轉弱為正）；revenue_yoy_declining / margin_deteriorating 走勢判斷。
+    """
+    dates = sorted(d for d in qfin if d <= as_of)
+    if len(dates) < 2:
+        return FinancialSignals()  # 資料不足 → 全部 None，不扣分
+
+    q0 = qfin[dates[-1]]
+    q_prev = qfin[dates[-2]]
+    q_yoy = qfin[dates[-5]] if len(dates) >= 5 else None
+
+    rev0, gross0 = q0.get("Revenue"), q0.get("GrossProfit")
+    op0, net0 = q0.get("OperatingIncome"), q0.get("IncomeAfterTaxes")
+    rev_prev, gross_prev = q_prev.get("Revenue"), q_prev.get("GrossProfit")
+    op_prev, net_prev = q_prev.get("OperatingIncome"), q_prev.get("IncomeAfterTaxes")
+
+    def margin(num, den):
+        return (num / den * 100) if (num is not None and den) else None
+
+    gross_m = margin(gross0, rev0)
+    op_m = margin(op0, rev0)
+    net_m = margin(net0, rev0)
+    gross_m_prev = margin(gross_prev, rev_prev)
+    op_m_prev = margin(op_prev, rev_prev)
+    net_m_prev = margin(net_prev, rev_prev)
+
+    rev_yoy = None
+    if q_yoy is not None and rev0 and q_yoy.get("Revenue"):
+        rev_yoy = (rev0 - q_yoy["Revenue"]) / q_yoy["Revenue"] * 100
+
+    def drop(cur, prev):
+        return (cur - prev) if (cur is not None and prev is not None) else 0.0
+
+    gross_drop = drop(gross_m, gross_m_prev)
+    op_drop = drop(op_m, op_m_prev)
+    net_drop = drop(net_m, net_m_prev)
+
+    # 營收 YoY 是否連續下滑：比較近 4 季 YoY
+    yoys = []
+    for i in range(4, 0, -1):
+        if len(dates) >= i + 1:
+            cur = qfin[dates[-i]].get("Revenue")
+            yago = qfin[dates[-i - 4]].get("Revenue") if len(dates) >= i + 4 else None
+            if cur and yago:
+                yoys.append((cur - yago) / yago * 100)
+    revenue_yoy_declining = (len(yoys) >= 3
+                                and yoys[-1] < yoys[-2] and yoys[0] > yoys[-1])
+
+    margin_deteriorating = (gross_drop > 0) or (op_drop > 0) or (net_drop > 0)
+
+    return FinancialSignals(
+        latest_revenue_yoy=rev_yoy,
+        latest_gross_margin=gross_m,
+        latest_operating_margin=op_m,
+        latest_net_margin=net_m,
+        gross_drop=gross_drop,
+        op_drop=op_drop,
+        net_drop=net_drop,
+        revenue_yoy_declining=revenue_yoy_declining,
+        margin_deteriorating=margin_deteriorating,
+    )
+
+
+def load_nvda_revenue_points(use_cache: bool = True) -> List[dict]:
+    """從快取 NVDA SEC company facts 解析 Revenue 歷史點（us-gaap, USD）。
+
+    依 (fy, fp) 去重保留最新 end；回傳依 end 排序的點列表。
+    快取僅含靜態 JSON（不強制重抓）；無檔時回傳空串。
+    """
+    import glob as _glob
+    files = glob.glob("local_cache/sec_companyfacts_0001045810_*.json")
+    if not files:
+        return []
+    facts = json.load(open(sorted(files)[-1]))["data"]["facts"]["us-gaap"]
+    # 優先採主營收 tag；但若該 tag 在本快取僅含年度(10-K/FY)點、
+    # 缺乏季度(10-Q)資料，則回退到 Revenues（季度較齊全）。
+    pref = "RevenueFromContractWithCustomerExcludingAssessedTax"
+    has_q = pref in facts and any(
+        p.get("form") == "10-Q" for p in facts[pref]["units"]["USD"]
+    )
+    tag = pref if has_q else "Revenues"
+    usd = facts[tag]["units"]["USD"]
+    best: Dict[Tuple, dict] = {}
+    for p in usd:
+        if p.get("form") not in ("10-Q", "10-K"):
+            continue
+        key = (p.get("fy"), p.get("fp"))
+        end = p.get("end")
+        prev = best.get(key)
+        if prev is None or (end or "") > (prev.get("end") or ""):
+            best[key] = p
+    pts = []
+    for p in best.values():
+        try:
+            end = dt.date.fromisoformat(p["end"])
+            val = float(p["val"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        pts.append({"end": end, "fy": p.get("fy"), "fp": p.get("fp"), "val": val})
+    return sorted(pts, key=lambda x: x["end"])
+
+
+def compute_nvda_revenue_yoy_asof(as_of: dt.date,
+                                   pts: List[dict]) -> Optional[float]:
+    """取 end ≤ as_of 的最新已公告財季，與同 fp 去年同期比 YoY%。"""
+    avail = [p for p in pts if p["end"] <= as_of]
+    if not avail:
+        return None
+    cur = avail[-1]
+    yago = next((p for p in avail
+                 if p["fp"] == cur["fp"] and p["fy"] == (cur["fy"] or 0) - 1), None)
+    if yago is None:  # 回退：取 end 約一年前之點
+        target = cur["end"] - dt.timedelta(days=365)
+        cands = [p for p in avail if abs((p["end"] - target).days) < 60]
+        if cands:
+            yago = min(cands, key=lambda p: abs((p["end"] - target).days))
+    if yago is None or yago["val"] <= 0:
+        return None
+    return (cur["val"] - yago["val"]) / yago["val"] * 100
+
+
 def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
     today = dt.date.today()
     start = today - dt.timedelta(days=fetch_days)
@@ -309,16 +465,9 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
     tech_agent = MarketDynamicsAgent()
     chip_agent = InstitutionalInvestorAgent()
 
-    # 財務 / 大廠：以最新代表值（強勢）代入
-    fin_signals = FinancialSignals(
-        latest_revenue_yoy=40.0, latest_gross_margin=58.0,
-        latest_operating_margin=45.0, latest_net_margin=40.0,
-        gross_drop=0.0, op_drop=0.0, net_drop=0.0,
-        revenue_yoy_declining=False, margin_deteriorating=False,
-    )
-    bigtech_signals = BigTechSignals(
-        capex_growing_count=4, capex_valid_count=4, nvda_revenue_yoy=80.0,
-    )
+    # 財務 / 大廠：以各 as-of 當時真實數據計算（非硬代 100）
+    qfin = load_quarterly_financials(use_cache)
+    nvda_pts = load_nvda_revenue_points(use_cache)
 
     results: List[dict] = []
     for crash_date, crash_ret in CRASH_DATES:
@@ -328,6 +477,14 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
             print(f"  !! {crash_date} 之前無價格資料，跳過")
             continue
         as_of = candidates[-1]
+
+        # 財務面（as-of 當時真實季報）
+        fin_signals = compute_financial_signals_asof(as_of, qfin)
+        # 大廠基本面（as-of 真實 NVDA 營收 YoY；CAPEX 快取過舊，留空不計）
+        nvda_yoy = compute_nvda_revenue_yoy_asof(as_of, nvda_pts)
+        bigtech_signals = BigTechSignals(
+            capex_growing_count=0, capex_valid_count=0, nvda_revenue_yoy=nvda_yoy,
+        )
 
         row: dict = {"crash_date": crash_date, "as_of": as_of, "crash_ret": crash_ret}
 
@@ -397,6 +554,19 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
                 "pe_ratio": pe_ratio,
                 "pe_threshold": CONFIG.chip.high_sellout_pe_threshold,
                 "forced_red": forced_red,
+                # 財務面 as-of 真實值
+                "fin_gross_margin": fin_signals.latest_gross_margin,
+                "fin_op_margin": fin_signals.latest_operating_margin,
+                "fin_net_margin": fin_signals.latest_net_margin,
+                "fin_rev_yoy": fin_signals.latest_revenue_yoy,
+                "fin_rev_declining": fin_signals.revenue_yoy_declining,
+                "fin_margin_deter": fin_signals.margin_deteriorating,
+                "fin_score": res.financial_score,
+                # 大廠基本面 as-of 真實值（NVDA 營收 YoY；CAPEX 留空不計）
+                "bt_nvda_yoy": nvda_yoy,
+                "bt_capex_growing": 0,
+                "bt_capex_valid": 0,
+                "bt_score": res.bigtech_score,
                 "reversal_basic": res.reversal_signal,
                 "reversal_advanced": res.reversal_advanced,
                 "ma20_cross": tech_flags.get("ma20_cross_below", False),
@@ -423,7 +593,10 @@ def to_markdown(results: List[dict]) -> str:
     lines = []
     lines.append("# 崩盤日前一日 綜合燈號 / 籌碼面燈號 回測")
     lines.append("")
-    lines.append("範圍：七個崩盤日的前一個交易日（as-of）。財務/大廠以最新代表值(=100)代入；")
+    lines.append("範圍：七個崩盤日的前一個交易日（as-of）。")
+    lines.append("**財務面 / 大廠基本面已改用各 as-of 當時真實數據計算**（非硬代 100）：")
+    lines.append("　- 財務三率 = FinMind 季度財報（毛利率/營利率/淨利率）+ 營收 YoY（由季度營收推算）。")
+    lines.append("　- 大廠 = NVDA 當時營收 YoY（SEC XBRL 公司事實重建）；CAPEX 因客戶快取過舊（NVDA/AMZN 僅到 2020/2017）留空不計。")
     lines.append(f"本益比為各 as-of 當時真實收盤價 / 過去四季 EPS。強制紅燈條件：P/E > {CONFIG.chip.high_sellout_pe_threshold:.0f} "
                  f"且外資兩月淨賣超 > 外資當日實際持股之 {CONFIG.chip.two_month_high_sellout_pct*100:.0f}%（分母改用各 as-of 外資持股，非總流通股）。")
     lines.append("")
@@ -449,10 +622,32 @@ def to_markdown(results: List[dict]) -> str:
             f"{r['max_consecutive_sell']}日 | {r['foreign_2m_lots']:+,.0f} | {pct_f} | {pct_t} | "
             f"{pe_s} | {fred} | {rev} | {warn} |"
         )
+    # ── 基本面 as-of 真實值小表 ──
+    lines.append("")
+    lines.append("## 基本面 as-of 真實值（財務 + 大廠）")
+    lines.append("")
+    lines.append("| as-of | 毛利率 | 營利率 | 淨利率 | 營收YoY% | 財務分 | NVDA營收YoY% | 大廠分 | 財務轉弱? | 營收連降? |")
+    lines.append("|------|------:|------:|------:|------:|------:|------:|------:|:------:|:------:|")
+    for r in results:
+        if r.get("error"):
+            continue
+        gm = f"{r['fin_gross_margin']:.1f}%" if r.get("fin_gross_margin") is not None else "缺漏"
+        om = f"{r['fin_op_margin']:.1f}%" if r.get("fin_op_margin") is not None else "缺漏"
+        nm = f"{r['fin_net_margin']:.1f}%" if r.get("fin_net_margin") is not None else "缺漏"
+        ry = f"{r['fin_rev_yoy']:+.1f}%" if r.get("fin_rev_yoy") is not None else "缺漏"
+        ny = f"{r['bt_nvda_yoy']:+.1f}%" if r.get("bt_nvda_yoy") is not None else "缺漏"
+        md = "⚠️" if (r.get("fin_score") or 100) < 100 else "—"
+        rd = "⚠️" if r.get("fin_rev_declining") else "—"
+        lines.append(
+            f"| {r['as_of']} | {gm} | {om} | {nm} | {ry} | "
+            f"{r['fin_score']:.1f} | {ny} | {r['bt_score']:.1f} | {md} | {rd} |"
+        )
+    lines.append("")
+    lines.append("財務分 / 大廠分 由 SignalEngine 現有評分邏輯計算（大廠分僅含 NVDA 營收 YoY，CAPEX 留空）。")
+    lines.append("")
     # 小計
     n = len([r for r in results if not r.get("error")])
     warned = len([r for r in results if r.get("warned")])
-    lines.append("")
     lines.append(f"共 {n} 個 as-of 日期；其中 {warned} 個在崩盤前已出現警示（綜合黃/紅燈、轉折訊號或籌碼面偏弱）。")
     return "\n".join(lines)
 
@@ -465,6 +660,8 @@ def to_csv(results: List[dict], path: str) -> None:
                     "籌碼面燈號", "籌碼分", "技術早", "技術短", "技術中", "技術長",
                     "外資5日淨張", "賣超比%", "連續賣超日", "外資2月淨張",
                     "外資總持股張", "佔外資持股%", "佔總股%", "本益比", "PE門檻", "強制紅燈",
+                    "財務毛利率%", "財務營利率%", "財務淨利率%", "財務營收YoY%", "財務分", "財務轉弱", "營收連降",
+                    "NVDA營收YoY%", "CAPEX成長數", "CAPEX有效數", "大廠分",
                     "轉折基礎", "轉折進階", "ma20破", "月線破MA12", "布林壓縮破",
                     "警示", "錯誤"])
         for r in results:
@@ -486,6 +683,13 @@ def to_csv(results: List[dict], path: str) -> None:
                 f"{(r['pct_of_total_shares'] or 0):.2f}",
                 f"{r['pe_ratio']:.1f}" if r.get("pe_ratio") is not None else "",
                 f"{r['pe_threshold']:.0f}", r["forced_red"],
+                f"{(r['fin_gross_margin'] or 0):.1f}",
+                f"{(r['fin_op_margin'] or 0):.1f}",
+                f"{(r['fin_net_margin'] or 0):.1f}",
+                f"{(r['fin_rev_yoy'] or 0):.1f}" if r.get("fin_rev_yoy") is not None else "",
+                f"{r['fin_score']:.1f}", r["fin_margin_deter"], r["fin_rev_declining"],
+                f"{(r['bt_nvda_yoy'] or 0):.1f}" if r.get("bt_nvda_yoy") is not None else "",
+                r["bt_capex_growing"], r["bt_capex_valid"], f"{r['bt_score']:.1f}",
                 r["reversal_basic"], r["reversal_advanced"],
                 r["ma20_cross"], r["monthly_break"], r["bb_squeeze_break"],
                 r["warned"], "",
