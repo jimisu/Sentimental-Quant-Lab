@@ -810,6 +810,32 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         support_df['台積電最高價'] = pd.to_numeric(support_df['台積電最高價'], errors='coerce')
         support, resistance = self._detect_support_resistance(support_df)
 
+        # ── 帶量跌破關鍵均線 / 支撐（技術線型帶量跌破所有支撐）──
+        # 日線收盤跌破 20MA / 60MA / 關鍵支撐，且伴隨放量（≥ 20 日均量 1.5 倍）
+        # 時，視為趨勢性破線，對長期分數給予顯著懲罰。一般回檔（僅跌破 20MA）
+        # 僅小幅扣分，梯度合理。
+        latest_close = latest['台積電收盤價']
+        day_vol = latest['台積電成交金額']
+        avg_vol_20 = volume.rolling(20, min_periods=5).mean().iloc[-1] if len(volume) >= 5 else None
+        vol_spike = (pd.notna(avg_vol_20) and avg_vol_20 > 0 and day_vol >= avg_vol_20 * 1.5)
+
+        below_20 = pd.notna(ma20) and latest_close < ma20
+        below_60 = pd.notna(ma60_val) and latest_close < ma60_val
+        below_support = support is not None and latest_close < support
+
+        if below_20:
+            long_signals.append("跌破 20MA")
+            penalties["long"] += 15
+        if below_60:
+            long_signals.append("跌破 60MA")
+            penalties["long"] += 15
+        if below_support:
+            long_signals.append("跌破關鍵支撐位")
+            penalties["long"] += 15
+        if (below_20 or below_60 or below_support) and vol_spike:
+            long_signals.append("帶量破線確認")
+            penalties["long"] += 15
+
         short_status = "頂部反轉預警" if kline_warnings else "短期觀察"
         mid_status = "中期轉弱確認" if len(mid_signals) >= 2 else "中期觀察"
         long_status = "長期轉空確認" if len([s for s in long_signals if "資料不足" not in s]) >= 2 else "長期觀察"
@@ -1243,6 +1269,10 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         recent_5d_net_shares = float(foreign_daily.head(5).sum())
         total_sell_lots = abs(recent_5d_net_shares) / 1000
 
+        # 過去 10 天累計（更貼近「連續賣超」語意；資料不足 10 日時退化为 5 日值）
+        recent_10d_net_shares = float(foreign_daily.head(10).sum())
+        total_sell_lots_10d = abs(recent_10d_net_shares) / 1000
+
         # 籌碼面圖表已依需求移除（見 _generate_chip_chart 之移除）
         image_md = ""
 
@@ -1257,27 +1287,40 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         divergence = self._detect_institution_divergence(individual_trends)
 
         # ── 籌碼評分（多層級） ──────────────────────────────────────
-        # 基礎分 100，根據多項訊號扣分
+        # 基礎分 100，根據多項訊號扣分。
+        # 重校準：量級懲罰改用 10 日累計視窗並與嚴重度成比例（原 5 日視窗
+        # 於 ≥1 萬張即封頂 −30，對「連續賣超數萬張」過寬）；連續賣超天數
+        # 改為分級（取代固定 −10）。目標：外資 10 日賣超 ≥ 8 萬張時
+        # chip_score 顯著低於 30，觸發結構性黃燈。
         chip_penalties = 0
 
-        # 5 日累計賣超
+        # 10 日累計賣超量級（張數 = 1000 股）
         is_net_selling = recent_5d_net_shares < 0
         if is_net_selling:
-            if total_sell_lots >= 10000:
-                chip_penalties += 30
-            elif total_sell_lots >= 3000:
-                chip_penalties += 20
-            elif total_sell_lots >= 1000:
-                chip_penalties += 15
+            if total_sell_lots_10d >= 60000:
+                chip_penalties += 55
+            elif total_sell_lots_10d >= 30000:
+                chip_penalties += 45
+            elif total_sell_lots_10d >= 10000:
+                chip_penalties += 35
+            elif total_sell_lots_10d >= 3000:
+                chip_penalties += 25
+            elif total_sell_lots_10d >= 1000:
+                chip_penalties += 18
             else:
-                chip_penalties += 10
+                chip_penalties += 12
 
         # 賣超天數比例 > 60%
         if foreign_analysis["sell_ratio"] > 60:
             chip_penalties += 10
 
-        # 連續賣超 >= 3 日
-        if foreign_analysis["max_consecutive_sell"] >= 3:
+        # 連續賣超天數分級（取代固定 −10）
+        cons = foreign_analysis["max_consecutive_sell"]
+        if cons >= 7:
+            chip_penalties += 30
+        elif cons >= 5:
+            chip_penalties += 20
+        elif cons >= 3:
             chip_penalties += 10
 
         chip_score = max(0, 100 - chip_penalties)

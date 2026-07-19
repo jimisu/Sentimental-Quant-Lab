@@ -409,30 +409,35 @@ class AlertLevelDetector:
             messages.append("⚠️ 基本面與技術面同時轉弱，出現雙重預警")
 
         # ── 結構性警示：籌碼面嚴重惡化 ──
-        chip_critical = chip_score < self.CHIP_WARNING_THRESHOLD
         if chip_score < 30:
             messages.append(f"⚠️ 籌碼面嚴重惡化（{chip_score:.0f} 分），外資持續撤退")
 
         # ── 根據綜合分數判定 ──
         if comprehensive_score < self.RED_THRESHOLD:
             level, label, emoji = "red", "紅燈", "🔴"
-            base_msg = f"綜合健康得分 {comprehensive_score:.1f} 低於 {self.RED_THRESHOLD}，處於紅燈區間"
         elif comprehensive_score < self.YELLOW_THRESHOLD:
             level, label, emoji = "yellow", "黃燈", "🟡"
-            base_msg = f"綜合健康得分 {comprehensive_score:.1f} 處於黃燈區間（{self.YELLOW_THRESHOLD} 以下）"
         else:
             level, label, emoji = "green", "綠燈", "🟢"
+
+        # ── 結構性升級（在分數判定之後套用，避免訊息與最終燈號不一致）──
+        # 有轉折訊號 → 黃燈升紅燈
+        if reversal_basic and level == "yellow":
+            level, label, emoji = "red", "紅燈", "🔴"
+        # 籌碼面嚴重惡化（< 30）→ 強制至少黃燈
+        if chip_score < 30 and level == "green":
+            level, label, emoji = "yellow", "黃燈", "🟡"
+
+        # ── 依最終燈號產出基準訊息（確保與升級後燈號一致）──
+        if level == "red":
+            base_msg = f"綜合健康得分 {comprehensive_score:.1f} 低於 {self.RED_THRESHOLD}，處於紅燈區間"
+        elif level == "yellow":
+            base_msg = f"綜合健康得分 {comprehensive_score:.1f} 處於黃燈區間（{self.YELLOW_THRESHOLD} 以下）"
+        else:
             base_msg = f"綜合健康得分 {comprehensive_score:.1f}，處於綠燈區間"
 
         if messages:
             full_msg = " | ".join(messages) + f"；{base_msg}"
-            # 有轉折訊號時，黃燈升為紅燈
-            if reversal_basic and level == "yellow":
-                level, label, emoji = "red", "紅燈", "🔴"
-            # 結構性警示：綠燈強制升為黃燈
-            if chip_score < 30:
-                if level == "green":
-                    level, label, emoji = "yellow", "黃燈", "🟡"
         else:
             full_msg = base_msg
 
