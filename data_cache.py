@@ -85,10 +85,15 @@ def _list_cache_files(directory: str, prefix: str):
 # ──────────────────────────────────────────────────────────────────────
 
 def read_cache(cache_key: str, max_age_hours: float,
-               directory: str = "local_cache") -> Optional[Dict]:
+               directory: str = "local_cache",
+               validate: Optional[Callable[[Any], bool]] = None) -> Optional[Any]:
     """
     讀取快取。若 max_age_hours > 0 則檢查新鮮度，過期回傳 None。
     max_age_hours = 0 表示永遠回傳最新快取（不檢查新鮮度）。
+
+    validate: 可選完整性校驗回呼。若提供，由新到舊逐份檢查快取，
+    跳過未通過校驗（例如半截 JSON / 缺 tag）的檔案，回傳第一份
+    同時滿足新鮮度與校驗的資料。全部不符則回傳 None。
     """
     safe_key = _safe_key(cache_key)
     prefix = f"{safe_key}_"
@@ -96,33 +101,63 @@ def read_cache(cache_key: str, max_age_hours: float,
     if not files:
         return None
 
-    latest_path = os.path.join(directory, files[-1])
-    try:
-        with open(latest_path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"  [data_cache] 讀取快取失敗: {latest_path} ({exc})", file=sys.stderr)
-        return None
-
-    # 檢查新鮮度
-    if max_age_hours > 0:
-        cached_at = payload.get("cached_at")
-        if not cached_at:
-            return None
+    # 由新到舊，回傳第一份通過新鮮度 + 完整性校驗的快取
+    for fname in reversed(files):
+        path = os.path.join(directory, fname)
         try:
-            cached_dt = datetime.fromisoformat(cached_at)
-        except ValueError:
-            return None
-        # 處理帶 timezone 的 timestamp：統一轉為 naive UTC
-        if cached_dt.tzinfo is not None:
-            from datetime import timezone as _tz
-            cached_dt = cached_dt.astimezone(_tz.utc).replace(tzinfo=None)
-        age = datetime.now() - cached_dt
-        if age > timedelta(hours=max_age_hours):
-            return None
-        print(f"  -> 使用快取: {cache_key} (cached_at={cached_at})")
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"  [data_cache] 讀取快取失敗: {path} ({exc})", file=sys.stderr)
+            continue
 
-    return payload.get("data")
+        # 檢查新鮮度
+        if max_age_hours > 0:
+            cached_at = payload.get("cached_at")
+            if not cached_at:
+                continue
+            try:
+                cached_dt = datetime.fromisoformat(cached_at)
+            except ValueError:
+                continue
+            # 處理帶 timezone 的 timestamp：統一轉為 naive UTC
+            if cached_dt.tzinfo is not None:
+                from datetime import timezone as _tz
+                cached_dt = cached_dt.astimezone(_tz.utc).replace(tzinfo=None)
+            age = datetime.now() - cached_dt
+            if age > timedelta(hours=max_age_hours):
+                continue
+            print(f"  -> 使用快取: {cache_key} (cached_at={cached_at})")
+
+        data = payload.get("data")
+        if validate is not None and not validate(data):
+            continue
+        return data
+
+    return None
+
+
+def _read_any_valid(cache_key: str, directory: str,
+                   validate: Callable[[Any], bool]) -> Optional[Any]:
+    """
+    回退用：忽略新鮮度，由新到舊回傳第一份通過 validate 的快取。
+    僅在「即時抓取結果未通過完整性校驗」時呼叫，避免長時間 SEC 抖動
+    期間直接回報失敗，改回退至最後一份已知有效（可能過期）的快取。
+    """
+    safe_key = _safe_key(cache_key)
+    prefix = f"{safe_key}_"
+    files = _list_cache_files(directory, prefix)
+    for fname in reversed(files):
+        path = os.path.join(directory, fname)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        data = payload.get("data")
+        if validate(data):
+            return data
+    return None
 
 
 def write_cache(cache_key: str, data, directory: str = "local_cache",
@@ -156,7 +191,8 @@ def write_cache(cache_key: str, data, directory: str = "local_cache",
 
 
 def fetch_with_cache(policy_name: str, cache_key: str, fetch_fn: Callable,
-                     directory: str = "local_cache"):
+                     directory: str = "local_cache",
+                     validate: Optional[Callable[[Any], bool]] = None):
     """
     統一的「先檢查快取，過期才抓取」入口。
 
@@ -165,6 +201,9 @@ def fetch_with_cache(policy_name: str, cache_key: str, fetch_fn: Callable,
         cache_key: 快取檔案的 key
         fetch_fn: 無參數函式，回傳要快取的資料
         directory: 快取目錄
+        validate: 可選完整性校驗回呼。若提供，快取讀取會跳過未通過者；
+            即時抓取結果若未通過則「不寫入快取」（避免半截 JSON 污染 TTL），
+            並嘗試回退至既有有效快取，否則拋出 RuntimeError。
 
     Returns:
         資料（來自快取或新抓取）
@@ -176,12 +215,22 @@ def fetch_with_cache(policy_name: str, cache_key: str, fetch_fn: Callable,
     # TTL = 0 表示永遠抓取，跳過快取讀取
     if policy.ttl_hours > 0:
         cached = read_cache(cache_key, max_age_hours=policy.ttl_hours,
-                            directory=directory)
+                            directory=directory, validate=validate)
         if cached is not None:
             return cached
 
     # 抓取新資料
     data = fetch_fn()
+
+    # 完整性校驗：不通過就不寫入快取，改回退既有有效快取或拋錯，
+    # 避免一次 transient 把整個 TTL 毒成半截資料。
+    if validate is not None and not validate(data):
+        fallback = _read_any_valid(cache_key, directory, validate)
+        if fallback is not None:
+            print(f"  [data_cache] 抓取結果未通過完整性校驗，回退至既有有效快取: {cache_key}",
+                  file=sys.stderr)
+            return fallback
+        raise RuntimeError(f"抓取結果未通過完整性校驗，且無可用舊快取: {cache_key}")
 
     # 寫入快取（TTL = 0 的資料也寫入，作為 API 失敗時的 fallback）
     write_cache(cache_key, data, directory=directory,

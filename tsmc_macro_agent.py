@@ -12,7 +12,7 @@ import re
 import time
 import sys
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -90,13 +90,28 @@ class GlobalMacroAgent:
     def _fetch_json_with_cache(self, cache_key: str, url: str, policy_name: str = "macro_capex",
                               headers: Optional[Dict[str, str]] = None,
                               params: Optional[Dict[str, str]] = None,
-                              timeout: int = 20) -> Dict:
+                              timeout: int = 20,
+                              validate: Optional[Callable[[Any], bool]] = None) -> Dict:
         # 使用統一快取層（data_cache）取代私有函式
         return fetch_with_cache(
             policy_name=policy_name,
             cache_key=cache_key,
             fetch_fn=lambda: self._http_get_json(url, headers=headers, params=params, timeout=timeout),
+            validate=validate,
         )
+
+    @staticmethod
+    def _validate_companyfacts(data: Any) -> bool:
+        """
+        完整性校驗：SEC companyfacts JSON 必須含 us-gaap 且至少有足夠數量的 tag，
+        並包含 CAPEX 主要 tag。避免 API 回傳半截 JSON（仍為合法 JSON）污染 7 天 TTL。
+        """
+        if not isinstance(data, dict):
+            return False
+        us_gaap = data.get("facts", {}).get("us-gaap", {})
+        if not isinstance(us_gaap, dict) or len(us_gaap) < 20:
+            return False
+        return "PaymentsToAcquirePropertyPlantAndEquipment" in us_gaap
 
     def _fetch_fred_series(self, series_id: str, limit: int = 15) -> list:
         """
@@ -623,7 +638,10 @@ class GlobalMacroAgent:
         cache_key = f"sec_companyfacts_{cik}"
 
         try:
-            data = self._fetch_json_with_cache(cache_key, url, headers=SEC_HEADERS, timeout=20)
+            data = self._fetch_json_with_cache(
+                cache_key, url, headers=SEC_HEADERS, timeout=20,
+                validate=self._validate_companyfacts,
+            )
         except Exception as exc:
             raise RuntimeError(f"SEC 資料抓取失敗: {exc}")
 
