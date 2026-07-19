@@ -22,15 +22,16 @@ from config import CONFIG
 
 
 # ══════════════════════════════════════════════════════════════
-# 領先指標（預測用）：外資近 N 日連續賣超 + 往前兩個月累計淨賣超佔外資持股 ≥1% + 本益比 > 門檻
+# 領先指標（預測用）：往前兩個月累計淨賣超佔外資持股 ≥1% + 本益比 > 30 + 近 5 日無單日大跌 >5%
 # ══════════════════════════════════════════════════════════════
 
-# 連續賣超監測視窗：近 N 個外資買賣超交易日（條件 1，維持 2 日作為即時催化）。
-# 累計淨賣超佔比（條件 2）改以「往前兩個月」自然日視窗計算，
-# 1%（two_month_high_sellout_pct）與 PE 25（high_sellout_pe_threshold）、
+# 已移除「外資近 N 日連續賣超」條件（原 LEADING_INDICATOR_SESSIONS = 2）。
+# 現行條件：
+#   1. 往前兩個月累計淨賣超佔外資持股 > 1%（two_month_high_sellout_pct）
+#   2. 本益比 (TTM) > 30 倍（leading_indicator_pe_threshold）
+#   3. 往前五個交易日，不曾單日大跌超過 5%
 # 兩個月視窗天數（two_month_window_days=60）直接複用 CONFIG.chip 既有值，
 # 與「兩個月高檔出貨」強制紅燈規則完全同源。
-LEADING_INDICATOR_SESSIONS = 2  # 連續賣超判定視窗（交易日），非累計佔比視窗
 
 # 外資機構標籤（與 InstitutionalInvestorAgent._normalize_institution_label 對齊）
 _FOREIGN_LABELS = {
@@ -577,14 +578,11 @@ class SignalEngine:
 
 @dataclass
 class LeadingIndicator:
-    """領先指標計算結果（外資近 N 日連續賣超 + 往前兩個月累計淨賣超佔外資持股 ≥1% + 本益比 > 門檻）。"""
+    """領先指標計算結果（往前兩個月累計淨賣超佔外資持股 ≥1% + 本益比 > 30 + 近 5 日無單日大跌 >5%）。"""
     available: bool = False                  # 資料是否足以判斷
     triggered: bool = False                  # 是否觸發（= 強制紅燈條件成立）
     forced_red: bool = False                 # 是否強制紅燈
-    both_selling: bool = False               # 近 N 日是否皆為賣超（條件 1）
-    last_dates: List[str] = field(default_factory=list)
-    last_net_shares: List[float] = field(default_factory=list)   # 股，負=賣超
-    cumulative_sell_shares: float = 0.0      # 往前兩個月累計淨賣超股數（>=0，條件 2 分子）
+    cumulative_sell_shares: float = 0.0      # 往前兩個月累計淨賣超股數（>=0，條件 1 分子）
     window_days: int = 60                     # 兩個月監測視窗（自然日）
     window_start: Optional[str] = None        # 視窗起始日（YYYY-MM-DD）
     window_end: Optional[str] = None          # 視窗結束日（最新資料日）
@@ -594,7 +592,8 @@ class LeadingIndicator:
     sell_pct: Optional[float] = None         # 佔外資持股 %（None=無法計算）
     pct_threshold: float = 0.01              # 分數（0.01 = 1%）
     pe_ratio: float = 0.0
-    pe_threshold: float = 25.0
+    pe_threshold: float = 30.0
+    max_single_day_drop_pct: float = 0.0     # 近 5 日最大單日跌幅%
     note: str = ""
 
 
@@ -631,20 +630,21 @@ def compute_leading_indicator(
     chip_data,
     foreign_shares: Optional[float],
     pe_ratio: float,
-    n_sessions: int = LEADING_INDICATOR_SESSIONS,
+    price_df: Optional[pd.DataFrame] = None,  # 價格資料（含 收盤價），用於檢查 5 日內無單日大跌 >5%
 ) -> LeadingIndicator:
     """
     領先指標計算。
 
     觸發條件（三者同時成立）：
-      1. 外資近 N 個交易日「連續賣超」（每日淨買賣股數皆 < 0）；
-      2. 往前兩個月（two_month_window_days 自然日）累計淨賣超佔
+      1. 往前兩個月（two_month_window_days 自然日）累計淨賣超佔
          「外資當日實際持股」> 1%；
-      3. 本益比 (TTM) > 25 倍。
+      2. 本益比 (TTM) > 30 倍；
+      3. 往前五個交易日，不曾單日大跌超過 5%。
 
-    觸發即視為「強制紅燈」領先訊號。條件 2 的視窗與既有「兩個月高檔出貨」
-    強制紅燈規則同源（two_month_window_days / two_month_high_sellout_pct），
-    此處額外要求條件 1 的近 N 日連續賣超作為即時催化，更早提示轉折。
+    觸發即視為「強制紅燈」領先訊號。
+    條件 1 的視窗與既有「兩個月高檔出貨」強制紅燈規則同源
+    （two_month_window_days / two_month_high_sellout_pct）。
+    條件 3 避免在已經急跌後才發出領先訊號（追著跌才報警無預警意義）。
 
     分母優先用 foreign_shares（外資當日實際持股），未提供時回退總流通股，
     與現有強制紅燈規則的 fallback 一致。
@@ -669,14 +669,9 @@ def compute_leading_indicator(
         result.note = "籌碼資料不足，無法判斷領先指標"
         return result
 
-    # ── 條件 1：近 N 個交易日連續賣超 ──
-    last = series.head(n_sessions)
     result.available = True
-    result.last_dates = [str(d) for d in last.index]
-    result.last_net_shares = [float(v) for v in last.values]
-    result.both_selling = all(v < 0 for v in result.last_net_shares)
 
-    # ── 條件 2：往前兩個月累計淨賣超佔外資持股 > 1% ──
+    # ── 條件 1：往前兩個月累計淨賣超佔外資持股 > 1% ──
     window_start, window_end, window_series = _two_month_window(series, window_days)
     result.window_start = window_start
     result.window_end = window_end
@@ -687,14 +682,29 @@ def compute_leading_indicator(
     if denom and denom > 0:
         result.sell_pct = result.cumulative_sell_shares / denom * 100
 
+    # ── 條件 3：往前五個交易日，不曾單日大跌超過 5% ──
+    no_single_day_crash_5pct = True
+    max_single_day_drop_pct = 0.0
+    if price_df is not None and not price_df.empty and "台積電收盤價" in price_df.columns:
+        # 取最近 5 個交易日收盤價
+        recent_prices = price_df["台積電收盤價"].dropna().tail(5)
+        if len(recent_prices) >= 2:
+            # 計算每日漲跌幅
+            pct_changes = recent_prices.pct_change().dropna()
+            max_single_day_drop_pct = abs(pct_changes.min()) * 100  # 最大跌幅（正數表示跌幅%）
+            no_single_day_crash_5pct = max_single_day_drop_pct <= 5.0
+    result.max_single_day_drop_pct = max_single_day_drop_pct
+
     triggered = (
-        result.both_selling
-        and result.sell_pct is not None
+        result.sell_pct is not None
         and result.sell_pct > pct_threshold * 100
         and pe_ratio > pe_threshold
+        and no_single_day_crash_5pct
     )
     result.triggered = triggered
     result.forced_red = triggered
+    if not no_single_day_crash_5pct:
+        result.note = f"近 5 日有單日跌幅 {max_single_day_drop_pct:.2f}% > 5%，不觸發領先指標"
     return result
 
 

@@ -56,7 +56,6 @@ from signal_engine import (
     compute_leading_indicator,
     compute_trailing_pe,
     compute_forward_pe,
-    LEADING_INDICATOR_SESSIONS,
 )
 import macro_risk
 
@@ -1777,11 +1776,12 @@ class Orchestrator:
         )
 
         # 領先指標（預測用）：以本函式既有的 tw_price / quarterly_data 計算本益比，
-        # 結合 chip_data 與 foreign_shares 判斷；若呼叫方已傳入則沿用同一份結果。
+        # 結合 chip_data、foreign_shares 以及 price_df（近 5 日無單日大跌 >5%）判斷；
+        # 若呼叫方已傳入則沿用同一份結果。
         if leading_indicator is None:
             _pe = compute_trailing_pe(tw_price, quarterly_data)
             _pe_forward = compute_forward_pe(tw_price, quarterly_data)
-            leading_indicator = compute_leading_indicator(chip_data, foreign_shares, _pe)
+            leading_indicator = compute_leading_indicator(chip_data, foreign_shares, _pe, price_df=trading_df)
 
         # 寫入日誌（重構版：直接產出結構化報告）
         self._append_to_log(
@@ -1965,13 +1965,29 @@ class Orchestrator:
                 rows.append([
                     "領先指標 (預測)",
                     "🔴 觸發｜強制紅燈",
-                    f"外資近 {len(leading_indicator.last_dates)} 日連續賣超、佔持股 {leading_indicator.sell_pct:.2f}% (>1%)、PE {leading_indicator.pe_ratio:.1f}x (>25x)"
+                    f"外資近兩個月累計賣超佔持股 {leading_indicator.sell_pct:.2f}% (>1%)、PE {leading_indicator.pe_ratio:.1f}x (>30x)、近5日無單日大跌>5%"
                 ])
             else:
+                pct_str = f"{leading_indicator.sell_pct:.2f}%" if leading_indicator.sell_pct is not None else "N/A"
+                pe_ok = "✓" if leading_indicator.pe_ratio > leading_indicator.pe_threshold else "✗"
+                pct_ok = "✓" if (leading_indicator.sell_pct is not None and leading_indicator.sell_pct > leading_indicator.pct_threshold * 100) else "✗"
+                crash_ok = "✓" if leading_indicator.max_single_day_drop_pct <= 5.0 else "✗"
+
+                # 明確列出未觸發原因
+                failed_reasons = []
+                if pct_ok == "✗":
+                    failed_reasons.append(f"佔持股 {pct_str} 未達 1%")
+                if pe_ok == "✗":
+                    failed_reasons.append(f"PE {leading_indicator.pe_ratio:.1f}x 未達 30x")
+                if crash_ok == "✗":
+                    failed_reasons.append(f"近5日有單日大跌 {leading_indicator.max_single_day_drop_pct:.2f}% (>5%)")
+
+                reason_str = "；".join(failed_reasons) if failed_reasons else "條件皆達標但邏輯判定未觸發"
+
                 rows.append([
                     "領先指標 (預測)",
                     "🟢 未觸發",
-                    f"外資連續賣超: {'是' if leading_indicator.both_selling else '否'}、佔持股: {leading_indicator.sell_pct:.2f}% (門檻 >1%)、PE: {leading_indicator.pe_ratio:.1f}x (門檻 >25x)"
+                    f"佔持股: {pct_str} (門檻 >1%, {pct_ok})｜PE: {leading_indicator.pe_ratio:.1f}x (門檻 >30x, {pe_ok})｜近5日無大跌>5% ({crash_ok})｜未觸發原因: {reason_str}"
                 ])
         else:
             rows.append([
@@ -2807,39 +2823,29 @@ class Orchestrator:
         li_pct_th = li.pct_threshold * 100   # 百分比門檻（如 1.0）
         li_lines = [
             "### 🔮 領先指標預警（預測用）\n",
-            "> **觸發條件（三者同時成立）：** 外資近 "
-            f"{len(li.last_dates) if li.last_dates else LEADING_INDICATOR_SESSIONS} 個交易日"
-            "「連續賣超」＋ 累計淨賣超佔外資持股 "
-            f"> {li_pct_th:.0f}% ＋ 本益比 (TTM) > {li.pe_threshold:.0f} 倍。\n",
+            "> **觸發條件（三者同時成立）：** 外資往前兩個月累計淨賣超佔外資持股 "
+            f"> {li_pct_th:.0f}% ＋ 本益比 (TTM) > {li.pe_threshold:.0f} 倍 ＋ 近 5 個交易日無單日大跌 >5%。\n",
         ]
         if not li.available:
             li_lines.append(f"⚪ **資料不足**：{li.note or '無法判斷領先指標'}。")
         elif li.triggered:
-            last_parts = []
-            for d, v in zip(li.last_dates, li.last_net_shares):
-                tag = "賣超" if v < 0 else "買超"
-                last_parts.append(f"{d} {tag} {abs(v)/1000:,.0f} 張")
             pct = li.sell_pct if li.sell_pct is not None else 0.0
             li_lines.append(
-                f"🔴 **觸發｜強制紅燈**：外資近 {len(li.last_dates)} 日連續賣超"
-                f"（{'、'.join(last_parts)}），2 日累計賣超 {li.cumulative_sell_shares/1000:,.0f} 張"
-                f"（佔{li.denom_label} {pct:.2f}%）＋本益比 {li.pe_ratio:.1f} 倍，"
+                f"🔴 **觸發｜強制紅燈**：外資近兩個月累計淨賣超 {li.cumulative_sell_shares/1000:,.0f} 張"
+                f"（佔{li.denom_label} {pct:.2f}%）＋本益比 {li.pe_ratio:.1f} 倍 ＋ 近 5 日最大單日跌幅 {li.max_single_day_drop_pct:.2f}%（≤5%），"
                 "滿足全部條件 → 籌碼面強制紅燈，視為潛在轉折領先訊號。"
             )
         else:
             # 未觸發：列出目前狀態與距觸發的缺口，便於追蹤。
-            last_parts = []
-            for d, v in zip(li.last_dates, li.last_net_shares):
-                tag = "賣超" if v < 0 else "買超"
-                last_parts.append(f"{d} {tag} {abs(v)/1000:,.0f} 張")
             pct_str = f"{li.sell_pct:.2f}%" if li.sell_pct is not None else "N/A"
             pe_ok = "✓" if li.pe_ratio > li.pe_threshold else "✗"
-            sell_ok = "✓" if li.both_selling else "✗"
             pct_ok = "✓" if (li.sell_pct is not None and li.sell_pct > li_pct_th) else "✗"
+            crash_ok = "✓" if li.max_single_day_drop_pct <= 5.0 else "✗"
             li_lines.append(
-                f"🟢 **未觸發**。近 {len(li.last_dates)} 日：{'、'.join(last_parts) or '無資料'}；"
-                f"累計賣超佔{li.denom_label} {pct_str}（門檻 >{li_pct_th:.0f}%，{pct_ok}）｜"
-                f"連續賣超 {sell_ok}｜本益比 {li.pe_ratio:.1f} 倍（門檻 >{li.pe_threshold:.0f}，{pe_ok}）。"
+                f"🟢 **未觸發**。外資近兩個月累計淨賣超佔{li.denom_label} {pct_str}"
+                f"（門檻 >{li_pct_th:.0f}%，{pct_ok}）｜本益比 {li.pe_ratio:.1f} 倍"
+                f"（門檻 >{li.pe_threshold:.0f}，{pe_ok}）｜近 5 日最大單日跌幅 {li.max_single_day_drop_pct:.2f}%"
+                f"（門檻 ≤5%，{crash_ok}）。"
             )
         # 置於標題（sections[0]）之後、目錄之前，確保領先指標位於報告最前方。
         sections.insert(1, "\n\n".join(li_lines))
@@ -2912,14 +2918,9 @@ class Orchestrator:
             li = leading_indicator
             sell_lots = li.cumulative_sell_shares / 1000
             pct = li.sell_pct if li.sell_pct is not None else 0.0
-            last_parts = []
-            for d, v in zip(li.last_dates, li.last_net_shares):
-                tag = "賣超" if v < 0 else "買超"
-                last_parts.append(f"{d} {tag} {abs(v)/1000:,.0f} 張")
             warnings.append(
-                f"🔴 **領先指標觸發｜強制紅燈**：外資近 {len(li.last_dates)} 日連續賣超（"
-                f"{'、'.join(last_parts)}），2 日累計賣超 {sell_lots:,.0f} 張"
-                f"（佔{li.denom_label} {pct:.2f}%）＋本益比 {li.pe_ratio:.1f} 倍，籌碼面強制紅燈"
+                f"🔴 **領先指標觸發｜強制紅燈**：外資近兩個月累計淨賣超 {sell_lots:,.0f} 張"
+                f"（佔{li.denom_label} {pct:.2f}%）＋本益比 {li.pe_ratio:.1f} 倍 ＋ 近 5 日最大單日跌幅 {li.max_single_day_drop_pct:.2f}%（≤5%），籌碼面強制紅燈"
             )
         elif chip_high_sellout:
             sell_lots = abs(foreign_2m_sell) / 1000

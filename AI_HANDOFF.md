@@ -7,12 +7,42 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `fix/chip-red-light-threshold-1pct`（基於 `develop`；聚焦「強制紅燈賣超門檻分母改用外資當日實際持股 + PE 門檻 25」）
-- **本次交接時間 (Timestamp)**: 2026-07-19 (UTC+8)
+- **目前所在分支 (Current Branch)**: `fix/tech-light-indicator-dashboard-optimization`（基於 `develop`；聚焦「領先指標邏輯優化：移除外資連續賣超條件、PE 門檻修正為 >30x、未觸發原因顯式化」）
+- **本次交接時間 (Timestamp)**: 2026-07-20 (UTC+8)
 - **目前負責人/AI (Handler)**: Claude Code (Jimisu)
 - **價格資料來源**: `local_cache/hcd_yahoo_ohlcv_2330.TW_1672531200_1784419200.json`（2330.TW 日線，2023-01-03 ~ 2026-07-17，852 日；未觸網）
 
 ## ✅ 已完成的工作 (What's Done)
+
+### 本次 session 完成（2026-07-20 領先指標邏輯優化 / 分支 `fix/tech-light-indicator-dashboard-optimization`）
+- [x] **領先指標（預測用）觸發條件重構**：
+  - 移除「外資近 2 日連續賣超」條件（原 `LEADING_INDICATOR_SESSIONS = 2`）
+  - 保留「外資往前兩個月累計淨賣超佔外資持股 > 1%」（`two_month_high_sellout_pct`）
+  - 本益比門檻修正為 **>30x**（原 >25x，已於前一 commit `c7b1e4a` 更新 `config.py` 的 `leading_indicator_pe_threshold = 30.0`）
+  - 保留「近 5 個交易日無單日大跌 >5%」
+  - 觸發即視為「強制紅燈」領先訊號
+- [x] **`signal_engine.py` 核心邏輯更新**：
+  - `LeadingIndicator` dataclass：移除 `both_selling`、`last_dates`、`last_net_shares`；新增 `max_single_day_drop_pct`、`pe_threshold=30.0`
+  - `compute_leading_indicator()`：移除連續賣超檢查，改用三條件並列判斷
+  - 更新所有 docstring 與註解
+- [x] **`tsmc_ai_agents.py` 顯示層同步更新**：
+  - 移除 `LEADING_INDICATOR_SESSIONS` import
+  - `_build_key_results_table()`：Key Results 表格 PE 門檻顯示 `>30x`，未觸發時新增「未觸發原因」欄位（逐條列出：佔持股未達 1%、PE 未達 30x、近 5 日有單日大跌 >5%）
+  - Markdown 報告「🔮 領先指標預警」章節：條件改為三條件並列，未觸發顯示各條件 ✓/✗ 狀態
+  - 主要警示區塊：同步更新領先指標觸發描述
+- [x] **`tsmc_signal_dashboard.py` 終端面板同步**：
+  - `print_leading_indicator_panel()`：條件文字更新、移除連續賣超顯示、新增各條件 ✓/✗ 狀態、顯示最大單日跌幅
+- [x] **`test_leading_indicator.py` 測試全面重寫**：
+  - 所有測試改為三條件邏輯，新增 `_price_df_no_crash()` / `_price_df_with_crash()` helper
+  - 修正 numpy bool_ 斷言（改用 `bool()`）
+  - 13 個測試全部通過
+- [x] **全測試套件驗證**：824 passed（含 signal_engine 83、leading_indicator 13、ai_agents 等全通過）
+- [x] **儀表板端到端執行驗證**：`python tsmc_signal_dashboard.py` 完整跑完，領先指標面板正確顯示：
+  ```
+  觸發條件：外資往前兩個月累計淨賣超佔外資持股 > 1% ＋ 本益比 (TTM) > 30 倍 ＋ 近 5 個交易日無單日大跌 >5%
+  狀態：🟢 未觸發
+  外資近兩個月累計淨賣超佔比 1.21%（門檻 >1%，✓）｜本益比 30.8 倍（門檻 >30，✓）｜近 5 日最大單日跌幅 7.29%（門檻 ≤5%，✗）
+  ```
 
 ### 本次 session 完成（2026-07-16 多項修復）
 - [x] **SEC 13F 傳輸層遷移至 SAL**：`tsmc_institutional_tracker.py` 的 URL 探索與 curl_cffi TLS 繞過邏輯移到 `sal/providers.py` 的 `SECEdgarProvider`（`fetch_submissions_raw` / `_discover_13f_urls` / `fetch_13f_infotable_raw`），tracker 改委派 `get_sec()`。已透過 **PR #23 合併進 `develop`**（commit `d73bd75`）。
@@ -258,7 +288,7 @@
 11. **[優先級：中] 共識 EPS 估測整合**：長期監看板目前用「最新季 × 4」做 Forward EPS，可串接 FinMind / Yahoo Finance 共識預測（1Y/2Y Forward EPS）替代簡單年化。
 12. **[優先級：中] 三個待合併分支**：`fix/macro-agent-yahoo-sal-tests`（`eed7924`，macro 測試）、`fix/monthly-revenue-cache-parse`（`c3c6ca4`，月營收快取解析）、`docs/update-handoff-readme`（`934c128`，文件）均已完成、待建立 PR 合併進 develop。注意 `fix/macro-agent-yahoo-sal-tests` 分支指標本 session 曾遺失，已從 dangling commit 重建，請勿重複刪除。
 13. **[優先級：中] Q2 2026 財報待 FinMind 上架**：7/16 法說會已公布 2026Q2（4/5/6 月）三率 + EPS，但 FinMind `TaiwanStockFinancialStatements` API 目前只到 2026Q1（2026-03-31），資料落後法說會。使用者選擇「等 FinMind」不自動處理。FinMind 上架 Q2 後，季報快取 7 天 TTL 到期會自動補進；若要更快反映，清除 `finmind_TaiwanStockFinancialStatements_2330_*` / `financial_agent_quarterly_margins_2330_*` / `tsmc_eps_quarterly.json` 強制重抓。`tsmc_earnings_signals.json` 仍只到 2025Q2，待使用者提供法說會質化信號後補 2026Q2 條目。
-14. **[優先級：中] 提交本分支未追蹤的分析腳本**：`fix/chip-red-light-threshold-1pct` 上有多個未 commit 檔案，建議依邏輯單元分次提交（禁止自動 push）：
+14. **[優先級：中] 提交 `fix/chip-red-light-threshold-1pct` 分支未追蹤的分析腳本**（該分支與本分支分離）：該分支上有多個未 commit 檔案，建議依邏輯單元分次提交（禁止自動 push）：
     - 新增腳本：`sell_buyback_backtest.py`、`sell_below_count.py`、`stress_test_forced_red.py`、`analyze_tech_pattern.py`
     - 新增資料：`historical_crash_days.csv`（僅含 2026-07-17）
     - 修改：`backtest_crash_signals.csv`（含本益比 / 強制紅燈欄位）
@@ -536,7 +566,7 @@ python tsmc_institutional_tracker.py
 > 15. `analyze_all_institutions()` 回傳 `(all_data, combined_report)`，combined_report 含跨機構比較表格
 
 ## 🚀 給下一個 AI 建議
-1. **目前分支**：`fix/chip-red-light-threshold-1pct`（基於 `develop`，工作樹有未 commit 的新增腳本/資料，見待辦 #14）。本分支聚焦強制紅燈賣超門檻分母改用外資當日實際持股 + PE 門檻 25。相關回測腳本：`backtest_crash_signals.py`、`stress_test_forced_red.py`、`analyze_tech_pattern.py`、`sell_buyback_backtest.py`、`sell_below_count.py`；崩盤日清單：`historical_crash_days.csv`（目前僅 2026-07-17）。
+1. **目前分支**：`fix/tech-light-indicator-dashboard-optimization`（基於 `develop`）。本分支聚焦領先指標邏輯優化：移除外資連續賣超條件、PE 門檻修正為 >30x、未觸發原因顯式化。工作樹無未 commit 變更（所有修改已完成並測試通過）。
 2. **⚠️ 禁止自動 git push**：任何情況下 AI 都不得自行推送，只能提醒人類評估。
 3. **Pre-flight**：修改前確認分支、讀取 AI_HANDOFF.md、檢查 git status。**不要在 develop/main 上直接 commit**，先開 `feat/` 或 `fix/` 分支。
 4. **測試**：`test_institutional_tracker.py` 42 個全部通過 ✅。`test_financial_agent.py` 仍有 2 個 pre-existing 失敗（FX insight 測試），勿誤認為新 bug。
