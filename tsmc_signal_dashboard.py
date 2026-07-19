@@ -31,6 +31,7 @@ from signal_engine import (
     LeadingIndicator,
     compute_leading_indicator,
     compute_trailing_pe,
+    compute_forward_pe,
 )
 from sal import get_finmind, get_twse, get_yahoo, get_sec, get_cache
 
@@ -961,8 +962,8 @@ def print_leading_indicator_panel(leading: LeadingIndicator) -> None:
     pe_th = leading.pe_threshold
     pct_th = leading.pct_threshold * 100
     condition = (
-        f"外資近 {len(leading.last_dates) or 2} 日連續賣超 "
-        f"＋ 往前兩個月累計賣超佔{leading.denom_label} > {pct_th:.0f}% ＋ 本益比 > {pe_th:.0f} 倍"
+        f"外資往前兩個月累計淨賣超佔{leading.denom_label} > {pct_th:.0f}% "
+        f"＋ 本益比 (TTM) > {pe_th:.0f} 倍 ＋ 近 5 個交易日無單日大跌 >5%"
     )
 
     if not leading.available:
@@ -972,28 +973,23 @@ def print_leading_indicator_panel(leading: LeadingIndicator) -> None:
     elif leading.triggered:
         status = Text("🔴 觸發｜強制紅燈", style="bold red")
         pct = leading.sell_pct if leading.sell_pct is not None else 0.0
-        last_parts = []
-        for d, v in zip(leading.last_dates, leading.last_net_shares):
-            tag = "賣超" if v < 0 else "買超"
-            last_parts.append(f"{d} {tag} {abs(v)/1000:,.0f} 張")
         detail = (
-            f"近 {len(leading.last_dates)} 日：{'、'.join(last_parts)}　｜　"
-            f"兩個月（{leading.window_start}~{leading.window_end}）累計賣超 "
-            f"{leading.cumulative_sell_shares/1000:,.0f} 張（佔{leading.denom_label} {pct:.2f}%）　｜　"
-            f"本益比 {leading.pe_ratio:.1f} 倍"
+            f"外資近兩個月累計淨賣超 {leading.cumulative_sell_shares/1000:,.0f} 張"
+            f"（佔{leading.denom_label} {pct:.2f}%）　｜　"
+            f"本益比 {leading.pe_ratio:.1f} 倍　｜　"
+            f"近 5 日最大單日跌幅 {leading.max_single_day_drop_pct:.2f}%（≤5%）"
         )
         border = "red"
     else:
         status = Text("🟢 未觸發", style="bold green")
         pct_str = f"{leading.sell_pct:.2f}%" if leading.sell_pct is not None else "N/A"
-        last_parts = []
-        for d, v in zip(leading.last_dates, leading.last_net_shares):
-            tag = "賣超" if v < 0 else "買超"
-            last_parts.append(f"{d} {tag} {abs(v)/1000:,.0f} 張")
+        pe_ok = "✓" if leading.pe_ratio > leading.pe_threshold else "✗"
+        pct_ok = "✓" if (leading.sell_pct is not None and leading.sell_pct > pct_th) else "✗"
+        crash_ok = "✓" if leading.max_single_day_drop_pct <= 5.0 else "✗"
         detail = (
-            f"近 {len(leading.last_dates)} 日：{'、'.join(last_parts) or '無資料'}　｜　"
-            f"兩個月累計賣超佔比 {pct_str}（門檻 >{pct_th:.0f}%，視窗 {leading.window_start}~{leading.window_end}）　｜　"
-            f"本益比 {leading.pe_ratio:.1f} 倍（門檻 >{pe_th:.0f}）"
+            f"外資近兩個月累計淨賣超佔比 {pct_str}（門檻 >{pct_th:.0f}%，{pct_ok}）　｜　"
+            f"本益比 {leading.pe_ratio:.1f} 倍（門檻 >{pe_th:.0f}，{pe_ok}）　｜　"
+            f"近 5 日最大單日跌幅 {leading.max_single_day_drop_pct:.2f}%（門檻 ≤5%，{crash_ok}）"
         )
         border = "green"
 
@@ -1147,10 +1143,11 @@ def main():
 
     # ── 領先指標（預測用）──
     # 終端與報告共用同一份計算結果：以當日收盤價 + 近四季 EPS 算 TTM 本益比，
-    # 再結合外資近 2 日買賣超與外資持股，判斷是否觸發強制紅燈領先訊號。
+    # 再結合外資近 2 日買賣超、外資持股、以及近 5 日無單日大跌 >5%，判斷是否觸發強制紅燈領先訊號。
     tw_price = value_df["台積電收盤價"].iloc[-1] if not value_df.empty else 0
     pe_main = compute_trailing_pe(float(tw_price) if tw_price == tw_price else 0.0, quarterly_margins)
-    leading = compute_leading_indicator(chip_data, foreign_shares, pe_main)
+    pe_forward = compute_forward_pe(float(tw_price) if tw_price == tw_price else 0.0, quarterly_margins)
+    leading = compute_leading_indicator(chip_data, foreign_shares, pe_main, price_df=value_df)
 
     # 呼叫 AI Agent 編排器
     orchestrator = Orchestrator()
