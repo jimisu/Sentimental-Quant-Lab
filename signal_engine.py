@@ -102,7 +102,6 @@ class ComprehensiveResult:
     bigtech_score: float = 100.0
     tech_score: float = 100.0               # 技術面綜合（早期/短期/中期/長期合併）
     chip_score: float = 100.0
-    market_sentiment_score: float = 100.0
     macro_score: float = 100.0
     # 綜合
     comprehensive_score: float = 100.0
@@ -284,15 +283,18 @@ class BigTechSignalCalculator:
 
 class ComprehensiveScoreCalculator:
     """
-    整合六面向計算綜合健康得分。
+    整合四面向計算綜合健康得分。
 
     權重（config.py ScoreWeightsConfig 可調整）：
     - 純財務面   30%
     - 大廠基本面 30%
     - 技術面     20%（早期/短期/中期/長期合併計算）
     - 籌碼面     10%
-    - 市場情緒   10%
-    - 宏觀面     0%（已拆分至其他面向，保留相容性）
+    - 市場情緒   0%（已移出：量能為落後指標，會在技術/籌碼已轉弱時
+                       仍因「量能未萎縮」把分數撐在綠燈區，造成失真）
+
+    註：剩餘四面向權重合計 0.90，綜合得分上限為 90；燈號門檻
+    （<50 紅 / <70 黃）依此校準，不重新歸一化。
     """
 
     def __init__(self, weights: Optional[Dict[str, float]] = None):
@@ -303,7 +305,6 @@ class ComprehensiveScoreCalculator:
                 "bigtech":   w.bigtech,
                 "tech":      w.tech,
                 "chip":      w.chip,
-                "market_sentiment": w.market_sentiment,
             }
         else:
             self.weights = weights
@@ -314,7 +315,6 @@ class ComprehensiveScoreCalculator:
         bigtech_signals: BigTechSignals,
         tech_signals: TechnicalSignals,
         chip_signals: ChipSignals,
-        market_sentiment_signals: MarketSentimentSignals,
     ) -> Tuple[float, Dict[str, float]]:
         """
         計算綜合健康得分。
@@ -340,7 +340,6 @@ class ComprehensiveScoreCalculator:
             "bigtech":          bigtech_signals.score * self.weights["bigtech"],
             "tech":             tech_combined * self.weights["tech"],
             "chip":             chip_signals.score * self.weights["chip"],
-            "market_sentiment": market_sentiment_signals.score * self.weights["market_sentiment"],
         }
         comprehensive = sum(breakdown.values())
         return comprehensive, breakdown
@@ -356,20 +355,22 @@ class AlertLevelDetector:
 
     燈號規則：
     - 🔴 紅燈：綜合分數 < 50，或觸發進階轉折訊號，或基本面 + 技術面同時黃燈以下
-    - 🟡 黃燈：綜合分數 < 70，或觸發基礎轉折訊號，或結構性警示（籌碼 + 情緒同步惡化）
+    - 🟡 黃燈：綜合分數 < 70，或觸發基礎轉折訊號，或籌碼面嚴重惡化（< 30）
     - 🟢 綠燈：綜合分數 ≥ 70 且無特殊訊號
 
     結構性警示（不影響分數，僅升級燈號）：
-    - 籌碼面 < 50 且 市場情緒 < 50 → 強制至少黃燈
     - 籌碼面 < 30 → 強制至少黃燈
+
+    註：原「籌碼面 < 50 且 市場情緒 < 50 → 強制黃燈」之結構性警示已移除。
+    市場情緒（量能）為落後指標，會在技術/籌碼已轉弱時仍因「量能未萎縮」
+    把分數撐在綠燈區，造成失真；故情緒不再參與燈號判定。
     """
 
     RED_THRESHOLD: float = 50.0
     YELLOW_THRESHOLD: float = 70.0
 
-    # 結構性警示閾值：任一關鍵面向低於此值視為嚴重惡化
+    # 結構性警示閾值：籌碼面低於此值視為嚴重惡化
     CHIP_WARNING_THRESHOLD: float = 50.0
-    SENTIMENT_WARNING_THRESHOLD: float = 50.0
 
     def detect(
         self,
@@ -380,14 +381,12 @@ class AlertLevelDetector:
         reversal_basic: bool = False,
         reversal_advanced: bool = False,
         chip_score: float = 100.0,
-        market_sentiment_score: float = 100.0,
     ) -> Tuple[str, str, str, str]:
         """
         偵測燈號。
         回傳：(alert_level, alert_label, alert_emoji, alert_message)
 
         結構性警示規則：
-        - 籌碼面 + 市場情緒同時惡化（各自 < 50）→ 強制至少黃燈
         - 籌碼面單項嚴重惡化（< 30）→ 強制至少黃燈
         """
         messages = []
@@ -409,14 +408,9 @@ class AlertLevelDetector:
         if has_finacial_warning and tech_weak:
             messages.append("⚠️ 基本面與技術面同時轉弱，出現雙重預警")
 
-        # ── 結構性警示：籌碼 + 情緒同步惡化 ──
+        # ── 結構性警示：籌碼面嚴重惡化 ──
         chip_critical = chip_score < self.CHIP_WARNING_THRESHOLD
-        sentiment_critical = market_sentiment_score < self.SENTIMENT_WARNING_THRESHOLD
-        if chip_critical and sentiment_critical:
-            messages.append(
-                f"⚠️ 結構性警示：籌碼面（{chip_score:.0f} 分）與市場情緒（{market_sentiment_score:.0f} 分）同步惡化"
-            )
-        elif chip_score < 30:
+        if chip_score < 30:
             messages.append(f"⚠️ 籌碼面嚴重惡化（{chip_score:.0f} 分），外資持續撤退")
 
         # ── 根據綜合分數判定 ──
@@ -436,7 +430,7 @@ class AlertLevelDetector:
             if reversal_basic and level == "yellow":
                 level, label, emoji = "red", "紅燈", "🔴"
             # 結構性警示：綠燈強制升為黃燈
-            if (chip_critical and sentiment_critical) or chip_score < 30:
+            if chip_score < 30:
                 if level == "green":
                     level, label, emoji = "yellow", "黃燈", "🟡"
         else:
@@ -485,7 +479,6 @@ class SignalEngine:
         bigtech_signals: BigTechSignals,
         tech_signals: TechnicalSignals,
         chip_signals: ChipSignals,
-        market_sentiment_signals: MarketSentimentSignals,
     ) -> ComprehensiveResult:
         """
         完整分析流程：
@@ -513,12 +506,11 @@ class SignalEngine:
 
         # Step 3: 綜合得分
         comp_score, breakdown = self.score_calc.calculate(
-            fin_score, bigtech_signals, tech_signals, chip_signals, market_sentiment_signals
+            fin_score, bigtech_signals, tech_signals, chip_signals
         )
         result.comprehensive_score = comp_score
         result.tech_score = breakdown.get("tech", 0) / self.score_calc.weights["tech"] if self.score_calc.weights["tech"] > 0 else 100
         result.chip_score = chip_signals.score
-        result.market_sentiment_score = market_sentiment_signals.score
 
         # Step 4: 特殊訊號偵測
         reversal_basic = (
@@ -544,7 +536,6 @@ class SignalEngine:
             reversal_basic=reversal_basic,
             reversal_advanced=reversal_advanced,
             chip_score=chip_signals.score,
-            market_sentiment_score=market_sentiment_signals.score,
         )
         result.alert_level = level
         result.alert_label = label

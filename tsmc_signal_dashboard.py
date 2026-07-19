@@ -1111,7 +1111,6 @@ def main():
     # 執行 Agent 深度分析（統一由 signal_engine 計算綜合燈號）
     dashboard_summary = orchestrator.run_full_analysis(
         quarterly_margins, value_df, chip_data, styled_df,
-        market_sentiment_red=market_sentiment_red,
         revenue_by_date=revenue_by_date,
     )
 

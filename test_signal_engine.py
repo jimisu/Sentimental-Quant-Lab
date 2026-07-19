@@ -22,7 +22,6 @@ from signal_engine import (
     TechnicalSignals,
     ChipSignals,
     BigTechSignals,
-    MarketSentimentSignals,
     ComprehensiveResult,
     score_to_alert,
 )
@@ -333,7 +332,7 @@ class TestBigTechSignalCalculator:
 # ══════════════════════════════════════════════════════════════
 
 class TestComprehensiveScoreCalculator:
-    def _make_signals(self, fin=100, bigtech=100, tech_scores=None, chip=100, sentiment=100):
+    def _make_signals(self, fin=100, bigtech=100, tech_scores=None, chip=100):
         if tech_scores is None:
             tech_scores = {"early": 100, "short": 100, "mid": 100, "long": 100}
         return dict(
@@ -341,14 +340,13 @@ class TestComprehensiveScoreCalculator:
             bigtech_signals=BigTechSignals(score=bigtech),
             tech_signals=TechnicalSignals(scores=tech_scores),
             chip_signals=ChipSignals(score=chip),
-            market_sentiment_signals=MarketSentimentSignals(score=sentiment),
         )
 
     def test_all_perfect_scores(self):
-        """All 100 -> comprehensive = 100."""
+        """All 100 -> comprehensive = 90 (4 dims @ 100 * weights summing 0.90)."""
         calc = ComprehensiveScoreCalculator()
         result, breakdown = calc.calculate(**self._make_signals())
-        assert result == pytest.approx(100.0)
+        assert result == pytest.approx(90.0)
         assert all(v == pytest.approx(100.0 * calc.weights[k]) for k, v in breakdown.items())
 
     def test_all_zero_scores(self):
@@ -356,16 +354,16 @@ class TestComprehensiveScoreCalculator:
         calc = ComprehensiveScoreCalculator()
         result, _ = calc.calculate(**self._make_signals(
             fin=0, bigtech=0, tech_scores={"early": 0, "short": 0, "mid": 0, "long": 0},
-            chip=0, sentiment=0,
+            chip=0,
         ))
         assert result == pytest.approx(0.0)
 
     def test_weighted_calculation(self):
         """Verify the weighted math with known values."""
         calc = ComprehensiveScoreCalculator()
-        # financial=80, bigtech=60, tech=100, chip=100, sentiment=100
+        # financial=80, bigtech=60, tech=100, chip=100
         result, breakdown = calc.calculate(**self._make_signals(
-            fin=80, bigtech=60, chip=100, sentiment=100,
+            fin=80, bigtech=60, chip=100,
         )
         )
         w = CONFIG.weights
@@ -373,8 +371,7 @@ class TestComprehensiveScoreCalculator:
             80 * w.financial +
             60 * w.bigtech +
             100 * w.tech +
-            100 * w.chip +
-            100 * w.market_sentiment
+            100 * w.chip
         )
         assert result == pytest.approx(expected)
 
@@ -393,24 +390,24 @@ class TestComprehensiveScoreCalculator:
         assert breakdown["tech"] == pytest.approx(expected_tech_combined * w.tech)
 
     def test_custom_weights(self):
-        """Custom weights override config defaults."""
-        custom = {"financial": 0.5, "bigtech": 0.3, "tech": 0.1, "chip": 0.05, "market_sentiment": 0.05}
+        """Custom weights override config defaults (market sentiment must not be a key)."""
+        custom = {"financial": 0.5, "bigtech": 0.3, "tech": 0.1, "chip": 0.1}
         calc = ComprehensiveScoreCalculator(weights=custom)
         result, _ = calc.calculate(**self._make_signals(fin=80, bigtech=60))
-        expected = 80 * 0.5 + 60 * 0.3 + 100 * 0.1 + 100 * 0.05 + 100 * 0.05
+        expected = 80 * 0.5 + 60 * 0.3 + 100 * 0.1 + 100 * 0.1
         assert result == pytest.approx(expected)
 
     def test_breakdown_keys(self):
-        """Breakdown should contain all five dimension keys."""
+        """Breakdown should contain the four dimension keys (market sentiment removed)."""
         calc = ComprehensiveScoreCalculator()
         _, breakdown = calc.calculate(**self._make_signals())
-        assert set(breakdown.keys()) == {"financial", "bigtech", "tech", "chip", "market_sentiment"}
+        assert set(breakdown.keys()) == {"financial", "bigtech", "tech", "chip"}
 
     def test_breakdown_values_sum_to_comprehensive(self):
         """Sum of breakdown values should equal comprehensive score."""
         calc = ComprehensiveScoreCalculator()
         result, breakdown = calc.calculate(**self._make_signals(
-            fin=70, bigtech=80, chip=90, sentiment=60,
+            fin=70, bigtech=80, chip=90,
         ))
         assert result == pytest.approx(sum(breakdown.values()))
 
@@ -559,10 +556,9 @@ class TestSignalEngine:
             ),
             tech_signals=TechnicalSignals(scores={"early": 100, "short": 100, "mid": 100, "long": 100}),
             chip_signals=ChipSignals(score=100),
-            market_sentiment_signals=MarketSentimentSignals(score=100),
         )
         assert isinstance(result, ComprehensiveResult)
-        assert result.comprehensive_score == pytest.approx(100.0)
+        assert result.comprehensive_score == pytest.approx(90.0)
         assert result.alert_level == "green"
         assert result.financial_score == 100.0
         assert result.bigtech_score == 100
@@ -581,7 +577,6 @@ class TestSignalEngine:
                 scores={"early": 30, "short": 40, "mid": 35, "long": 25},
             ),
             chip_signals=ChipSignals(score=40),
-            market_sentiment_signals=MarketSentimentSignals(score=40),
         )
         assert result.comprehensive_score < 50
         assert result.alert_level == "red"
@@ -594,7 +589,6 @@ class TestSignalEngine:
             bigtech_signals=BigTechSignals(),
             tech_signals=TechnicalSignals(),
             chip_signals=ChipSignals(),
-            market_sentiment_signals=MarketSentimentSignals(),
         )
         assert isinstance(result, ComprehensiveResult)
         assert isinstance(result.financial_score, (int, float))
@@ -616,7 +610,6 @@ class TestSignalEngine:
                 flags={"ma20_cross_below": True, "monthly_break_ma12": True},
             ),
             chip_signals=ChipSignals(score=100, flags={"big_foreign_sell": True}),
-            market_sentiment_signals=MarketSentimentSignals(score=100),
         )
         assert result.reversal_signal is True
         assert result.reversal_advanced is False
@@ -631,7 +624,6 @@ class TestSignalEngine:
                 flags={"ma20_cross_below": True, "monthly_break_ma12": True, "bb_squeeze_break": True},
             ),
             chip_signals=ChipSignals(score=100, flags={"big_foreign_sell": True}),
-            market_sentiment_signals=MarketSentimentSignals(score=100),
         )
         assert result.reversal_signal is True
         assert result.reversal_advanced is True
@@ -647,7 +639,6 @@ class TestSignalEngine:
                 flags={"ma20_cross_below": True},  # missing monthly_break_ma12
             ),
             chip_signals=ChipSignals(score=100, flags={"big_foreign_sell": True}),
-            market_sentiment_signals=MarketSentimentSignals(score=100),
         )
         assert result.reversal_signal is False
 
@@ -664,7 +655,6 @@ class TestSignalEngine:
                 scores={"early": 30, "short": 40, "mid": 35, "long": 25},
             ),
             chip_signals=ChipSignals(score=40),
-            market_sentiment_signals=MarketSentimentSignals(score=40),
         )
         assert result.double_warning is True
 
@@ -677,7 +667,6 @@ class TestSignalEngine:
             bigtech_signals=bt,
             tech_signals=TechnicalSignals(),
             chip_signals=ChipSignals(),
-            market_sentiment_signals=MarketSentimentSignals(),
         )
         assert bt.score == 32  # CAPEX 25/ NVDA 40 -> int(12.5+20)=32
 
@@ -688,7 +677,6 @@ class TestSignalEngine:
             bigtech_signals=BigTechSignals(),
             tech_signals=TechnicalSignals(),
             chip_signals=ChipSignals(),
-            market_sentiment_signals=MarketSentimentSignals(),
         )
         assert len(result.details["financial_warnings"]) > 0
         assert any("負成長" in w for w in result.details["financial_warnings"])
@@ -700,10 +688,9 @@ class TestSignalEngine:
             bigtech_signals=BigTechSignals(),
             tech_signals=TechnicalSignals(),
             chip_signals=ChipSignals(),
-            market_sentiment_signals=MarketSentimentSignals(),
         )
         bd = result.details["breakdown"]
-        assert set(bd.keys()) == {"financial", "bigtech", "tech", "chip", "market_sentiment"}
+        assert set(bd.keys()) == {"financial", "bigtech", "tech", "chip"}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -711,10 +698,13 @@ class TestSignalEngine:
 # ══════════════════════════════════════════════════════════════
 
 class TestStructuralWarning:
-    """測試結構性警示規則：籌碼面與市場情緒同步惡化時強制升級燈號。"""
+    """測試結構性警示規則：籌碼面 < 30 時強制升級燈號。
+    註：原「籌碼 + 市場情緒同步惡化」之耦合已移除——市場情緒（量能）
+    為落後指標，會在技術/籌碼已轉弱時仍因「量能未萎縮」顯示綠燈，造成失真。
+    """
 
-    def test_chip_and_sentiment_both_below_50_upgrades_green_to_yellow(self):
-        """籌碼 45 + 情緒 40 + 總分 80+ → 應從綠燈升為黃燈。"""
+    def test_chip_and_sentiment_both_below_50_keeps_green(self):
+        """籌碼 45 + 總分 82 → 無其他警示，維持綠燈（情緒不再耦合）。"""
         detector = AlertLevelDetector()
         level, label, emoji, msg = detector.detect(
             comprehensive_score=82.0,
@@ -722,10 +712,8 @@ class TestStructuralWarning:
             tech_flags={},
             chip_flags={},
             chip_score=45.0,
-            market_sentiment_score=40.0,
         )
-        assert level == "yellow"
-        assert "結構性警示" in msg
+        assert level == "green"
 
     def test_chip_below_30_upgrades_green_to_yellow(self):
         """籌碼單項 < 30 → 強制至少黃燈，即使總分很高。"""
@@ -736,13 +724,12 @@ class TestStructuralWarning:
             tech_flags={},
             chip_flags={},
             chip_score=25.0,
-            market_sentiment_score=80.0,
         )
         assert level == "yellow"
         assert "籌碼面嚴重惡化" in msg
 
     def test_only_chip_low_does_not_trigger_structural_warning(self):
-        """只有籌碼低、情緒正常 → 不觸發結構性警示（除非籌碼 < 30）。"""
+        """只有籌碼低、且 > 30 → 不觸發結構性警示，維持綠燈。"""
         detector = AlertLevelDetector()
         level, label, emoji, msg = detector.detect(
             comprehensive_score=82.0,
@@ -750,9 +737,8 @@ class TestStructuralWarning:
             tech_flags={},
             chip_flags={},
             chip_score=45.0,
-            market_sentiment_score=80.0,
         )
-        # 只有籌碼低但情緒正常，且籌碼 > 30 → 維持綠燈
+        # 只有籌碼低但 > 30 → 維持綠燈
         assert level == "green"
 
     def test_chip_50_exact_does_not_trigger(self):
@@ -764,7 +750,6 @@ class TestStructuralWarning:
             tech_flags={},
             chip_flags={},
             chip_score=50.0,
-            market_sentiment_score=50.0,
         )
         assert level == "green"
 
@@ -777,7 +762,6 @@ class TestStructuralWarning:
             tech_flags={},
             chip_flags={},
             chip_score=40.0,
-            market_sentiment_score=35.0,
         )
         assert level == "yellow"
 
@@ -790,12 +774,11 @@ class TestStructuralWarning:
             tech_flags={},
             chip_flags={},
             chip_score=20.0,
-            market_sentiment_score=15.0,
         )
         assert level == "red"
 
-    def test_full_pipeline_structural_warning(self):
-        """完整 pipeline：chip=40, sentiment=30, 總分高 → 黃燈。"""
+    def test_full_pipeline_no_structural_warning_when_chip_ok(self):
+        """完整 pipeline：chip=40（>30）、總分高 → 綠燈，無結構性警示。"""
         engine = SignalEngine()
         result = engine.analyze(
             financial_signals=FinancialSignals(latest_revenue_yoy=30.0),
@@ -805,10 +788,10 @@ class TestStructuralWarning:
             ),
             tech_signals=TechnicalSignals(),
             chip_signals=ChipSignals(score=40),
-            market_sentiment_signals=MarketSentimentSignals(score=30),
         )
-        assert result.alert_level == "yellow"
-        assert "結構性警示" in result.alert_message
+        assert result.alert_level == "green"
+        assert "結構性警示" not in result.alert_message
+
 
 
 # ══════════════════════════════════════════════════════════════

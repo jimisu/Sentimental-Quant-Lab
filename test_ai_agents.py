@@ -1226,3 +1226,133 @@ class TestOrchestratorEstimateEarningsDate:
         date_str, days_offset, desc = orch._estimate_earnings_date(date(2026, 12, 20))
         assert isinstance(date_str, str)
         assert isinstance(days_offset, int)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ch7 風險管理 / ch8 分析師結論 重寫驗證
+# 場景：2026-07-16 法說會後，2026-07-17 外部系統性風險暴跌
+# ══════════════════════════════════════════════════════════════════════
+class TestRiskAndAnalystRewrite:
+    """驗證 ch7/ch8 已拋棄過期「法說會前 / 等待催化劑」敘事，
+    並在 macro_risk 判讀為外部系統性風險時正確標註「此次下跌主因為
+    外部系統性風險，非台積電基本面轉弱」。"""
+
+    def _make_orchestrator(self, tmp_path):
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.log_path = str(tmp_path / "analysis_log.md")
+        return orch
+
+    def _crash_price_df(self):
+        """7/17 帶量重挫（符合 is_systemic_event_day 技術定義）。"""
+        idx = pd.date_range("2026-07-10", "2026-07-17", freq="B")
+        close = [1000.0] * (len(idx) - 1) + [900.0]
+        vol = [1e9] * (len(idx) - 1) + [3e9]
+        return pd.DataFrame({"收盤價": close, "成交量": vol}, index=idx)
+
+    def _flat_price_df(self):
+        idx = pd.date_range("2026-07-10", "2026-07-17", freq="B")
+        close = [1000.0] * len(idx)
+        vol = [1e9] * len(idx)
+        return pd.DataFrame({"收盤價": close, "成交量": vol}, index=idx)
+
+    def _revenue_by_date(self, n=15):
+        return {f"2026-{m:02d}": 100.0 + i for i, m in enumerate(range(1, n + 1))}
+
+    def _call_append(self, orch, **overrides):
+        kwargs = dict(
+            dashboard_summary="", fin_report="", tech_report="",
+            chip_report="", macro_report="", score_summary="",
+            fin_table="", vol_table="",
+            chip_flags={"big_foreign_sell": True, "extreme_sell": True,
+                        "foreign_net_sell_shares": -90000.0,
+                        "sell_ratio": 90, "max_consecutive_sell": 9},
+            chip_score=30,
+            tech_flags={"monthly_break_ma12": True},
+            tech_scores={},
+            bigtech_data={},
+            result=None,
+            tw_price=1000.0,
+            fx_averages={},
+            revenue_by_date=self._revenue_by_date(),
+            price_df=self._crash_price_df(),
+        )
+        kwargs.update(overrides)
+        orch._append_to_log(**kwargs)
+        with open(orch.log_path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_systemic_risk_annotates_ch7_ch8(self, tmp_path, monkeypatch):
+        import macro_risk as mr
+        mr._INJECTED["assess_macro_risk"] = mr.MacroRiskSignal(
+            level="red", is_red=True, reason="跨市場連動 / 槓桿商品斷鏈",
+            factors=["跨市場連動"], severity="高",
+        )
+        mr._INJECTED["is_systemic_event_day"] = lambda day: True
+        try:
+            orch = self._make_orchestrator(tmp_path)
+            monkeypatch.setattr(
+                orch, "_estimate_earnings_date",
+                lambda today: ("2026-07-16", -3, "Q3 法說會後"),
+            )
+            content = self._call_append(orch)
+
+            # 紅燈警示標註「非台積電基本面轉弱」
+            assert "外部系統性風險警示（紅燈）" in content
+            assert "非台積電法說會內容或基本面轉弱所致" in content
+            # ch8 核心矛盾標註「非台積電基本面轉弱」
+            assert "非台積電基本面轉弱" in content
+            # 過期敘事必須消失
+            assert "法說會前" not in content
+            assert "等待催化劑" not in content
+            assert "等待一個催化劑" not in content
+            # 法說會後動態交易日數欄
+            assert "法說會後" in content
+            # 當前價位標註為外部風險事件後價格
+            assert "外部風險事件後價格" in content
+            # 外資賣超經判讀為系統性風險驅動，不計入轉空
+            assert "系統性風險驅動" in content
+        finally:
+            mr._INJECTED.clear()
+
+    def test_non_systemic_keeps_catalyst_narrative_removed(self, tmp_path, monkeypatch):
+        """無外部系統性風險（綠燈）時：不得出現「等待催化劑」，
+        外資賣超改以「原因待確認」措辭，且不被標為系統性風險驅動。"""
+        import macro_risk as mr
+        try:
+            orch = self._make_orchestrator(tmp_path)
+            monkeypatch.setattr(
+                orch, "_estimate_earnings_date",
+                lambda today: ("2026-07-16", -3, "Q3 法說會後"),
+            )
+            content = self._call_append(
+                orch, price_df=self._flat_price_df(),
+            )
+
+            # 過期敘事已移除
+            assert "等待催化劑" not in content
+            assert "法說會前" not in content
+            # 非紅燈：不出現紅燈警示標註
+            assert "外部系統性風險警示（紅燈）" not in content
+            # 外資賣超「原因待確認」
+            assert "外資賣超原因待確認" in content
+            # 賣超被判定為基本面因素（計入轉空），非「系統性風險驅動」
+            assert "系統性風險驅動" not in content
+            assert "外資 5 日累計賣超 > 5 萬張" in content
+        finally:
+            mr._INJECTED.clear()
+
+    def test_expired_pre_earnings_row_absent(self, tmp_path, monkeypatch):
+        """即使 earnings 在「未來」（不應發生），舊的「法說會前（N 天內）」
+        列也不應再出現；此測試確認舊列已徹底移除。"""
+        import macro_risk as mr
+        try:
+            orch = self._make_orchestrator(tmp_path)
+            monkeypatch.setattr(
+                orch, "_estimate_earnings_date",
+                lambda today: ("2026-10-15", 88, "Q4 法說會"),
+            )
+            content = self._call_append(orch)
+            assert "法說會前" not in content
+        finally:
+            mr._INJECTED.clear()
+
