@@ -15,7 +15,28 @@ TSMC 信號引擎 (Signal Engine)
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import pandas as pd
+
 from config import CONFIG
+
+
+# ══════════════════════════════════════════════════════════════
+# 領先指標（預測用）：外資近 N 個交易日連續賣超 + 佔外資持股 ≥1% + 本益比 > 門檻
+# ══════════════════════════════════════════════════════════════
+
+# 連續監測視窗：往前 2 個外資買賣超交易日（使用者指定）。
+# 1%（two_month_high_sellout_pct）與 PE 25（high_sellout_pe_threshold）
+# 直接複用 CONFIG.chip 既有值，與「兩個月高檔出貨」強制紅燈規則同源；
+# 此處僅把監測視窗壓縮到最近 2 個交易日，作為更早的轉折預警。
+LEADING_INDICATOR_SESSIONS = 2
+
+# 外資機構標籤（與 InstitutionalInvestorAgent._normalize_institution_label 對齊）
+_FOREIGN_LABELS = {
+    "Foreign_Investor": "外資",
+    "Foreign_Dealer_Self": "外資",
+    "外資": "外資",
+    "外陸資": "外資",
+}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -546,3 +567,138 @@ class SignalEngine:
         }
 
         return result
+
+
+# ══════════════════════════════════════════════════════════════
+# 領先指標（預測用）
+# ══════════════════════════════════════════════════════════════
+
+@dataclass
+class LeadingIndicator:
+    """領先指標計算結果（外資近 N 日連續賣超 + 佔外資持股 ≥1% + 本益比 > 門檻）。"""
+    available: bool = False                  # 資料是否足以判斷
+    triggered: bool = False                  # 是否觸發（= 強制紅燈條件成立）
+    forced_red: bool = False                 # 是否強制紅燈
+    both_selling: bool = False               # 近 N 日是否皆為賣超
+    last_dates: List[str] = field(default_factory=list)
+    last_net_shares: List[float] = field(default_factory=list)   # 股，負=賣超
+    cumulative_sell_shares: float = 0.0      # 近 N 日累計淨賣超股數（>=0）
+    foreign_holdings: Optional[float] = None
+    denom_label: str = "外資持股"
+    sell_pct: Optional[float] = None         # 佔外資持股 %（None=無法計算）
+    pct_threshold: float = 0.01              # 分數（0.01 = 1%）
+    pe_ratio: float = 0.0
+    pe_threshold: float = 25.0
+    note: str = ""
+
+
+def _foreign_daily_net(chip_data) -> Optional[pd.Series]:
+    """
+    從三大法人買賣超資料解析外資每日淨買賣股數（降冪排序）。
+
+    與 InstitutionalInvestorAgent.analyze_flow 同步邏輯：取 type/name 欄，
+    把外資相關標籤歸為「外資」，按 date 加總 (buy - sell)。
+    資料不足以判斷外資動向時回傳 None。
+    """
+    if not chip_data:
+        return None
+    df = pd.DataFrame(chip_data)
+    type_col = 'type' if 'type' in df.columns else 'name' if 'name' in df.columns else None
+    if not type_col or not {'date', 'buy', 'sell'}.issubset(df.columns):
+        return None
+
+    df["_label"] = df[type_col].apply(lambda x: _FOREIGN_LABELS.get(x, x))
+    foreign_all = df[df["_label"] == '外資'].copy()
+    if foreign_all.empty:
+        return None
+
+    foreign_all['_net'] = pd.to_numeric(foreign_all['buy']) - pd.to_numeric(foreign_all['sell'])
+    series = (
+        foreign_all.groupby('date')['_net']
+        .sum()
+        .sort_index(ascending=False)
+    )
+    return series
+
+
+def compute_leading_indicator(
+    chip_data,
+    foreign_shares: Optional[float],
+    pe_ratio: float,
+    n_sessions: int = LEADING_INDICATOR_SESSIONS,
+) -> LeadingIndicator:
+    """
+    領先指標計算。
+
+    觸發條件（三者同時成立）：
+      1. 外資近 N 個交易日「連續賣超」（每日淨買賣股數皆 < 0）；
+      2. 近 N 日累計淨賣超佔「外資當日實際持股」> 1%；
+      3. 本益比 (TTM) > 25 倍。
+
+    觸發即視為「強制紅燈」領先訊號，較現有「兩個月高檔出貨」規則更敏感，
+    用於在報告最前方提示潛在轉折。
+
+    分母優先用 foreign_shares（外資當日實際持股），未提供時回退總流通股，
+    與現有強制紅燈規則的 fallback 一致。
+    """
+    pct_threshold = CONFIG.chip.two_month_high_sellout_pct      # 0.01
+    pe_threshold = CONFIG.chip.high_sellout_pe_threshold        # 25.0
+    denom = foreign_shares if (foreign_shares and foreign_shares > 0) else CONFIG.chip.tsmc_float_shares
+    denom_label = "外資持股" if (foreign_shares and foreign_shares > 0) else "流通股"
+
+    result = LeadingIndicator(
+        pct_threshold=pct_threshold,
+        pe_threshold=pe_threshold,
+        foreign_holdings=denom,
+        denom_label=denom_label,
+        pe_ratio=pe_ratio,
+    )
+
+    series = _foreign_daily_net(chip_data)
+    if series is None or len(series) < n_sessions:
+        result.note = "籌碼資料不足，無法判斷領先指標"
+        return result
+
+    last = series.head(n_sessions)
+    result.available = True
+    result.last_dates = [str(d) for d in last.index]
+    result.last_net_shares = [float(v) for v in last.values]
+    result.both_selling = all(v < 0 for v in result.last_net_shares)
+
+    cumulative = float(last.sum())          # 負值 = 淨賣超
+    result.cumulative_sell_shares = abs(cumulative) if cumulative < 0 else 0.0
+
+    if denom and denom > 0:
+        result.sell_pct = result.cumulative_sell_shares / denom * 100
+
+    triggered = (
+        result.both_selling
+        and result.sell_pct is not None
+        and result.sell_pct > pct_threshold * 100
+        and pe_ratio > pe_threshold
+    )
+    result.triggered = triggered
+    result.forced_red = triggered
+    return result
+
+
+def compute_trailing_pe(price: float, quarterly_data) -> float:
+    """
+    計算 TTM 本益比 = 股價 / 近四季 EPS 加總。
+
+    與 Orchestrator.run_full_analysis 內 pe_ratio 計算邏輯一致：
+    取最新 4 季 EPS 加總，至少 2 季且 EPS 總和 > 0 才回傳；否則回傳 0.0。
+    quarterly_data 為 {(year, quarter): {"eps": float, ...}} 結構。
+    """
+    if not price or price <= 0 or not quarterly_data:
+        return 0.0
+    eps_sum = 0.0
+    eps_count = 0
+    for k in sorted(quarterly_data.keys(), reverse=True)[:4]:
+        ev = quarterly_data[k].get("eps")
+        if ev is not None:
+            eps_sum += ev
+            eps_count += 1
+    if eps_count >= 2 and eps_sum > 0:
+        return price / eps_sum
+    return 0.0
