@@ -52,6 +52,9 @@ from signal_engine import (
     ChipSignals,
     AlertLevelDetector,
     score_to_alert,
+    LeadingIndicator,
+    compute_leading_indicator,
+    LEADING_INDICATOR_SESSIONS,
 )
 import macro_risk
 
@@ -1528,7 +1531,8 @@ class Orchestrator:
     def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict],
                           styled_df: pd.DataFrame,
                           revenue_by_date: Optional[Dict[str, float]] = None,
-                          foreign_shares: Optional[int] = None) -> str:
+                          foreign_shares: Optional[int] = None,
+                          leading_indicator: Optional[LeadingIndicator] = None) -> str:
         """
         執行完整分析並回傳 dashboard_summary 字串。
         綜合得分燈號邏輯統一由 signal_engine 處理。
@@ -1707,6 +1711,7 @@ class Orchestrator:
         # ── 綜合燈號拉低原因 ──
         drag_text = self._format_drag_reasons(
             result, w, chip_flags, tech_flags, comprehensive_score, markdown=False,
+            foreign_shares=foreign_shares,
         )
         print(drag_text)
 
@@ -1762,6 +1767,12 @@ class Orchestrator:
             fx_averages=fx_averages,
         )
 
+        # 領先指標（預測用）：以本函式既有的 tw_price / quarterly_data 計算本益比，
+        # 結合 chip_data 與 foreign_shares 判斷；若呼叫方已傳入則沿用同一份結果。
+        if leading_indicator is None:
+            _pe = compute_trailing_pe(tw_price, quarterly_data)
+            leading_indicator = compute_leading_indicator(chip_data, foreign_shares, _pe)
+
         # 寫入日誌（重構版：直接產出結構化報告）
         self._append_to_log(
             dashboard_summary=dashboard_summary,
@@ -1789,6 +1800,8 @@ class Orchestrator:
             fx_averages=fx_averages,
             revenue_by_date=revenue_by_date or {},
             price_df=trading_df,
+            foreign_shares=foreign_shares,
+            leading_indicator=leading_indicator,
         )
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
@@ -1796,7 +1809,8 @@ class Orchestrator:
 
     # ── 綜合燈號拉低原因 ─────────────────────────────────────────────
     def _format_drag_reasons(self, result, w, chip_flags, tech_flags,
-                             comprehensive_score, markdown: bool = False) -> str:
+                             comprehensive_score, markdown: bool = False,
+                             foreign_shares: Optional[int] = None) -> str:
         """
         產出「綜合燈號被哪些面向拉低」的說明。
 
@@ -2450,6 +2464,8 @@ class Orchestrator:
                        fx_averages: Optional[Dict[str, float]] = None,
                        revenue_by_date: Optional[Dict[str, float]] = None,
                        price_df: Optional[pd.DataFrame] = None,
+                       foreign_shares: Optional[int] = None,
+                       leading_indicator: Optional[LeadingIndicator] = None,
                        ) -> None:
         """將分析結果以 Markdown 格式附加到檔案（重構版：直接產出結構化報告）"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2573,6 +2589,13 @@ class Orchestrator:
             if eps_count >= 2 and trailing_4q_eps > 0:
                 pe_ratio = tw_price / trailing_4q_eps
 
+        # ── 領先指標（預測用）──
+        # 由呼叫方（run_full_analysis / dashboard main）計算後傳入，確保終端儀表板
+        # 與 analysis_log.md 報告使用同一份結果。本函式不持有 chip_data / foreign_shares，
+        # 故未傳入時僅以「資料不足」狀態呈現，不自行重算。
+        if leading_indicator is None:
+            leading_indicator = LeadingIndicator(available=False, note="未提供領先指標資料")
+
         # 燈號
         alert_emoji = "🟢"
         alert_label = "綠燈"
@@ -2644,6 +2667,48 @@ class Orchestrator:
             f"使用者應自行評估風險，作者不對依賴本報告所產生之損失承擔責任。"
         )
 
+        # ═══ 🔮 領先指標預警（預測用，置於報告最前方）═══
+        li = leading_indicator
+        li_pct_th = li.pct_threshold * 100   # 百分比門檻（如 1.0）
+        li_lines = [
+            "### 🔮 領先指標預警（預測用）\n",
+            "> **觸發條件（三者同時成立）：** 外資近 "
+            f"{len(li.last_dates) if li.last_dates else LEADING_INDICATOR_SESSIONS} 個交易日"
+            "「連續賣超」＋ 累計淨賣超佔外資持股 "
+            f"> {li_pct_th:.0f}% ＋ 本益比 (TTM) > {li.pe_threshold:.0f} 倍。\n",
+        ]
+        if not li.available:
+            li_lines.append(f"⚪ **資料不足**：{li.note or '無法判斷領先指標'}。")
+        elif li.triggered:
+            last_parts = []
+            for d, v in zip(li.last_dates, li.last_net_shares):
+                tag = "賣超" if v < 0 else "買超"
+                last_parts.append(f"{d} {tag} {abs(v)/1000:,.0f} 張")
+            pct = li.sell_pct if li.sell_pct is not None else 0.0
+            li_lines.append(
+                f"🔴 **觸發｜強制紅燈**：外資近 {len(li.last_dates)} 日連續賣超"
+                f"（{'、'.join(last_parts)}），2 日累計賣超 {li.cumulative_sell_shares/1000:,.0f} 張"
+                f"（佔{li.denom_label} {pct:.2f}%）＋本益比 {li.pe_ratio:.1f} 倍，"
+                "滿足全部條件 → 籌碼面強制紅燈，視為潛在轉折領先訊號。"
+            )
+        else:
+            # 未觸發：列出目前狀態與距觸發的缺口，便於追蹤。
+            last_parts = []
+            for d, v in zip(li.last_dates, li.last_net_shares):
+                tag = "賣超" if v < 0 else "買超"
+                last_parts.append(f"{d} {tag} {abs(v)/1000:,.0f} 張")
+            pct_str = f"{li.sell_pct:.2f}%" if li.sell_pct is not None else "N/A"
+            pe_ok = "✓" if li.pe_ratio > li.pe_threshold else "✗"
+            sell_ok = "✓" if li.both_selling else "✗"
+            pct_ok = "✓" if (li.sell_pct is not None and li.sell_pct > li_pct_th) else "✗"
+            li_lines.append(
+                f"🟢 **未觸發**。近 {len(li.last_dates)} 日：{'、'.join(last_parts) or '無資料'}；"
+                f"累計賣超佔{li.denom_label} {pct_str}（門檻 >{li_pct_th:.0f}%，{pct_ok}）｜"
+                f"連續賣超 {sell_ok}｜本益比 {li.pe_ratio:.1f} 倍（門檻 >{li.pe_threshold:.0f}，{pe_ok}）。"
+            )
+        # 置於標題（sections[0]）之後、目錄之前，確保領先指標位於報告最前方。
+        sections.insert(1, "\n\n".join(li_lines))
+
         # ═══ 一、總覽儀表板 ═══
         # 各面向分數（優先取 SignalEngine 結果，確保與綜合得分一致）
         fin_s   = result.financial_score if result else fin_score
@@ -2680,6 +2745,10 @@ class Orchestrator:
         if pe_ratio > CONFIG.chip.high_sellout_pe_threshold and foreign_2m_sell < -sellout_threshold:
             chip_level, chip_label, chip_emoji = "red", "紅燈", "🔴"
             chip_high_sellout = True
+        # 領先指標觸發：外資近 2 日連續賣超 + 佔持股 ≥1% + 本益比 > 門檻，
+        # 同樣強制籌碼面紅燈（較兩個月高檔出貨規則更敏感的前置預警）。
+        if leading_indicator.triggered:
+            chip_level, chip_label, chip_emoji = "red", "紅燈", "🔴"
 
         score_rows = [
             [f"基本面（財務 + 大廠）", "100", f"{(fin_w+bt_w)*100:.0f}%", f"{fundamental_score:.1f}", fund_emoji],
@@ -2692,7 +2761,20 @@ class Orchestrator:
         warnings = []
         if pe_ratio > 31:
             warnings.append(f"🟡 **本益比偏高**：TTM P/E {pe_ratio:.1f} 倍，處於歷史 70–80 百分位，估值擴張空間有限")
-        if chip_high_sellout:
+        if leading_indicator.triggered:
+            li = leading_indicator
+            sell_lots = li.cumulative_sell_shares / 1000
+            pct = li.sell_pct if li.sell_pct is not None else 0.0
+            last_parts = []
+            for d, v in zip(li.last_dates, li.last_net_shares):
+                tag = "賣超" if v < 0 else "買超"
+                last_parts.append(f"{d} {tag} {abs(v)/1000:,.0f} 張")
+            warnings.append(
+                f"🔴 **領先指標觸發｜強制紅燈**：外資近 {len(li.last_dates)} 日連續賣超（"
+                f"{'、'.join(last_parts)}），2 日累計賣超 {sell_lots:,.0f} 張"
+                f"（佔{li.denom_label} {pct:.2f}%）＋本益比 {li.pe_ratio:.1f} 倍，籌碼面強制紅燈"
+            )
+        elif chip_high_sellout:
             sell_lots = abs(foreign_2m_sell) / 1000
             pct = abs(foreign_2m_sell) / sellout_denom * 100
             warnings.append(
@@ -2717,6 +2799,7 @@ class Orchestrator:
             + "\n\n"
             + self._format_drag_reasons(
                 result, CONFIG.weights, chip_flags, tech_flags, comprehensive_score, markdown=True,
+                foreign_shares=foreign_shares,
             )
         )
 
@@ -3119,8 +3202,8 @@ class Orchestrator:
             if _anchor in present_chapters:
                 toc_lines.append(f"- [{_label}](#{_anchor})")
         toc_block = "---\n\n" + "\n".join(toc_lines) + "\n"
-        # 目錄置於標題（sections[0]）之後
-        sections.insert(1, toc_block)
+        # 目錄置於領先指標（sections[1]）之後、各章節之前
+        sections.insert(2, toc_block)
 
         # ── 寫入檔案 ──────────────────────────────────────────────────
         try:
