@@ -7,13 +7,32 @@
 
 ## 📌 基本資訊
 
+fix/chart-datetime-axis
 - **目前所在分支 (Current Branch)**: `feat/sal-service-abstraction-layer`
 - **本次交接時間 (Timestamp)**: 2026-07-11 09:30 (UTC+8)
+- **目前所在分支 (Current Branch)**: `test/perf-efficiency-improvements`（實驗分支，基於 `develop`；待合併分支：`fix/macro-agent-yahoo-sal-tests`、`fix/monthly-revenue-cache-parse`、`docs/update-handoff-readme`）
+- **本次交接時間 (Timestamp)**: 2026-07-18 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
----
-
 ## ✅ 已完成的工作 (What's Done)
+
+fix/chart-datetime-axis
+
+### 本次 session 完成（2026-07-16 多項修復）
+- [x] **SEC 13F 傳輸層遷移至 SAL**：`tsmc_institutional_tracker.py` 的 URL 探索與 curl_cffi TLS 繞過邏輯移到 `sal/providers.py` 的 `SECEdgarProvider`（`fetch_submissions_raw` / `_discover_13f_urls` / `fetch_13f_infotable_raw`），tracker 改委派 `get_sec()`。已透過 **PR #23 合併進 `develop`**（commit `d73bd75`）。
+- [x] **macro agent 測試對齊 SAL YahooFinanceProvider 遷移**：`test_macro_agent.py` 原本 7 個測試 mock 舊的 `fetch_with_cache` + `requests.Session` 路徑，改為 mock `sal.providers.YahooFinanceProvider.get_current_price` 邊界。`test_fetch_yahoo_price_raises_on_missing_price` 重構為 `test_fetch_yahoo_price_returns_zero_for_missing_price`（SAL `get_current_price` 對缺失價格回傳 0.0，不拋錯）。分支 `fix/macro-agent-yahoo-sal-tests`（commit `eed7924`，待合併；本 session 該分支指標曾遺失，已用 `git branch <name> <commit>` 從 dangling commit 重建）。
+- [x] **月營收快取解析 bug 修復**：`get_monthly_revenue_by_date()` 原本只接受 MonthlyRevenue DTO 物件或含 `date` 欄位的原始 dict，導致快取中的序列化 DTO-dict（`{year, month, revenue}`，無 `date`）全部被跳過、快取降級路徑恆為空。新增第三種格式分支處理序列化 DTO-dict。分支 `fix/monthly-revenue-cache-parse`（commit `c3c6ca4`，待合併）。
+- [x] **「未能取得月營收資料」警告診斷與解決**：根因為 20:50 某次執行碰到 FinMind 瞬時只回傳 3 個月，該 3 個月快取在 24h TTL 內被視為新鮮、後續執行皆複用 → 算不出 YoY → 警告。經即時驗證 token 有效、FinMind 現可回傳 24 個月（2024-08～2026-07）；已清除過期月營收快取並重新抓取，寫入 24 個月新快取，下次執行警告消失。
+- [x] **README / 交接文件更新**：README 新增 Usage 專區、SAL 說明、curl_cffi/pytest 依賴；本交接報告同步更新。分支 `docs/update-handoff-readme`（commit `934c128`，待合併）。
+- [x] **全測試套件 756 passed**（原 749 + 7 fail）。
+
+### 本次 session 完成（效率改善實驗 / 2026-07-18，分支 `test/perf-efficiency-improvements`）
+- [x] **建立效率改善實驗分支**：從 `develop` 切出 `test/perf-efficiency-improvements`，用於測試程式效率改善（使用者明確授權）。
+- [x] **並行化 `main()` 獨立抓取**：`value_df`(TWSE)、`chip_data`(FinMind 法人)、`revenue_by_date`(月營收)、`quarterly_margins`(季報) 四者無依賴且各自走統一快取層，改以 `ThreadPoolExecutor` 並行抓取；`revenue_yoy` 保留在並行池之後（會再讀月營收快取），避免快取未命中時重複觸網。抓取總耗時由「各源之和」降為「最慢單一源」。
+- [x] **並行化 Orchestrator 的 Agent 分析**：`run_full_analysis` 中 7 個彼此獨立、無共享可變狀態的 Agent 分析（財務 ×2、技術、籌碼、宏觀 ×2、13F tracker）改以 `ThreadPoolExecutor` 並行；`fx_averages` 與 `tw_price` 先算好再並行，結果仍依原順序彙總與 print。分析總耗時趨近最慢單一 Agent。
+- [x] **移除 TWSE 月循環不必要 sleep**：`sal/providers.py` 的 `TWSEProvider._fetch_json` 改回傳 `(data, from_cache)`；`get_market_turnover` 僅在實際發出網路請求時 `sleep(0.3)`，命中快取（例行執行）時跳過。同步更新 `get_stock_day` 與 `test_sal.py` 4 處 mock 契約。
+- [x] **測試狀態**：全測試套件 752 passed + 4 fail（4 個 fail 皆為既有 `curl_cffi` 未安裝導致的 `ModuleNotFoundError`，與本次改動無關）。
+- [ ] **待辦**：量化驗證（基準測試 / API 呼叫次數統計）使用者選擇「先只做程式碼改動」，驗證方式後續再定。
 
 ### 本次 session 完成（SAL 服務抽象層完整實作 / 2026-07-10~11）
 - [x] **建立 `sal/` 服務抽象層**：隔離上層判斷邏輯與下層 API 呼叫
@@ -222,6 +241,8 @@
 9. **[待提交] `test_institutional_tracker.py` 修復**：3 個測試從 FAIL → PASS，尚未 commit。建議 commit 訊息：`fix: institutional tracker tests — mock should_fetch_from_sec and _HAS_CURL_CFFI`
 10. **[優先級：高] SEC Archives 403 封鎖 — 離線快取下載方案**：見下方「🚨 SEC Archives 封鎖問題與解決方案」章節。
 11. **[優先級：中] 共識 EPS 估測整合**：長期監看板目前用「最新季 × 4」做 Forward EPS，可串接 FinMind / Yahoo Finance 共識預測（1Y/2Y Forward EPS）替代簡單年化。
+12. **[優先級：中] 三個待合併分支**：`fix/macro-agent-yahoo-sal-tests`（`eed7924`，macro 測試）、`fix/monthly-revenue-cache-parse`（`c3c6ca4`，月營收快取解析）、`docs/update-handoff-readme`（`934c128`，文件）均已完成、待建立 PR 合併進 develop。注意 `fix/macro-agent-yahoo-sal-tests` 分支指標本 session 曾遺失，已從 dangling commit 重建，請勿重複刪除。
+13. **[優先級：中] Q2 2026 財報待 FinMind 上架**：7/16 法說會已公布 2026Q2（4/5/6 月）三率 + EPS，但 FinMind `TaiwanStockFinancialStatements` API 目前只到 2026Q1（2026-03-31），資料落後法說會。使用者選擇「等 FinMind」不自動處理。FinMind 上架 Q2 後，季報快取 7 天 TTL 到期會自動補進；若要更快反映，清除 `finmind_TaiwanStockFinancialStatements_2330_*` / `financial_agent_quarterly_margins_2330_*` / `tsmc_eps_quarterly.json` 強制重抓。`tsmc_earnings_signals.json` 仍只到 2025Q2，待使用者提供法說會質化信號後補 2026Q2 條目。
 
 ---
 
@@ -494,9 +515,10 @@ python tsmc_institutional_tracker.py
 > 15. `analyze_all_institutions()` 回傳 `(all_data, combined_report)`，combined_report 含跨機構比較表格
 
 ## 🚀 給下一個 AI 建議
-1. **目前分支**：`develop`，工作樹乾淨。`test_institutional_tracker.py` 修復已 commit（`78b51b6`）。
+1. **目前分支**：`develop`（工作樹乾淨）。本 session 三筆修復均在獨立分支、待合併：SEC 13F 傳輸遷移已隨 **PR #23** 合併進 develop（commit `d73bd75`）；其餘 `fix/macro-agent-yahoo-sal-tests`（`eed7924`）、`fix/monthly-revenue-cache-parse`（`c3c6ca4`）、`docs/update-handoff-readme`（`934c128`）待建立 PR。
 2. **⚠️ 禁止自動 git push**：任何情況下 AI 都不得自行推送，只能提醒人類評估。
 3. **Pre-flight**：修改前確認分支、讀取 AI_HANDOFF.md、檢查 git status。**不要在 develop/main 上直接 commit**，先開 `feat/` 或 `fix/` 分支。
 4. **測試**：`test_institutional_tracker.py` 42 個全部通過 ✅。`test_financial_agent.py` 仍有 2 個 pre-existing 失敗（FX insight 測試），勿誤認為新 bug。
 5. **🔴 SEC Archives 403 封鎖（高優先）**：本機 IP 被 `www.sec.gov` 全面封鎖。若你的環境可以存取 SEC Archives（非封鎖 IP + 有 curl_cffi），請執行上方「解決方案 D」中的 Python 腳本下載 holdings 快取，將 JSON 傳回目標機器的 `local_cache/`。**這不需要修改任何程式碼**，快取檔案放好後 `python tsmc_institutional_tracker.py` 就能正確讀取。
----
+6. **⚠️ 月營收警告根因（已解決，供參考）**：「未能取得月營收資料」曾由過期 3 個月快取引起（FinMind 瞬斷）。現快取已為 24 個月、警告消失。若日後再現，先清 `local_cache/tsmc_monthly_revenue_24m_*` 與 `local_cache/finmind_TaiwanStockMonthRevenue_*` 強制重抓；若 FinMind 仍只回 3 個月，才是 token 失效（用 `venv/bin/python -c "from dotenv import load_dotenv; load_dotenv(); import os; print(bool(os.getenv('FINMIND_TOKEN')))"` 驗證）。
+7. **📅 Q2 2026 財報**：FinMind API 目前只到 2026Q1；2026Q2 待其上架後自動抓取（見待辦 #13）。`tsmc_earnings_signals.json` 缺 2026Q2 條目。

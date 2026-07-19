@@ -23,6 +23,7 @@ import pytest
 from unittest.mock import patch, MagicMock, call
 from datetime import date
 
+import data_cache
 from tsmc_macro_agent import (
     GlobalMacroAgent,
     SEC_HEADERS,
@@ -1056,7 +1057,7 @@ class TestFetchInflationReport:
         mock_session_cls.return_value = MagicMock()
         agent = GlobalMacroAgent()
 
-        def fake_fetch(policy_name, cache_key, fetch_fn):
+        def fake_fetch(policy_name, cache_key, fetch_fn, **kwargs):
             if "fred_CPIAUCSL" in cache_key:
                 return {
                     "observations": [
@@ -1092,7 +1093,7 @@ class TestFetchInflationReport:
         mock_session_cls.return_value = MagicMock()
         agent = GlobalMacroAgent()
 
-        def fake_fetch(policy_name, cache_key, fetch_fn):
+        def fake_fetch(policy_name, cache_key, fetch_fn, **kwargs):
             base_values = {
                 "fred_CPIAUCSL": 300.0,
                 "fred_CPILFESL": 305.0,
@@ -1129,7 +1130,7 @@ class TestFetchInflationReport:
         mock_session_cls.return_value = MagicMock()
         agent = GlobalMacroAgent()
 
-        def fake_fetch(policy_name, cache_key, fetch_fn):
+        def fake_fetch(policy_name, cache_key, fetch_fn, **kwargs):
             if "fred_CPIAUCSL" in cache_key:
                 obs = []
                 for i in range(12):
@@ -1275,7 +1276,7 @@ class TestAnalyzeGlobalRiskWithInflation:
         agent = GlobalMacroAgent()
 
         call_count = 0
-        def fake_fetch(policy_name, cache_key, fetch_fn):
+        def fake_fetch(policy_name, cache_key, fetch_fn, **kwargs):
             nonlocal call_count
             call_count += 1
             if "TSM" in cache_key:
@@ -1307,7 +1308,7 @@ class TestAnalyzeGlobalRiskWithInflation:
         mock_session_cls.return_value = MagicMock()
         agent = GlobalMacroAgent()
 
-        def fake_fetch(policy_name, cache_key, fetch_fn):
+        def fake_fetch(policy_name, cache_key, fetch_fn, **kwargs):
             if "TSM" in cache_key:
                 return {"chart": {"result": [{"meta": {"regularMarketPrice": 180.0}}]}}
             elif "TWD" in cache_key:
@@ -1329,7 +1330,7 @@ class TestAnalyzeGlobalRiskWithInflation:
         mock_session_cls.return_value = MagicMock()
         agent = GlobalMacroAgent()
 
-        def fake_fetch(policy_name, cache_key, fetch_fn):
+        def fake_fetch(policy_name, cache_key, fetch_fn, **kwargs):
             if "TSM" in cache_key:
                 return {"chart": {"result": [{"meta": {"regularMarketPrice": 180.0}}]}}
             elif "TWD" in cache_key:
@@ -1343,3 +1344,103 @@ class TestAnalyzeGlobalRiskWithInflation:
 
         assert "溢價" in report  # ADR still works
         assert "US Inflation Data" not in report  # inflation gracefully skipped
+
+
+# ══════════════════════════════════════════════════════════════
+# Companyfacts 完整性校驗（_validate_companyfacts）
+# ══════════════════════════════════════════════════════════════
+
+class TestValidateCompanyfacts:
+    """防止 SEC companyfacts 半截 JSON 污染快取 TTL。"""
+
+    def _full_companyfacts(self):
+        # 20 個 dummy tag + 必要的 CAPEX tag（含 3 筆 10-Q entry）
+        return {
+            "facts": {"us-gaap": {
+                **{f"tag_{i}": {} for i in range(20)},
+                "PaymentsToAcquirePropertyPlantAndEquipment": {"units": {"USD": [
+                    {"end": "2025-09-30", "val": 1, "form": "10-Q", "fp": "Q3",
+                     "filed": "2025-10-25", "start": "2025-07-01", "qtrs": 1, "accn": "a1", "fy": 2025},
+                    {"end": "2025-12-31", "val": 2, "form": "10-K", "fp": "FY",
+                     "filed": "2026-01-25", "start": "2025-10-01", "qtrs": 4, "accn": "a2", "fy": 2025},
+                    {"end": "2026-03-31", "val": 3, "form": "10-Q", "fp": "Q1",
+                     "filed": "2026-04-25", "start": "2026-01-01", "qtrs": 1, "accn": "a3", "fy": 2026},
+                ]}},
+            }}
+        }
+
+    def _truncated_companyfacts(self):
+        # 實際中毒快取的精簡版：只有 1 個 tag、2 筆 entry
+        return {
+            "facts": {"us-gaap": {
+                "PaymentsToAcquirePropertyPlantAndEquipment": {"units": {"USD": [
+                    {"end": "2026-03-31", "val": 30880000000, "form": "10-Q", "fp": "Q1", "filed": "2026-04-24", "accn": "x"},
+                    {"end": "2025-12-31", "val": 29880000000, "form": "10-K", "fp": "FY", "filed": "2026-01-28", "accn": "y"},
+                ]}}
+            }}
+        }
+
+    @patch("tsmc_macro_agent.requests.Session")
+    def test_accepts_full_companyfacts(self, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+        assert agent._validate_companyfacts(self._full_companyfacts()) is True
+
+    @patch("tsmc_macro_agent.requests.Session")
+    def test_rejects_truncated(self, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+        assert agent._validate_companyfacts(self._truncated_companyfacts()) is False
+
+    @patch("tsmc_macro_agent.requests.Session")
+    def test_rejects_non_dict(self, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+        assert agent._validate_companyfacts(None) is False
+        assert agent._validate_companyfacts([1, 2, 3]) is False
+
+    @patch("tsmc_macro_agent.requests.Session")
+    def test_rejects_missing_capex_tag(self, mock_session_cls):
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+        data = {"facts": {"us-gaap": {f"other_tag_{i}": {} for i in range(25)}}}
+        assert agent._validate_companyfacts(data) is False
+
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_fetch_recent_capex_accepts_valid_and_derives(self, mock_fetch_cache, mock_session_cls):
+        """校驗通過時，應正常 derivations 出 3 季。"""
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+        mock_fetch_cache.return_value = self._full_companyfacts()
+        quarters = agent._fetch_recent_capex_quarters(CAPEX_COMPANIES["Microsoft"])
+        assert len(quarters) == 3
+
+    @patch("tsmc_macro_agent.requests.Session")
+    @patch("tsmc_macro_agent.fetch_with_cache")
+    def test_fetch_recent_capex_rejects_truncated_raises(self, mock_fetch_cache, mock_session_cls):
+        """校驗未通過且無舊快取時，應拋錯（不寫入半截資料）。"""
+        mock_session_cls.return_value = MagicMock()
+        agent = GlobalMacroAgent()
+        # 讓 fetch_with_cache 走真實邏輯（含 validate），但用暫存目錄避免污染 local_cache
+        import tempfile
+        from pathlib import Path
+        tmp_path = Path(tempfile.mkdtemp())
+        captured = {}
+
+        def spy(policy_name, cache_key, fetch_fn, directory="local_cache", validate=None):
+            captured["validate"] = validate
+            return data_cache.fetch_with_cache(
+                policy_name, cache_key, fetch_fn, directory=str(tmp_path), validate=validate
+            )
+
+        mock_fetch_cache.side_effect = spy
+        # 即時抓取回傳半截資料
+        agent._http_get_json = lambda *a, **k: self._truncated_companyfacts()
+
+        with pytest.raises(RuntimeError, match="SEC 資料抓取失敗"):
+            agent._fetch_recent_capex_quarters(CAPEX_COMPANIES["Microsoft"])
+        # validate 回呼確實被傳入
+        assert callable(captured["validate"])
+        assert captured["validate"](self._full_companyfacts()) is True
+        assert captured["validate"](self._truncated_companyfacts()) is False
