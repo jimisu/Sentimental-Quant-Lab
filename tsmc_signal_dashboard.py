@@ -1063,6 +1063,17 @@ def main():
             "營業利益率 色彩", "稅後淨利率 色彩"
         ])
 
+    # 外資當日實際持股（強制紅燈分母：用外資持股而非總流通股）
+    foreign_shares = None
+    try:
+        ownership = get_finmind().get_foreign_ownership("2330", days=30)
+        owned = [o for o in ownership if o.shares and o.shares > 0]
+        if owned:
+            owned.sort(key=lambda o: o.date)
+            foreign_shares = owned[-1].shares
+    except Exception as exc:
+        print(f"警告：未能取得外資持股（{exc}），強制紅燈分母回退總流通股。", file=sys.stderr)
+
     # 呼叫 AI Agent 編排器
     orchestrator = Orchestrator()
 
@@ -1073,6 +1084,7 @@ def main():
     dashboard_summary = orchestrator.run_full_analysis(
         quarterly_margins, value_df, chip_data, styled_df,
         revenue_by_date=revenue_by_date,
+        foreign_shares=foreign_shares,
     )
 
     print(f"\n{dashboard_summary}")

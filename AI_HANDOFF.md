@@ -7,16 +7,12 @@
 
 ## 📌 基本資訊
 
-fix/chart-datetime-axis
-- **目前所在分支 (Current Branch)**: `feat/sal-service-abstraction-layer`
-- **本次交接時間 (Timestamp)**: 2026-07-11 09:30 (UTC+8)
-- **目前所在分支 (Current Branch)**: `test/perf-efficiency-improvements`（實驗分支，基於 `develop`；待合併分支：`fix/macro-agent-yahoo-sal-tests`、`fix/monthly-revenue-cache-parse`、`docs/update-handoff-readme`）
-- **本次交接時間 (Timestamp)**: 2026-07-18 (UTC+8)
-- **目前負責人/AI (Handler)**: OWL (Claude Code)
+- **目前所在分支 (Current Branch)**: `fix/chip-red-light-threshold-1pct`（基於 `develop`；聚焦「強制紅燈賣超門檻分母改用外資當日實際持股 + PE 門檻 25」）
+- **本次交接時間 (Timestamp)**: 2026-07-19 (UTC+8)
+- **目前負責人/AI (Handler)**: Claude Code (Jimisu)
+- **價格資料來源**: `local_cache/hcd_yahoo_ohlcv_2330.TW_1672531200_1784419200.json`（2330.TW 日線，2023-01-03 ~ 2026-07-17，852 日；未觸網）
 
 ## ✅ 已完成的工作 (What's Done)
-
-fix/chart-datetime-axis
 
 ### 本次 session 完成（2026-07-16 多項修復）
 - [x] **SEC 13F 傳輸層遷移至 SAL**：`tsmc_institutional_tracker.py` 的 URL 探索與 curl_cffi TLS 繞過邏輯移到 `sal/providers.py` 的 `SECEdgarProvider`（`fetch_submissions_raw` / `_discover_13f_urls` / `fetch_13f_infotable_raw`），tracker 改委派 `get_sec()`。已透過 **PR #23 合併進 `develop`**（commit `d73bd75`）。
@@ -24,7 +20,26 @@ fix/chart-datetime-axis
 - [x] **月營收快取解析 bug 修復**：`get_monthly_revenue_by_date()` 原本只接受 MonthlyRevenue DTO 物件或含 `date` 欄位的原始 dict，導致快取中的序列化 DTO-dict（`{year, month, revenue}`，無 `date`）全部被跳過、快取降級路徑恆為空。新增第三種格式分支處理序列化 DTO-dict。分支 `fix/monthly-revenue-cache-parse`（commit `c3c6ca4`，待合併）。
 - [x] **「未能取得月營收資料」警告診斷與解決**：根因為 20:50 某次執行碰到 FinMind 瞬時只回傳 3 個月，該 3 個月快取在 24h TTL 內被視為新鮮、後續執行皆複用 → 算不出 YoY → 警告。經即時驗證 token 有效、FinMind 現可回傳 24 個月（2024-08～2026-07）；已清除過期月營收快取並重新抓取，寫入 24 個月新快取，下次執行警告消失。
 - [x] **README / 交接文件更新**：README 新增 Usage 專區、SAL 說明、curl_cffi/pytest 依賴；本交接報告同步更新。分支 `docs/update-handoff-readme`（commit `934c128`，待合併）。
-- [x] **全測試套件 756 passed**（原 749 + 7 fail）。
+- [x] **全測試套構 756 passed**（原 749 + 7 fail）。
+
+### 本次 session 完成（賣出→買回回測分析 / 2026-07-19，分支 `fix/chip-red-light-threshold-1pct`）
+- [x] **「誤判」賣出買回策略回測**：使用者想驗證強制紅燈 as-of 日賣出後，20 交易日內能否以更低價買回。新建兩支分析腳本（**均尚未 commit**，見待辦 #14）：
+  - `sell_buyback_backtest.py`：對 7 個 as-of 日（4×2024 + 2025-01-22 / 2025-04-02 / 2026-07-16）以 as-of 收盤賣出，檢查後續 20 交易日最低收盤是否低於賣價（buyback edge % + 最低日序 + 是否曾漲回賣價上）。
+  - `sell_below_count.py`：對指定賣出日，統計後續 20 交易日中收盤低於賣價的「天數」（列出每個低於賣價的交易日）。
+- [x] **關鍵發現 1 — CSV `錯誤` 欄為空**：`backtest_crash_signals.csv` 的 `錯誤` 列 7 列全為 NaN；2026-07-17 那列末尾的 `True` 屬於 `警示` 欄，不是 `錯誤`。**沒有任何一天被預先標記為誤判**——「誤判的那一次」在資料裡不存在。
+- [x] **關鍵發現 2 — 依「20 交易日內能否更低買回」標準，全部 7 個 as-of 日都「能」**：2024 四天確定性成立（買回價差 5.4%~16.8%）；2025 兩天亦成立。故該測試**無法 isolate 出「誤判的那一次」**。
+- [x] **關鍵發現 3 — 2026-07-17 無法完整評估**：2026-07-16 之後目前只有 1 個交易日（07-17 收 2290，較 as-of 2470 低 7.3%）。20 交易日窗需資料到約 **2026-08-13** 才滿。目前隔日即能更低買回，暫不似誤判（見待辦 #15）。
+- [x] **使用者追問：4 個 2024 as-of 日賣出後 20 日內低於賣價的天數**（賣出日 = as_of前一日，不含賣出當日）：
+
+  | 賣出日(as-of) | 賣價 | 低於賣價天數 / 20 | 佔比 | 最低收盤(日) |
+  |---|---|---|---|---|
+  | 2024-07-23 | 979.0 | **20** | 100% | 815.0 (2024-08-05) |
+  | 2024-08-01 | 960.0 | **16** | 80% | 815.0 (2024-08-05) |
+  | 2024-08-02 | 903.0 | **3** | 15% | 815.0 (2024-08-05) |
+  | 2024-09-03 | 940.0 | **6** | 30% | 889.0 (2024-09-04) |
+
+  - 解讀：越早賣（7/23、8/01）整段 20 日都更低，隨時能買回；越晚賣（8/02 已近低點 815、9/03）可更低買回的時間窗口很短。
+- [x] **價格資料來源**：`local_cache` 2330.TW 日線（2023-01-03 ~ 2026-07-17，852 日），全程未觸網。
 
 ### 本次 session 完成（效率改善實驗 / 2026-07-18，分支 `test/perf-efficiency-improvements`）
 - [x] **建立效率改善實驗分支**：從 `develop` 切出 `test/perf-efficiency-improvements`，用於測試程式效率改善（使用者明確授權）。
@@ -243,6 +258,12 @@ fix/chart-datetime-axis
 11. **[優先級：中] 共識 EPS 估測整合**：長期監看板目前用「最新季 × 4」做 Forward EPS，可串接 FinMind / Yahoo Finance 共識預測（1Y/2Y Forward EPS）替代簡單年化。
 12. **[優先級：中] 三個待合併分支**：`fix/macro-agent-yahoo-sal-tests`（`eed7924`，macro 測試）、`fix/monthly-revenue-cache-parse`（`c3c6ca4`，月營收快取解析）、`docs/update-handoff-readme`（`934c128`，文件）均已完成、待建立 PR 合併進 develop。注意 `fix/macro-agent-yahoo-sal-tests` 分支指標本 session 曾遺失，已從 dangling commit 重建，請勿重複刪除。
 13. **[優先級：中] Q2 2026 財報待 FinMind 上架**：7/16 法說會已公布 2026Q2（4/5/6 月）三率 + EPS，但 FinMind `TaiwanStockFinancialStatements` API 目前只到 2026Q1（2026-03-31），資料落後法說會。使用者選擇「等 FinMind」不自動處理。FinMind 上架 Q2 後，季報快取 7 天 TTL 到期會自動補進；若要更快反映，清除 `finmind_TaiwanStockFinancialStatements_2330_*` / `financial_agent_quarterly_margins_2330_*` / `tsmc_eps_quarterly.json` 強制重抓。`tsmc_earnings_signals.json` 仍只到 2025Q2，待使用者提供法說會質化信號後補 2026Q2 條目。
+14. **[優先級：中] 提交本分支未追蹤的分析腳本**：`fix/chip-red-light-threshold-1pct` 上有多個未 commit 檔案，建議依邏輯單元分次提交（禁止自動 push）：
+    - 新增腳本：`sell_buyback_backtest.py`、`sell_below_count.py`、`stress_test_forced_red.py`、`analyze_tech_pattern.py`
+    - 新增資料：`historical_crash_days.csv`（僅含 2026-07-17）
+    - 修改：`backtest_crash_signals.csv`（含本益比 / 強制紅燈欄位）
+    - 其它：`.claude/plans/`（若有內容）
+15. **[優先級：中] 2026-07-17 賣出買回回測待補資料**：2026-07-16 之後目前僅 1 個交易日（07-17），20 交易日窗未滿。待 Yahoo 日線更新到約 **2026-08-13** 後，用 `sell_below_count.py` 對 `2026-07-16` 補算「20 日內低於賣價天數」與 buyback edge，確認 2026-07-17 強制紅燈是否真為誤判。
 
 ---
 
@@ -515,7 +536,7 @@ python tsmc_institutional_tracker.py
 > 15. `analyze_all_institutions()` 回傳 `(all_data, combined_report)`，combined_report 含跨機構比較表格
 
 ## 🚀 給下一個 AI 建議
-1. **目前分支**：`develop`（工作樹乾淨）。本 session 三筆修復均在獨立分支、待合併：SEC 13F 傳輸遷移已隨 **PR #23** 合併進 develop（commit `d73bd75`）；其餘 `fix/macro-agent-yahoo-sal-tests`（`eed7924`）、`fix/monthly-revenue-cache-parse`（`c3c6ca4`）、`docs/update-handoff-readme`（`934c128`）待建立 PR。
+1. **目前分支**：`fix/chip-red-light-threshold-1pct`（基於 `develop`，工作樹有未 commit 的新增腳本/資料，見待辦 #14）。本分支聚焦強制紅燈賣超門檻分母改用外資當日實際持股 + PE 門檻 25。相關回測腳本：`backtest_crash_signals.py`、`stress_test_forced_red.py`、`analyze_tech_pattern.py`、`sell_buyback_backtest.py`、`sell_below_count.py`；崩盤日清單：`historical_crash_days.csv`（目前僅 2026-07-17）。
 2. **⚠️ 禁止自動 git push**：任何情況下 AI 都不得自行推送，只能提醒人類評估。
 3. **Pre-flight**：修改前確認分支、讀取 AI_HANDOFF.md、檢查 git status。**不要在 develop/main 上直接 commit**，先開 `feat/` 或 `fix/` 分支。
 4. **測試**：`test_institutional_tracker.py` 42 個全部通過 ✅。`test_financial_agent.py` 仍有 2 個 pre-existing 失敗（FX insight 測試），勿誤認為新 bug。
