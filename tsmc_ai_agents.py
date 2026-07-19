@@ -1225,7 +1225,8 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             "three_institution_net_buy": total_net_shares,
         }
 
-    def analyze_flow(self, chip_data: List[Dict], price_df: pd.DataFrame) -> Tuple[str, Dict, int]:
+    def analyze_flow(self, chip_data: List[Dict], price_df: pd.DataFrame,
+                     foreign_shares: Optional[int] = None) -> Tuple[str, Dict, int]:
         report_prefix = f"數據來源: {self.source}\n分析邏輯: {self.logic}\n結論: "
 
         if not chip_data:
@@ -1372,10 +1373,13 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         # 外資近兩個月累計買賣超（高檔出貨監測）
         if foreign_2m_window_start:
             two_m_dir = "賣超" if foreign_2m_net_shares < 0 else "買超"
-            two_m_pct = abs(foreign_2m_net_shares) / CONFIG.chip.tsmc_float_shares * 100
+            # 分母優先用外資當日實際持股；未提供時回退總流通股
+            two_m_denom = foreign_shares if (foreign_shares and foreign_shares > 0) else CONFIG.chip.tsmc_float_shares
+            two_m_denom_label = "外資持股" if (foreign_shares and foreign_shares > 0) else "流通股"
+            two_m_pct = abs(foreign_2m_net_shares) / two_m_denom * 100
             detail_parts.append(
                 f"外資近兩個月({foreign_2m_window_start}~{foreign_2m_window_end})累計{two_m_dir} "
-                f"{abs(foreign_2m_net_shares) / 1000:.0f} 張（佔流通股 {two_m_pct:.2f}%）"
+                f"{abs(foreign_2m_net_shares) / 1000:.0f} 張（佔{two_m_denom_label} {two_m_pct:.2f}%）"
             )
 
         detail_section = "\n".join(detail_parts)
@@ -1523,7 +1527,8 @@ class Orchestrator:
 
     def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict],
                           styled_df: pd.DataFrame,
-                          revenue_by_date: Optional[Dict[str, float]] = None) -> str:
+                          revenue_by_date: Optional[Dict[str, float]] = None,
+                          foreign_shares: Optional[int] = None) -> str:
         """
         執行完整分析並回傳 dashboard_summary 字串。
         綜合得分燈號邏輯統一由 signal_engine 處理。
@@ -1545,7 +1550,7 @@ class Orchestrator:
                 fx_averages=fx_averages,
             )
             f_tech = executor.submit(self.tech_agent.analyze_sentiment, trading_df)
-            f_chip = executor.submit(self.chip_agent.analyze_flow, chip_data, trading_df)
+            f_chip = executor.submit(self.chip_agent.analyze_flow, chip_data, trading_df, foreign_shares)
             f_macro = executor.submit(self.macro_agent.analyze_global_risk, tw_price)
             f_bigtech = executor.submit(self.macro_agent.analyze_bigtech_fundamentals, quarterly_data)
             f_tracker = executor.submit(self.tracker_agent.analyze_all_institutions)
@@ -1818,7 +1823,7 @@ class Orchestrator:
             ("技術面", result.tech_score, w.tech,
              self._tech_drag_detail(tech_flags)),
             ("籌碼面", result.chip_score, w.chip,
-             self._chip_drag_detail(chip_flags)),
+             self._chip_drag_detail(chip_flags, foreign_shares)),
         ]
         ranked = sorted(
             [f for f in facets if f[1] < Y],
@@ -1890,13 +1895,15 @@ class Orchestrator:
             d.append("高檔區量價不健康（下跌未量縮 / 突破未帶量）")
         return d
 
-    def _chip_drag_detail(self, chip_flags: Dict) -> List[str]:
+    def _chip_drag_detail(self, chip_flags: Dict, foreign_shares: Optional[int] = None) -> List[str]:
         """籌碼面拉低綜合燈號的具體成因。"""
         d: List[str] = []
         sell = float(chip_flags.get("foreign_2m_net_shares", 0.0) or 0.0)
         if sell < 0:
-            pct = abs(sell) / CONFIG.chip.tsmc_float_shares * 100
-            d.append(f"外資近兩個月淨賣超 {abs(sell)/1000:,.0f} 张（佔流通股 {pct:.2f}%）")
+            denom = foreign_shares if (foreign_shares and foreign_shares > 0) else CONFIG.chip.tsmc_float_shares
+            label = "外資持股" if (foreign_shares and foreign_shares > 0) else "流通股"
+            pct = abs(sell) / denom * 100
+            d.append(f"外資近兩個月淨賣超 {abs(sell)/1000:,.0f} 张（佔{label} {pct:.2f}%）")
         if chip_flags.get("extreme_sell"):
             d.append("外資 5 日累計大幅賣超（≥ 5,000 張）")
         elif chip_flags.get("big_foreign_sell"):
@@ -2666,7 +2673,10 @@ class Orchestrator:
         chip_level, chip_label, chip_emoji = score_to_alert(chip_score_disp)
         chip_high_sellout = False
         foreign_2m_sell = float(chip_flags.get("foreign_2m_net_shares", 0.0) or 0.0)
-        sellout_threshold = CONFIG.chip.two_month_high_sellout_pct * CONFIG.chip.tsmc_float_shares
+        # 強制紅燈分母：優先用外資當日實際持股，未提供時回退總流通股
+        sellout_denom = foreign_shares if (foreign_shares and foreign_shares > 0) else CONFIG.chip.tsmc_float_shares
+        sellout_denom_label = "外資持股" if (foreign_shares and foreign_shares > 0) else "流通股"
+        sellout_threshold = CONFIG.chip.two_month_high_sellout_pct * sellout_denom
         if pe_ratio > CONFIG.chip.high_sellout_pe_threshold and foreign_2m_sell < -sellout_threshold:
             chip_level, chip_label, chip_emoji = "red", "紅燈", "🔴"
             chip_high_sellout = True
@@ -2684,10 +2694,10 @@ class Orchestrator:
             warnings.append(f"🟡 **本益比偏高**：TTM P/E {pe_ratio:.1f} 倍，處於歷史 70–80 百分位，估值擴張空間有限")
         if chip_high_sellout:
             sell_lots = abs(foreign_2m_sell) / 1000
-            pct = abs(foreign_2m_sell) / CONFIG.chip.tsmc_float_shares * 100
+            pct = abs(foreign_2m_sell) / sellout_denom * 100
             warnings.append(
                 f"🔴 **外資高檔出貨**：本益比 {pe_ratio:.1f} 倍且近兩個月外資淨賣超 "
-                f"{sell_lots:,.0f} 張（佔流通股 {pct:.2f}%），籌碼面強制紅燈"
+                f"{sell_lots:,.0f} 張（佔{sellout_denom_label} {pct:.2f}%），籌碼面強制紅燈"
             )
         elif chip_flags.get("extreme_sell") or chip_flags.get("big_foreign_sell"):
             warnings.append("🔴 **外資持續賣超**：5 日累計大幅賣超，籌碼結構惡化")
@@ -2871,15 +2881,15 @@ class Orchestrator:
         if f2m_start:
             f2m_dir = "🔴 淨賣超" if f2m < 0 else "🟢 淨買超"
             f2m_lots = abs(f2m) / 1000
-            f2m_pct = abs(f2m) / CONFIG.chip.tsmc_float_shares * 100
-            f2m_thr = CONFIG.chip.two_month_high_sellout_pct * CONFIG.chip.tsmc_float_shares
+            f2m_pct = abs(f2m) / sellout_denom * 100
+            f2m_thr = CONFIG.chip.two_month_high_sellout_pct * sellout_denom
             f2m_trig = (pe_ratio > CONFIG.chip.high_sellout_pe_threshold and f2m < -f2m_thr)
             two_month_block = (
                 "\n\n### 外資近兩個月累計買賣超（高檔出貨監測）\n\n"
                 + _md_table(["指標", "數值"], [
                     ["監測區間", f"{f2m_start} ~ {f2m_end}"],
                     ["累計淨買賣", f"{f2m_dir} {f2m_lots:,.0f} 張"],
-                    ["佔流通股比例", f"{f2m_pct:.2f}%"],
+                    [f"佔{sellout_denom_label}比例", f"{f2m_pct:.2f}%"],
                     ["紅燈門檻", f"淨賣超 > {f2m_thr/1000:,.0f} 張（{CONFIG.chip.two_month_high_sellout_pct*100:.2f}%）且 P/E > {CONFIG.chip.high_sellout_pe_threshold:.0f}"],
                     ["高檔出貨紅燈", "🔴 觸發" if f2m_trig else "未觸發"],
                 ])
