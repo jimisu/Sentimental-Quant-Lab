@@ -117,6 +117,10 @@ class ChipAlertConfig:
     chip_penalty_big_sell:  int   = 20     # 大額賣超扣分
     # 三大法人共振加成
     resonance_buy_bonus:    int   = 5      # 三大法人共振買超加分
+    # 外資高檔出貨監測（兩個月累計淨賣超）
+    tsmc_float_shares:          int   = 25_900_000_000  # 台積電流通股約 259 億股
+    two_month_high_sellout_pct: float = 0.007  # 紅燈門檻：兩月淨賣超佔流通股比例
+    two_month_window_days:      int   = 60     # 兩個月監測視窗（自然日）
 
 
 @dataclass

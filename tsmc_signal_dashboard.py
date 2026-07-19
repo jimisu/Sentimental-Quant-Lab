@@ -1031,7 +1031,7 @@ def main():
             fetch_finmind_dataset,
             dataset="TaiwanStockInstitutionalInvestorsBuySell",
             data_id="2330",
-            start_date=(TODAY - dt.timedelta(days=15)).isoformat(),
+            start_date=(TODAY - dt.timedelta(days=60)).isoformat(),
             end_date=TODAY.isoformat(),
             token=token,
         )

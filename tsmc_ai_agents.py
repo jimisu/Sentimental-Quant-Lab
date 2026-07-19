@@ -1272,6 +1272,19 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         recent_10d_net_shares = float(foreign_daily.head(10).sum())
         total_sell_lots_10d = abs(recent_10d_net_shares) / 1000
 
+        # 外資近兩個月累計淨買賣（高檔出貨監測）：以最新資料日往前
+        # two_month_window_days 天過濾後加總，負值 = 淨賣超。
+        # 與籌碼資料抓取視窗解耦，確保「兩個月」定義穩定。
+        foreign_2m_net_shares = 0.0
+        if not foreign_daily.empty:
+            try:
+                latest_dt = datetime.strptime(foreign_daily.index.max(), "%Y-%m-%d")
+                cutoff = (latest_dt - datetime.timedelta(days=CONFIG.chip.two_month_window_days)).strftime("%Y-%m-%d")
+                window_series = foreign_daily[foreign_daily.index >= cutoff]
+            except Exception:
+                window_series = foreign_daily
+            foreign_2m_net_shares = float(window_series.sum())  # 負值 = 淨賣超
+
         # 籌碼面圖表已依需求移除（見 _generate_chip_chart 之移除）
         image_md = ""
 
@@ -1333,6 +1346,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             "sell_ratio": foreign_analysis["sell_ratio"],
             "max_consecutive_sell": foreign_analysis["max_consecutive_sell"],
             "foreign_net_sell_shares": recent_5d_net_shares,  # 負值表示淨賣超
+            "foreign_2m_net_shares": foreign_2m_net_shares,  # 近兩個月累計淨買賣，負值=淨賣超
             **resonance_flags,
         }
 
@@ -2500,14 +2514,25 @@ class Orchestrator:
             return (s1 * w1 + s2 * w2) / tot
 
         fundamental_score = _combine(fin_s, fin_w, bt_s, bt_w)
-        techchip_score    = _combine(tech_s, tech_w, chip_s, chip_w)
+        tech_score_disp = tech_s
+        chip_score_disp = chip_s
 
-        fund_emoji     = score_to_alert(fundamental_score)[2]
-        techchip_emoji = score_to_alert(techchip_score)[2]
+        fund_emoji = score_to_alert(fundamental_score)[2]
+        tech_emoji = score_to_alert(tech_score_disp)[2]
+
+        # 籌碼面獨立燈號：基礎分數 → 燈號，再套用「外資高檔出貨」強制紅燈規則。
+        chip_level, chip_label, chip_emoji = score_to_alert(chip_score_disp)
+        chip_high_sellout = False
+        foreign_2m_sell = float(chip_flags.get("foreign_2m_net_shares", 0.0) or 0.0)
+        sellout_threshold = CONFIG.chip.two_month_high_sellout_pct * CONFIG.chip.tsmc_float_shares
+        if pe_ratio > 30 and foreign_2m_sell < -sellout_threshold:
+            chip_level, chip_label, chip_emoji = "red", "紅燈", "🔴"
+            chip_high_sellout = True
 
         score_rows = [
             [f"基本面（財務 + 大廠）", "100", f"{(fin_w+bt_w)*100:.0f}%", f"{fundamental_score:.1f}", fund_emoji],
-            [f"技術籌碼（技術 + 籌碼）", "100", f"{(tech_w+chip_w)*100:.0f}%", f"{techchip_score:.1f}", techchip_emoji],
+            [f"技術面", "100", f"{tech_w*100:.0f}%", f"{tech_score_disp:.1f}", tech_emoji],
+            [f"籌碼面", "100", f"{chip_w*100:.0f}%", f"{chip_score_disp:.1f}", chip_emoji],
             ["**合計**", "—", "100%", f"**{comprehensive_score:.1f}**", alert_emoji],
         ]
 
@@ -2515,7 +2540,14 @@ class Orchestrator:
         warnings = []
         if pe_ratio > 31:
             warnings.append(f"🟡 **本益比偏高**：TTM P/E {pe_ratio:.1f} 倍，處於歷史 70–80 百分位，估值擴張空間有限")
-        if chip_flags.get("extreme_sell") or chip_flags.get("big_foreign_sell"):
+        if chip_high_sellout:
+            sell_lots = abs(foreign_2m_sell) / 1000
+            pct = abs(foreign_2m_sell) / CONFIG.chip.tsmc_float_shares * 100
+            warnings.append(
+                f"🔴 **外資高檔出貨**：本益比 {pe_ratio:.1f} 倍且近兩個月外資淨賣超 "
+                f"{sell_lots:,.0f} 張（佔流通股 {pct:.2f}%），籌碼面強制紅燈"
+            )
+        elif chip_flags.get("extreme_sell") or chip_flags.get("big_foreign_sell"):
             warnings.append("🔴 **外資持續賣超**：5 日累計大幅賣超，籌碼結構惡化")
 
         warn_block = ""
