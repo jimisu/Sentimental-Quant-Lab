@@ -11,7 +11,7 @@ Covers:
   individual trends, divergence detection, label normalization, format lots,
   three institution resonance, analyze_flow
 - Orchestrator: df_to_md_table, build_financial_signals,
-  build_market_sentiment_signals, estimate_earnings_date
+  estimate_earnings_date
 """
 
 import datetime as dt
@@ -1093,79 +1093,6 @@ class TestOrchestratorBuildFinancialSignals:
         styled_df = pd.DataFrame({"營收 YoY (%)": [25.0, 30.0, 35.0]})
         signals = orch._build_financial_signals({}, styled_df)
         assert signals.revenue_yoy_declining is False
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Orchestrator — Build Market Sentiment Signals
-# ══════════════════════════════════════════════════════════════════════
-
-class TestOrchestratorBuildMarketSentimentSignals:
-    """Tests for Orchestrator._build_market_sentiment_signals."""
-
-    @pytest.fixture
-    def orch(self):
-        with patch.object(Orchestrator, "__init__", lambda self, *a, **kw: None):
-            o = Orchestrator.__new__(Orchestrator)
-            return o
-
-    def test_empty_returns_default(self, orch):
-        df = pd.DataFrame()
-        signals = orch._build_market_sentiment_signals(df, False)
-        assert signals.score == 100
-        assert signals.volume_trend == "normal"
-
-    def test_insufficient_data_returns_default(self, orch):
-        df = pd.DataFrame({
-            "台積電成交金額": [100, 200],
-            "大盤成交金額": [500, 600],
-        })
-        signals = orch._build_market_sentiment_signals(df, False)
-        assert signals.score == 100
-
-    def test_triple_decline_lowest_score(self, orch):
-        # Volume values arranged to trigger market_sentiment_red
-        df = pd.DataFrame({
-            "台積電成交金額": [500, 400, 300, 200, 100],
-            "大盤成交金額": [1000, 900, 800, 700, 600],
-        })
-        signals = orch._build_market_sentiment_signals(df, True)
-        assert signals.score == 40
-
-    def test_normal_volume_high_score(self, orch):
-        df = pd.DataFrame({
-            "台積電成交金額": [100, 200, 300, 400, 500],
-            "大盤成交金額": [1000, 1100, 1200, 1300, 1400],
-        })
-        signals = orch._build_market_sentiment_signals(df, False)
-        assert signals.score == 100
-        assert signals.volume_trend == "normal"
-
-    def test_tsmc_declining_only(self, orch):
-        # TSMC declining but market not
-        df = pd.DataFrame({
-            "台積電成交金額": [500, 400, 300, 200, 100],
-            "大盤成交金額": [1000, 1100, 1200, 1300, 1400],
-        })
-        signals = orch._build_market_sentiment_signals(df, False)
-        assert signals.score == 60
-
-    def test_market_declining_only(self, orch):
-        # Market declining but TSMC not
-        df = pd.DataFrame({
-            "台積電成交金額": [100, 200, 300, 400, 500],
-            "大盤成交金額": [1400, 1300, 1200, 1100, 1000],
-        })
-        signals = orch._build_market_sentiment_signals(df, False)
-        assert signals.score == 70
-
-    def test_both_declining_not_triple_red(self, orch):
-        df = pd.DataFrame({
-            "台積電成交金額": [500, 400, 300, 200, 100],
-            "大盤成交金額": [1000, 900, 800, 700, 600],
-        })
-        signals = orch._build_market_sentiment_signals(df, False)
-        # Both declining but not triple_decline → score 50
-        assert signals.score == 50
 
 
 # ══════════════════════════════════════════════════════════════════════

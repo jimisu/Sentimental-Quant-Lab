@@ -50,7 +50,6 @@ from signal_engine import (
     BigTechSignals,
     TechnicalSignals,
     ChipSignals,
-    MarketSentimentSignals,
     score_to_alert,
 )
 import macro_risk
@@ -1273,6 +1272,19 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         recent_10d_net_shares = float(foreign_daily.head(10).sum())
         total_sell_lots_10d = abs(recent_10d_net_shares) / 1000
 
+        # 外資近兩個月累計淨買賣（高檔出貨監測）：以最新資料日往前
+        # two_month_window_days 天過濾後加總，負值 = 淨賣超。
+        # 與籌碼資料抓取視窗解耦，確保「兩個月」定義穩定。
+        foreign_2m_net_shares = 0.0
+        if not foreign_daily.empty:
+            try:
+                latest_dt = datetime.strptime(foreign_daily.index.max(), "%Y-%m-%d")
+                cutoff = (latest_dt - datetime.timedelta(days=CONFIG.chip.two_month_window_days)).strftime("%Y-%m-%d")
+                window_series = foreign_daily[foreign_daily.index >= cutoff]
+            except Exception:
+                window_series = foreign_daily
+            foreign_2m_net_shares = float(window_series.sum())  # 負值 = 淨賣超
+
         # 籌碼面圖表已依需求移除（見 _generate_chip_chart 之移除）
         image_md = ""
 
@@ -1334,6 +1346,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             "sell_ratio": foreign_analysis["sell_ratio"],
             "max_consecutive_sell": foreign_analysis["max_consecutive_sell"],
             "foreign_net_sell_shares": recent_5d_net_shares,  # 負值表示淨賣超
+            "foreign_2m_net_shares": foreign_2m_net_shares,  # 近兩個月累計淨買賣，負值=淨賣超
             **resonance_flags,
         }
 
@@ -1474,61 +1487,6 @@ class Orchestrator:
 
         return signals
 
-    def _build_market_sentiment_signals(
-        self, trading_df: pd.DataFrame, market_sentiment_red: bool
-    ) -> MarketSentimentSignals:
-        """
-        從交易資料建構市場情緒信號。
-
-        評分邏輯：
-        - 個股 + 大盤連三降（market_sentiment_red）→ 40 分
-        - 僅個股連三降 → 60 分
-        - 僅大盤連三降 → 70 分
-        - 正常 → 100 分
-        """
-        signals = MarketSentimentSignals()
-
-        if trading_df.empty or len(trading_df) < 3:
-            return signals
-
-        recent = trading_df.tail(10)
-        tsmc_vals = recent['台積電成交金額'].tolist()[::-1]  # 最新在前
-        mkt_vals = recent['大盤成交金額'].tolist()[::-1]
-
-        # 檢查連三降
-        def _has_three_consecutive_decline(values):
-            if len(values) < 3:
-                return False
-            for i in range(len(values) - 2):
-                if values[i] < values[i + 1] < values[i + 2]:
-                    return True
-            return False
-
-        tsmc_declining = _has_three_consecutive_decline(tsmc_vals)
-        mkt_declining = _has_three_consecutive_decline(mkt_vals)
-
-        signals.tsmc_volume_declining = tsmc_declining
-        signals.market_volume_declining = mkt_declining
-        signals.triple_decline = market_sentiment_red
-
-        if market_sentiment_red:
-            signals.score = 40
-            signals.volume_trend = "declining"
-        elif tsmc_declining and mkt_declining:
-            signals.score = 50
-            signals.volume_trend = "declining"
-        elif tsmc_declining:
-            signals.score = 60
-            signals.volume_trend = "declining"
-        elif mkt_declining:
-            signals.score = 70
-            signals.volume_trend = "declining"
-        else:
-            signals.score = 100
-            signals.volume_trend = "normal"
-
-        return signals
-
     def _get_quarterly_fx_averages(self) -> Dict[str, float]:
         """
         取得最新季與前一季的 USD/TWD 平均匯率。
@@ -1597,7 +1555,6 @@ class Orchestrator:
         chip_signals = ChipSignals(score=chip_score, flags=chip_flags)
 
         # ── Step 3: Signal Engine 整合計算 ──
-        # 註：市場情緒（量能）已移出綜合燈號計算，不參與燈號判定。
         result = self.signal_engine.analyze(
             financial_signals, bigtech_signals, tech_signals, chip_signals
         )
@@ -1609,14 +1566,14 @@ class Orchestrator:
         alert_level = result.alert_level
         alert_message = result.alert_message
 
-        # 建構 score_summary（顯示新權重；市場情緒已移出綜合燈號計算）
+        # 建構 score_summary（顯示四面向權重）
         w = CONFIG.weights
         breakdown = result.details["breakdown"]
         score_summary = (
             f"● 財務面({result.financial_score:.0f})*{w.financial*100:.0f}% = {breakdown['financial']:.1f}/{w.financial*100:.0f}\n"
             f"● 大廠基本面({result.bigtech_score:.0f})*{w.bigtech*100:.0f}% = {breakdown['bigtech']:.1f}/{w.bigtech*100:.0f}\n"
             f"● 技術面({result.tech_score:.0f})*{w.tech*100:.0f}% = {breakdown['tech']:.1f}/{w.tech*100:.0f}\n"
-            f"● 簱碼面({chip_score})*{w.chip*100:.0f}% = {breakdown['chip']:.1f}/{w.chip*100:.0f}\n"
+            f"● 籌碼面({chip_score})*{w.chip*100:.0f}% = {breakdown['chip']:.1f}/{w.chip*100:.0f}\n"
             f"● 綜合健康得分: {comprehensive_score:.1f}/100"
         )
 
@@ -1653,9 +1610,6 @@ class Orchestrator:
         print()
         print(f"[機構 13F] > {tracker_report}")
         print()
-
-        # 市場情緒（量能）已移出燈號計算，僅供觀察，不參與判定
-        # 註：量能為落後指標，會在技術/籌碼已轉弱時仍因「量能未萎縮」顯示綠燈，造成失真。
 
         print(f"{'='*50}")
         print(f"{alert_emoji} 燈號：{alert_label}")
@@ -2560,14 +2514,25 @@ class Orchestrator:
             return (s1 * w1 + s2 * w2) / tot
 
         fundamental_score = _combine(fin_s, fin_w, bt_s, bt_w)
-        techchip_score    = _combine(tech_s, tech_w, chip_s, chip_w)
+        tech_score_disp = tech_s
+        chip_score_disp = chip_s
 
-        fund_emoji     = score_to_alert(fundamental_score)[2]
-        techchip_emoji = score_to_alert(techchip_score)[2]
+        fund_emoji = score_to_alert(fundamental_score)[2]
+        tech_emoji = score_to_alert(tech_score_disp)[2]
+
+        # 籌碼面獨立燈號：基礎分數 → 燈號，再套用「外資高檔出貨」強制紅燈規則。
+        chip_level, chip_label, chip_emoji = score_to_alert(chip_score_disp)
+        chip_high_sellout = False
+        foreign_2m_sell = float(chip_flags.get("foreign_2m_net_shares", 0.0) or 0.0)
+        sellout_threshold = CONFIG.chip.two_month_high_sellout_pct * CONFIG.chip.tsmc_float_shares
+        if pe_ratio > 30 and foreign_2m_sell < -sellout_threshold:
+            chip_level, chip_label, chip_emoji = "red", "紅燈", "🔴"
+            chip_high_sellout = True
 
         score_rows = [
             [f"基本面（財務 + 大廠）", "100", f"{(fin_w+bt_w)*100:.0f}%", f"{fundamental_score:.1f}", fund_emoji],
-            [f"技術籌碼（技術 + 籌碼）", "100", f"{(tech_w+chip_w)*100:.0f}%", f"{techchip_score:.1f}", techchip_emoji],
+            [f"技術面", "100", f"{tech_w*100:.0f}%", f"{tech_score_disp:.1f}", tech_emoji],
+            [f"籌碼面", "100", f"{chip_w*100:.0f}%", f"{chip_score_disp:.1f}", chip_emoji],
             ["**合計**", "—", "100%", f"**{comprehensive_score:.1f}**", alert_emoji],
         ]
 
@@ -2575,7 +2540,14 @@ class Orchestrator:
         warnings = []
         if pe_ratio > 31:
             warnings.append(f"🟡 **本益比偏高**：TTM P/E {pe_ratio:.1f} 倍，處於歷史 70–80 百分位，估值擴張空間有限")
-        if chip_flags.get("extreme_sell") or chip_flags.get("big_foreign_sell"):
+        if chip_high_sellout:
+            sell_lots = abs(foreign_2m_sell) / 1000
+            pct = abs(foreign_2m_sell) / CONFIG.chip.tsmc_float_shares * 100
+            warnings.append(
+                f"🔴 **外資高檔出貨**：本益比 {pe_ratio:.1f} 倍且近兩個月外資淨賣超 "
+                f"{sell_lots:,.0f} 張（佔流通股 {pct:.2f}%），籌碼面強制紅燈"
+            )
+        elif chip_flags.get("extreme_sell") or chip_flags.get("big_foreign_sell"):
             warnings.append("🔴 **外資持續賣超**：5 日累計大幅賣超，籌碼結構惡化")
 
         warn_block = ""

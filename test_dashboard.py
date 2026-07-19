@@ -9,10 +9,8 @@ Covers the pure utility functions and data-processing helpers in the dashboard m
 - serialize_quarterly_margins / deserialize_quarterly_margins: key conversion
 - parse_twse_int / parse_twse_float / parse_twse_date: TWSE string parsing
 - get_recent_month_starts: month start date generation
-- has_three_consecutive_decline: consecutive decline detection
 - build_dataframe: DataFrame construction from revenue + margin data
 - apply_color_logic: color coding rules for dashboard display
-- generate_summary: summary text based on color flags
 
 Uses unittest.TestCase style with pytest runner.
 Filesystem operations use tempfile.mkdtemp() for isolation.
@@ -427,52 +425,6 @@ class TestGetRecentMonthStarts(unittest.TestCase):
             self.assertEqual(result[2], dt.date(2025, 11, 1))
 
 
-class TestHasThreeConsecutiveDecline(unittest.TestCase):
-    """Tests for has_three_consecutive_decline()."""
-
-    def test_three_consecutive_declining(self):
-        # V0 < V1 < V2 means declining (newest first)
-        self.assertTrue(dash.has_three_consecutive_decline([100, 200, 300]))
-
-    def test_not_declining(self):
-        self.assertFalse(dash.has_three_consecutive_decline([300, 200, 100]))
-
-    def test_less_than_three_values(self):
-        self.assertFalse(dash.has_three_consecutive_decline([100, 200]))
-
-    def test_empty_list(self):
-        self.assertFalse(dash.has_three_consecutive_decline([]))
-
-    def test_single_value(self):
-        self.assertFalse(dash.has_three_consecutive_decline([100]))
-
-    def test_two_values(self):
-        self.assertFalse(dash.has_three_consecutive_decline([100, 200]))
-
-    def test_four_values_with_decline_at_end(self):
-        # [100, 200, 300, 400] - positions 0,1,2 are declining
-        self.assertTrue(dash.has_three_consecutive_decline([100, 200, 300, 400]))
-
-    def test_four_values_with_decline_at_start(self):
-        # [100, 200, 300, 50] - positions 0,1,2 are declining
-        self.assertTrue(dash.has_three_consecutive_decline([100, 200, 300, 50]))
-
-    def test_four_values_no_decline(self):
-        self.assertFalse(dash.has_three_consecutive_decline([400, 300, 200, 100]))
-
-    def test_equal_values_not_declining(self):
-        # Strict inequality required: values[i] < values[i+1] < values[i+2]
-        self.assertFalse(dash.has_three_consecutive_decline([100, 100, 100]))
-
-    def test_two_declining_then_flat(self):
-        # [100, 200, 200] - not strictly increasing
-        self.assertFalse(dash.has_three_consecutive_decline([100, 200, 200]))
-
-    def test_decline_in_middle_of_longer_list(self):
-        # [500, 100, 200, 300, 50] - positions 1,2,3 are declining
-        self.assertTrue(dash.has_three_consecutive_decline([500, 100, 200, 300, 50]))
-
-
 class TestBuildDataframe(unittest.TestCase):
     """Tests for build_dataframe()."""
 
@@ -682,84 +634,6 @@ class TestApplyColorLogic(unittest.TestCase):
         self.assertEqual(styled["營收 YoY 色彩"].iloc[0], "yellow")
         self.assertEqual(styled["營收 YoY 色彩"].iloc[1], "")
         self.assertEqual(styled["營收 YoY 色彩"].iloc[2], "yellow")
-
-
-class TestGenerateSummary(unittest.TestCase):
-    """Tests for generate_summary()."""
-
-    def _make_styled_df(self, rev_colors, margin_colors):
-        """Build a styled DataFrame with given color lists."""
-        n = max(len(rev_colors), len(margin_colors))
-        rows = []
-        for i in range(n):
-            rows.append({
-                "月份": f"2025-{i+1:02d}",
-                "營收 YoY (%)": 25.0,
-                "毛利率 (%)": 55.0,
-                "營業利益率 (%)": 45.0,
-                "稅後淨利率 (%)": 40.0,
-                "EPS (元)": 9.0,
-                "營收 YoY 色彩": rev_colors[i] if i < len(rev_colors) else "",
-                "毛利率 色彩": margin_colors[i] if i < len(margin_colors) else "",
-                "營業利益率 色彩": margin_colors[i] if i < len(margin_colors) else "",
-                "稅後淨利率 色彩": margin_colors[i] if i < len(margin_colors) else "",
-            })
-        return pd.DataFrame(rows)
-
-    def test_all_green(self):
-        df = self._make_styled_df([""], [""])
-        result = dash.generate_summary(df, market_sentiment_red=False)
-        self.assertIn("綠燈", result)
-
-    def test_red_from_revenue(self):
-        df = self._make_styled_df(["red"], [""])
-        result = dash.generate_summary(df, market_sentiment_red=False)
-        self.assertIn("紅燈", result)
-
-    def test_red_from_margin(self):
-        df = self._make_styled_df([""], ["red"])
-        result = dash.generate_summary(df, market_sentiment_red=False)
-        self.assertIn("紅燈", result)
-
-    def test_red_from_market_sentiment(self):
-        df = self._make_styled_df([""], [""])
-        result = dash.generate_summary(df, market_sentiment_red=True)
-        self.assertIn("紅燈", result)
-
-    def test_yellow_from_revenue_no_red(self):
-        df = self._make_styled_df(["yellow"], [""])
-        result = dash.generate_summary(df, market_sentiment_red=False)
-        self.assertIn("黃燈", result)
-
-    def test_yellow_from_margin_no_red(self):
-        df = self._make_styled_df([""], ["yellow"])
-        result = dash.generate_summary(df, market_sentiment_red=False)
-        self.assertIn("黃燈", result)
-
-    def test_red_takes_priority_over_yellow(self):
-        df = self._make_styled_df(["yellow"], ["red"])
-        result = dash.generate_summary(df, market_sentiment_red=False)
-        self.assertIn("紅燈", result)
-
-    def test_multiple_yellows_still_yellow(self):
-        df = self._make_styled_df(["yellow", "yellow"], ["yellow"])
-        result = dash.generate_summary(df, market_sentiment_red=False)
-        self.assertIn("黃燈", result)
-
-    def test_empty_dataframe_green(self):
-        # An empty DataFrame must still have the expected columns
-        df = pd.DataFrame(columns=[
-            "月份", "營收 YoY (%)", "毛利率 (%)", "營業利益率 (%)",
-            "稅後淨利率 (%)", "EPS (元)", "營收 YoY 色彩", "毛利率 色彩",
-            "營業利益率 色彩", "稅後淨利率 色彩",
-        ])
-        result = dash.generate_summary(df, market_sentiment_red=False)
-        self.assertIn("綠燈", result)
-
-    def test_market_sentiment_red_with_yellow(self):
-        df = self._make_styled_df(["yellow"], [""])
-        result = dash.generate_summary(df, market_sentiment_red=True)
-        self.assertIn("紅燈", result)
 
 
 if __name__ == "__main__":

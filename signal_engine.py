@@ -8,7 +8,7 @@ TSMC 信號引擎 (Signal Engine)
 架構：
   FinancialSignalCalculator  — 純財務（營收 YoY、三率）→ 財務分數 0~100
   BigTechSignalCalculator    — 大廠基本面（CAPEX + NVDA 營收 YoY）→ 分數 0~100
-  ComprehensiveScoreCalculator — 六面向加權 → 綜合健康得分 0~100
+  ComprehensiveScoreCalculator — 四面向加權 → 綜合健康得分 0~100
   AlertLevelDetector          — 綜合分數 + 特殊條件 → 紅/黃/綠燈
 """
 
@@ -73,19 +73,6 @@ class BigTechSignals:
     # 細節
     capex_details: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
-
-
-@dataclass
-class MarketSentimentSignals:
-    """市場情緒信號（由 dashboard 量能分析提供）"""
-    # 量能狀態分數 (0~100)
-    score: int = 100
-    # 旗標
-    tsmc_volume_declining: bool = False      # 個股連續量縮
-    market_volume_declining: bool = False    # 大盤連續量縮
-    triple_decline: bool = False             # 個股+大盤連三降
-    # 成交量趨勢
-    volume_trend: str = "normal"             # "declining" / "normal" / "expanding"
 
 
 @dataclass
@@ -289,12 +276,10 @@ class ComprehensiveScoreCalculator:
     - 純財務面   30%
     - 大廠基本面 30%
     - 技術面     20%（早期/短期/中期/長期合併計算）
-    - 籌碼面     10%
-    - 市場情緒   0%（已移出：量能為落後指標，會在技術/籌碼已轉弱時
-                       仍因「量能未萎縮」把分數撐在綠燈區，造成失真）
+    - 籌碼面     20%（含外資高檔出貨監測）
 
-    註：剩餘四面向權重合計 0.90，綜合得分上限為 90；燈號門檻
-    （<50 紅 / <70 黃）依此校準，不重新歸一化。
+    註：四面向權重合計 1.00，綜合得分上限為 100；燈號門檻
+    （<50 紅 / <70 黃）為百分比門檻，無須歸一化。
     """
 
     def __init__(self, weights: Optional[Dict[str, float]] = None):
@@ -360,10 +345,11 @@ class AlertLevelDetector:
 
     結構性警示（不影響分數，僅升級燈號）：
     - 籌碼面 < 30 → 強制至少黃燈
+    （籌碼面另受「外資高檔出貨」獨立紅燈規則約束，見 Orchestrator 總覽。）
 
     註：原「籌碼面 < 50 且 市場情緒 < 50 → 強制黃燈」之結構性警示已移除。
     市場情緒（量能）為落後指標，會在技術/籌碼已轉弱時仍因「量能未萎縮」
-    把分數撐在綠燈區，造成失真；故情緒不再參與燈號判定。
+    把分數撐在綠燈區，造成失真；故情緒已完全移出計分與燈號判定。
     """
 
     RED_THRESHOLD: float = 50.0

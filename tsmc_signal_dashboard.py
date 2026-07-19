@@ -301,14 +301,24 @@ def get_monthly_revenue_by_date(token: Optional[str] = None) -> Dict[str, float]
     )
     revenue_by_date: Dict[str, float] = {}
     for r in records:
-        # 支援 dict 與 MonthlyRevenue DTO 兩種格式
+        # 支援三種格式：
+        #  1) MonthlyRevenue DTO（即時抓取，具 .year/.month 屬性）
+        #  2) 序列化後的純 dict（快取讀回，含 year/month/revenue 鍵，無 .date 鍵）
+        #  3) 原始 dict（含 date=YYYY-MM-DD 鍵）
         if hasattr(r, "year") and hasattr(r, "month"):
             # MonthlyRevenue DTO
             year_month = f"{r.year:04d}-{r.month:02d}"
             revenue = r.revenue
+        elif isinstance(r, dict) and "year" in r and "month" in r:
+            # 快取讀回的純 dict（year/month/revenue）
+            year_month = f"{int(r['year']):04d}-{int(r['month']):02d}"
+            try:
+                revenue = float(r.get("revenue", 0))
+            except (ValueError, TypeError):
+                continue
         else:
-            # 原始 dict 格式
-            date_str = r.get("date")  # 格式: YYYY-MM-DD
+            # 原始 dict 格式（含 date=YYYY-MM-DD）
+            date_str = r.get("date") if isinstance(r, dict) else None
             if not date_str:
                 continue
             year_month = date_str[:7]  # YYYY-MM
@@ -740,20 +750,6 @@ def get_recent_trading_value_history(days: int = 260) -> pd.DataFrame:
     return value_df
 
 
-def has_three_consecutive_decline(values: List[float]) -> bool:
-    """
-    檢查是否存在連續三天每日成交金額均低於前一天。
-    values 為 list，最新在前：[V0, V1, V2, ...]
-    條件：V0 < V1 < V2 （即三天遞減）
-    """
-    if len(values) < 3:
-        return False
-    for i in range(len(values) - 2):
-        if values[i] < values[i + 1] < values[i + 2]:
-            return True
-    return False
-
-
 def build_dataframe(
     revenue_yoy: List[Dict], quarterly_margins: Dict[Tuple[int, int], Dict]
 ) -> pd.DataFrame:
@@ -867,10 +863,9 @@ def apply_color_logic(df: pd.DataFrame) -> pd.DataFrame:
 def print_dashboard(
     styled_df: pd.DataFrame,
     value_df: pd.DataFrame,
-    market_sentiment_red: bool,
 ):
     """
-    使用 rich 輸出彩色表格、成交金額表格，並在需要時顯示市場情緒指標紅色警示。
+    使用 rich 輸出彩色表格與成交金額表格。
     """
     console = Console()
     table = Table(show_header=True, header_style="bold magenta", box=box.SIMPLE_HEAVY)
@@ -947,36 +942,6 @@ def print_dashboard(
 
     console.print()
     console.print(value_table)
-
-    # 市場情緒指標：若同時符合條件則顯示紅色警示
-    if market_sentiment_red:
-        console.print("[red]市場情緒指標：個股與大盤交易量連三降[/red]")
-
-
-def generate_summary(styled_df: pd.DataFrame, market_sentiment_red: bool) -> str:
-    """
-    根據表格顏色產生一句總結。
-    """
-    has_red = (
-        (styled_df["營收 YoY 色彩"] == "red").any()
-        or (styled_df["毛利率 色彩"] == "red").any()
-        or (styled_df["營業利益率 色彩"] == "red").any()
-        or (styled_df["稅後淨利率 色彩"] == "red").any()
-        or market_sentiment_red
-    )
-    has_yellow = (
-        (styled_df["營收 YoY 色彩"] == "yellow").any()
-        or (styled_df["毛利率 色彩"] == "yellow").any()
-        or (styled_df["營業利益率 色彩"] == "yellow").any()
-        or (styled_df["稅後淨利率 色彩"] == "yellow").any()
-    )
-
-    if has_red:
-        return "🔴 目前處於紅燈預警，建議減碼並密切監控。"
-    elif has_yellow:
-        return "🟡 目前處於黃燈預警，建議啟動階梯式觀察，暫不加碼。"
-    else:
-        return "🟢 目前皆為綠燈，可正常觀察並考慮適度加碼。"
 
 
 def run_self_test():
@@ -1066,7 +1031,7 @@ def main():
             fetch_finmind_dataset,
             dataset="TaiwanStockInstitutionalInvestorsBuySell",
             data_id="2330",
-            start_date=(TODAY - dt.timedelta(days=15)).isoformat(),
+            start_date=(TODAY - dt.timedelta(days=60)).isoformat(),
             end_date=TODAY.isoformat(),
             token=token,
         )
@@ -1100,13 +1065,9 @@ def main():
 
     # 呼叫 AI Agent 編排器
     orchestrator = Orchestrator()
-    # 這裡保留原有的 market_sentiment_red 邏輯，但使用 tail(10) 確保邏輯範圍一致
-    recent_v = value_df.tail(10)
-    market_sentiment_red = has_three_consecutive_decline(recent_v['台積電成交金額'].tolist()[::-1]) and \
-                           has_three_consecutive_decline(recent_v['大盤成交金額'].tolist()[::-1])
 
     # 輸出儀表板
-    print_dashboard(styled_df, value_df.tail(10), market_sentiment_red)
+    print_dashboard(styled_df, value_df.tail(10))
 
     # 執行 Agent 深度分析（統一由 signal_engine 計算綜合燈號）
     dashboard_summary = orchestrator.run_full_analysis(

@@ -26,9 +26,10 @@ class CacheConfig:
 @dataclass
 class ScoreWeightsConfig:
     """
-    綜合健康得分權重 v1.0。
-    四面向加總 = 0.90（市場情緒 10% 已移出燈號計算，剩餘權重維持原值）：
-      純財務 30% + 大廠基本面 30% + 技術 20% + 籌碼 10%
+    綜合健康得分權重 v1.1。
+    四面向加總 = 1.00：
+      純財務 30% + 大廠基本面 30% + 技術 20% + 籌碼 20%
+    （原「市場情緒（量能）」10% 已完全移除，其權重併入籌碼面。）
     技術面 20% 內部分配（內部比例，不影響總權重）：
       早期 7/35 + 短期 7/35 + 中期 10/35 + 長期 11/35
     """
@@ -43,18 +44,13 @@ class ScoreWeightsConfig:
     short:    float = 0.07   # 短期形態（K線、MA20 破位）
     mid:      float = 0.10   # 中期趨勢（週線指標）
     long:     float = 0.11   # 長期趨勢（月線）
-    # 籌碼面 10%
-    chip:      float = 0.10  # 籌碼分析（三大法人）
-    # 市場情緒 0%（已移出綜合燈號計算：量能為落後指標，會在技術面/籌碼面已轉弱時
-    # 仍因「量能未萎縮」把分數撐在綠燈區，造成失真。量能數據仍於報告「量能」處顯示，
-    # 但不參與燈號判定。）
-    market_sentiment: float = 0.0  # 量能（個股/大盤連續量縮）— 不參與綜合得分
+    # 籌碼面 20%（含外資高檔出貨監測；原市場情緒 10% 併入）
+    chip:      float = 0.20  # 籌碼分析（三大法人）
 
     def as_dict(self) -> Dict[str, float]:
         return {
             "financial": self.financial, "bigtech": self.bigtech,
             "tech": self.tech, "chip": self.chip,
-            "market_sentiment": self.market_sentiment,
         }
 
 
@@ -121,6 +117,10 @@ class ChipAlertConfig:
     chip_penalty_big_sell:  int   = 20     # 大額賣超扣分
     # 三大法人共振加成
     resonance_buy_bonus:    int   = 5      # 三大法人共振買超加分
+    # 外資高檔出貨監測（兩個月累計淨賣超）
+    tsmc_float_shares:          int   = 25_900_000_000  # 台積電流通股約 259 億股
+    two_month_high_sellout_pct: float = 0.007  # 紅燈門檻：兩月淨賣超佔流通股比例
+    two_month_window_days:      int   = 60     # 兩個月監測視窗（自然日）
 
 
 @dataclass

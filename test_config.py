@@ -109,20 +109,15 @@ class TestScoreWeightsConfig:
         assert ScoreWeightsConfig().tech == 0.20
 
     def test_chip_weight(self):
-        assert ScoreWeightsConfig().chip == 0.10
+        assert ScoreWeightsConfig().chip == 0.20
 
-    def test_market_sentiment_weight(self):
-        """市場情緒已移出燈號計算（量能為落後指標），權重應為 0.0。"""
-        assert ScoreWeightsConfig().market_sentiment == 0.0
+    def test_main_weights_sum_to_one(self):
+        """四面向加總 = 1.00（財務 0.30 + 大廠 0.30 + 技術 0.20 + 籌碼 0.20）。
 
-    def test_main_weights_sum_to_point_90(self):
-        """四面向加總 = 0.90（市場情緒 10% 已移出燈號計算）。
-
-        刻意不重新歸一化為 1.0，以保留綜合得分門檻（紅 <50 / 黃 <70）
-        的既有校準。"""
+        燈號門檻（紅 <50 / 黃 <70）為百分比門檻，與總和 1.00 一致，無須歸一化。"""
         w = ScoreWeightsConfig()
-        total = w.financial + w.bigtech + w.tech + w.chip + w.market_sentiment
-        assert total == pytest.approx(0.90)
+        total = w.financial + w.bigtech + w.tech + w.chip
+        assert total == pytest.approx(1.00)
 
     def test_early_weight(self):
         assert ScoreWeightsConfig().early == 0.07
@@ -144,15 +139,14 @@ class TestScoreWeightsConfig:
 
     def test_as_dict_keys(self, weights):
         d = weights.as_dict()
-        assert set(d.keys()) == {"financial", "bigtech", "tech", "chip", "market_sentiment"}
+        assert set(d.keys()) == {"financial", "bigtech", "tech", "chip"}
 
     def test_as_dict_values(self, weights):
         d = weights.as_dict()
         assert d["financial"] == 0.30
         assert d["bigtech"] == 0.30
         assert d["tech"] == 0.20
-        assert d["chip"] == 0.10
-        assert d["market_sentiment"] == 0.0
+        assert d["chip"] == 0.20
 
 
 # ══════════════════════════════════════════════════════════════
