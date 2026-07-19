@@ -7,8 +7,8 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `test/perf-efficiency-improvements`（實驗分支，基於 `develop`；待合併分支：`fix/macro-agent-yahoo-sal-tests`、`fix/monthly-revenue-cache-parse`、`docs/update-handoff-readme`）
-- **本次交接時間 (Timestamp)**: 2026-07-18 (UTC+8)
+- **目前所在分支 (Current Branch)**: `feat/adr-overnight-radar`（基於 `develop`；實作 ADR 隔夜雷達(B) + 趨勢保護(C)，B 已完成並提交，C 待做）
+- **本次交接時間 (Timestamp)**: 2026-07-19 (UTC+8)
 - **目前負責人/AI (Handler)**: OWL (Claude Code)
 
 ---
@@ -30,6 +30,12 @@
 - [x] **移除 TWSE 月循環不必要 sleep**：`sal/providers.py` 的 `TWSEProvider._fetch_json` 改回傳 `(data, from_cache)`；`get_market_turnover` 僅在實際發出網路請求時 `sleep(0.3)`，命中快取（例行執行）時跳過。同步更新 `get_stock_day` 與 `test_sal.py` 4 處 mock 契約。
 - [x] **測試狀態**：全測試套件 752 passed + 4 fail（4 個 fail 皆為既有 `curl_cffi` 未安裝導致的 `ModuleNotFoundError`，與本次改動無關）。
 - [ ] **待辦**：量化驗證（基準測試 / API 呼叫次數統計）使用者選擇「先只做程式碼改動」，驗證方式後續再定。
+
+### 本次 session 完成（避險能力補強 / 2026-07-19，分支 `feat/adr-overnight-radar`）
+- **背景**：使用者回報 7/17 台積電大跌，原系統綜合燈號（收盤後回顧性情緒聚合）仍給綠燈，未能幫忙避開。根因——大跌當下財報 / 收盤量價 / 法人買賣超皆為「大跌前」健康狀態，且單日大跌多由外部 / 事件驅動，不在回顧輸入內。
+- [x] **B. ADR / 美股隔夜風險雷達（已完成）**：新增 `adr_radar.py`，`scan_overnight_risk()` 複用 SAL `YahooFinanceProvider.get_chart`（1h 環形快取），監控 TSM ADR / NVDA / SMH 隔夜漲跌，台股開盤前發「跳空低開預警」。`main()` 最前印醒目 Panel；報告最前插入雷達章節。閾值為模組常數（未動 `config.py` 單例）。`test_adr_radar.py` 10 測試全過。commit `243bf24`。
+- [ ] **C. 趨勢保護信號（待做）**：價格跌破關鍵 MA / 前低即翻「減碼」，即便基本面仍綠；應作為可強制降級燈號的保護機制（預計在 `signal_engine.AlertLevelDetector` 加 override 參數，不動 config 權重）。
+- [x] **測試狀態**：全測試 803 passed + 3 fail（3 fail 為既有 `test_macro_agent` 通膨測試 flaky / 網路依賴，與本次無關）。
 
 ### 本次 session 完成（SAL 服務抽象層完整實作 / 2026-07-10~11）
 - [x] **建立 `sal/` 服務抽象層**：隔離上層判斷邏輯與下層 API 呼叫
