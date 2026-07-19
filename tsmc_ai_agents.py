@@ -1774,6 +1774,7 @@ class Orchestrator:
             tech_report=tech_report,
             chip_report=chip_report,
             macro_report=macro_report,
+            bigtech_report=bigtech_report,
             score_summary=score_summary,
             fin_table=fin_table_md,
             vol_table=vol_table_md,
@@ -2285,7 +2286,7 @@ class Orchestrator:
 
     def _append_to_log(self, dashboard_summary: str, fin_report: str, tech_report: str,
                        chip_report: str, macro_report: str, score_summary: str,
-                       fin_table: str, vol_table: str,
+                       fin_table: str, vol_table: str, bigtech_report: str = "",
                        market_sentiment_red: bool = False,
                        pe_warning_md: str = "",
                        industry_analysis_md: str = "",
@@ -2459,14 +2460,15 @@ class Orchestrator:
         CHAPTERS = [
             ("ch1", "一、總覽儀表板"),
             ("ch2", "二、財務面分析"),
-            ("ch3", "三、技術面分析"),
-            ("ch4", "四、籌碼面分析"),
-            ("ch5", "五、宏觀與 ADR 分析"),
-            ("ch6", "六、機構法人 13F 持倉追蹤"),
-            ("ch7", "七、產業深度解讀"),
-            ("ch8", "八、估值定位"),
-            ("ch9", "九、風險管理與操作建議"),
-            ("ch10", "十、分析師整合結論"),
+            ("ch3", "三、基本面分析（大廠基本面 / CAPEX）"),
+            ("ch4", "四、技術面分析"),
+            ("ch5", "五、籌碼面分析"),
+            ("ch6", "六、估值定位"),
+            ("ch7", "七、風險管理與操作建議"),
+            ("ch8", "八、分析師整合結論"),
+            ("ch9", "九、宏觀與 ADR 分析（參考資料）"),
+            ("ch10", "十、機構法人 13F 持倉追蹤（參考資料）"),
+            ("ch11", "十一、產業深度解讀（參考資料）"),
         ]
 
         # ═══ 標題 ═══
@@ -2608,7 +2610,16 @@ class Orchestrator:
             + eps_decomp
         )
 
-        # ═══ 三、技術面分析 ═══
+        # ═══ 三、基本面分析（大廠基本面 / CAPEX）═══
+        sections.append(
+            "---\n\n"
+            "<a id=\"ch3\"></a>\n\n## 三、基本面分析（大廠基本面 / CAPEX）\n\n"
+            "**資料來源：** 各大廠（MSFT / META / GOOGL / AMZN）資本支出趨勢、"
+            "NVIDIA 財報營收 YoY（FinMind / SEC 10-K / 財報披露）\n\n"
+            + _demote_headings(bigtech_report)
+        )
+
+        # ═══ 四、技術面分析 ═══
         # 技術指標摘要
         tech_zone = tech_flags.get("position_zone", "未知")
         tech_zone_score = tech_flags.get("position_zone_score", 50)
@@ -2646,7 +2657,7 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "<a id=\"ch3\"></a>\n\n## 三、技術面分析\n\n"
+            "<a id=\"ch4\"></a>\n\n## 四、技術面分析\n\n"
             "**資料來源：** TWSE 每日收盤行情（STOCK_DAY）、大盤統計（FMTQIK）\n\n"
             "### 近 10 個交易日成交金額（單位：元）\n\n"
             + vol_table_block + "\n\n"
@@ -2665,7 +2676,7 @@ class Orchestrator:
             + _demote_headings(tech_report)
         )
 
-        # ═══ 四、籌碼面分析 ═══
+        # ═══ 五、籌碼面分析 ═══
         # 從 chip_report 解析三大法人數據
         foreign_5d_match = _re.search(r"外資 5 日累計: 賣超 ([\d,]+) 張", chip_report)
         foreign_5d_val = foreign_5d_match.group(1) if foreign_5d_match else "N/A"
@@ -2683,7 +2694,7 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "<a id=\"ch4\"></a>\n\n## 四、籌碼面分析\n\n"
+            "<a id=\"ch5\"></a>\n\n## 五、籌碼面分析\n\n"
             "**資料來源：** FinMind 三大法人買賣超資料集（TaiwanStockInstitutionalInvestorsBuySell）\n\n"
             "### 三大法人近況\n\n"
             + _md_table(["法人", "方向", "張數", "備註"], [
@@ -2698,50 +2709,10 @@ class Orchestrator:
             + _demote_headings(chip_report)
         )
 
-        # ═══ 五、宏觀與 ADR 分析 ═══
-        # 從 macro_report 解析 ADR 數據
-        adr_premium = _re.search(r"溢價 ([\d.]+%)", macro_report)
-        adr_premium_val = adr_premium.group(1) if adr_premium else "N/A"
-        adr_price = _re.search(r"ADR折算價: ([\d.]+)", macro_report)
-        adr_price_val = adr_price.group(1) if adr_price else "N/A"
-        fx_ref = _re.search(r"匯率參考: ([\d.]+)", macro_report)
-        fx_ref_val = fx_ref.group(1) if fx_ref else "N/A"
-
+        # ═══ 六、估值定位 ═══
         sections.append(
             "---\n\n"
-            "<a id=\"ch5\"></a>\n\n## 五、宏觀與 ADR 分析\n\n"
-            "**資料來源：** Yahoo Finance（TSM ADR、TWD=X）\n\n"
-            + _md_table(["項目", "數值"], [
-                ["台股現價", price_str],
-                ["ADR 折算價", f"NT${adr_price_val}" if adr_price_val != "N/A" else "N/A"],
-                ["ADR 溢價", f"**{adr_premium_val}**" if adr_premium_val != "N/A" else "N/A"],
-                ["匯率參考", f"{fx_ref_val} USD/TWD" if fx_ref_val != "N/A" else "N/A"],
-            ])
-            + "\n\n"
-            + _demote_headings(macro_report)
-        )
-
-        # ═══ 六、機構法人 13F 持倉追蹤 ═══
-        if tracker_report:
-            sections.append(
-                "---\n\n"
-                "<a id=\"ch6\"></a>\n\n## 六、機構法人 13F 持倉追蹤\n\n"
-                "**資料來源：** SEC EDGAR Form 13F-HR（infotable.xml）\n\n"
-                + _demote_headings(tracker_report)
-            )
-
-        # ═══ 七、產業深度解讀 ═══
-        if industry_analysis_md:
-            # 將舊的 ## 📊 五、產業分析框架 改為 ## 七、產業深度解讀
-            ia_clean = industry_analysis_md.replace(
-                "## 📊 五、產業分析框架與深度解讀", "<a id=\"ch7\"></a>\n\n## 七、產業深度解讀"
-            )
-            sections.append("---\n\n" + ia_clean)
-
-        # ═══ 八、估值定位 ═══
-        sections.append(
-            "---\n\n"
-            "<a id=\"ch8\"></a>\n\n## 八、估值定位\n\n"
+            "<a id=\"ch6\"></a>\n\n## 六、估值定位\n\n"
             + _md_table(["指標", "數值", "解讀"], [
                 ["當前 P/E（TTM）", f"**{pe_str} 倍**" if pe_ratio > 0 else "N/A",
                  "歷史 70–80 百分位" if pe_ratio > 0 else "N/A"],
@@ -2755,13 +2726,13 @@ class Orchestrator:
                if pe_ratio > 0 else "> 估值資料不足")
         )
 
-        # ═══ 九、風險管理與操作建議 ═══
+        # ═══ 七、風險管理與操作建議 ═══
         support_level = int(tw_price * 0.85) if tw_price > 0 else 0
         resist_level = int(tw_price * 1.08) if tw_price > 0 else 0
 
         sections.append(
             "---\n\n"
-            "<a id=\"ch9\"></a>\n\n## 九、風險管理與操作建議\n\n"
+            "<a id=\"ch7\"></a>\n\n## 七、風險管理與操作建議\n\n"
             "### 操作時間框架\n\n"
             + _md_table(["時間框架", "建議", "核心邏輯"], [
                 [f"法說會前（{days_to_earnings} 天內）", "不追高、不追空", "等待法說會內容確認方向"],
@@ -2790,10 +2761,10 @@ class Orchestrator:
             f"5 萬張為「持續性賣超」而非「單日異常」的門檻，需搭配週線 MACD 死亡交叉確認趨勢。"
         )
 
-        # ═══ 十、分析師整合結論 ═══
+        # ═══ 八、分析師整合結論 ═══
         sections.append(
             "---\n\n"
-            "<a id=\"ch10\"></a>\n\n## 十、分析師整合結論\n\n"
+            "<a id=\"ch8\"></a>\n\n## 八、分析師整合結論\n\n"
             "### 核心矛盾\n\n"
             "> **台積電當前的核心矛盾是：AI 結構性成長邏輯完整，但外資在高檔系統性出貨，"
             "市場在等待一個催化劑（法說會上修展望或 N2 量產確認）來打破這個僵局。**\n\n"
@@ -2820,12 +2791,56 @@ class Orchestrator:
             "```"
         )
 
-        # ── 報告目錄（TOC）────────────────────────────────────────────
-        present_chapters.update({"ch1", "ch2", "ch3", "ch4", "ch5", "ch8", "ch9", "ch10"})
+        # ═══ 九、宏觀與 ADR 分析（參考資料）═══
+        # 從 macro_report 解析 ADR 數據
+        adr_premium = _re.search(r"溢價 ([\d.]+%)", macro_report)
+        adr_premium_val = adr_premium.group(1) if adr_premium else "N/A"
+        adr_price = _re.search(r"ADR折算價: ([\d.]+)", macro_report)
+        adr_price_val = adr_price.group(1) if adr_price else "N/A"
+        fx_ref = _re.search(r"匯率參考: ([\d.]+)", macro_report)
+        fx_ref_val = fx_ref.group(1) if fx_ref else "N/A"
+
+        sections.append(
+            "---\n\n"
+            "<a id=\"ch9\"></a>\n\n## 九、宏觀與 ADR 分析（參考資料）\n\n"
+            "**資料來源：** Yahoo Finance（TSM ADR、TWD=X）\n\n"
+            + _md_table(["項目", "數值"], [
+                ["台股現價", price_str],
+                ["ADR 折算價", f"NT${adr_price_val}" if adr_price_val != "N/A" else "N/A"],
+                ["ADR 溢價", f"**{adr_premium_val}**" if adr_premium_val != "N/A" else "N/A"],
+                ["匯率參考", f"{fx_ref_val} USD/TWD" if fx_ref_val != "N/A" else "N/A"],
+            ])
+            + "\n\n"
+            + _demote_headings(macro_report)
+        )
+
+        # ═══ 十、機構法人 13F 持倉追蹤（參考資料）═══
         if tracker_report:
-            present_chapters.add("ch6")
+            sections.append(
+                "---\n\n"
+                "<a id=\"ch10\"></a>\n\n## 十、機構法人 13F 持倉追蹤（參考資料）\n\n"
+                "**資料來源：** SEC EDGAR Form 13F-HR（infotable.xml）\n\n"
+                + _demote_headings(tracker_report)
+            )
+
+        # ═══ 十一、產業深度解讀（參考資料）═══
         if industry_analysis_md:
-            present_chapters.add("ch7")
+            # 將舊的 ## 📊 五、產業分析框架 改為 ## 十一、產業深度解讀（參考資料）
+            ia_clean = industry_analysis_md.replace(
+                "## 📊 五、產業分析框架與深度解讀",
+                "<a id=\"ch11\"></a>\n\n## 十一、產業深度解讀（參考資料）"
+            )
+            sections.append("---\n\n" + ia_clean)
+
+        # ── 報告目錄（TOC）────────────────────────────────────────────
+        # 核心章節固定出現；追蹤（ch10）與產業（ch11）為條件式參考資料。
+        present_chapters.update(
+            {"ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8", "ch9"}
+        )
+        if tracker_report:
+            present_chapters.add("ch10")
+        if industry_analysis_md:
+            present_chapters.add("ch11")
         toc_lines = ["## 📑 報告目錄\n"]
         for _anchor, _label in CHAPTERS:
             if _anchor in present_chapters:
