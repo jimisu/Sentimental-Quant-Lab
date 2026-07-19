@@ -1540,7 +1540,8 @@ class Orchestrator:
     def run_full_analysis(self, quarterly_data: Dict, trading_df: pd.DataFrame, chip_data: List[Dict],
                           styled_df: pd.DataFrame,
                           market_sentiment_red: bool = False,
-                          revenue_by_date: Optional[Dict[str, float]] = None) -> str:
+                          revenue_by_date: Optional[Dict[str, float]] = None,
+                          overnight_risk=None) -> str:
         """
         執行完整分析並回傳 dashboard_summary 字串。
         綜合得分燈號邏輯統一由 signal_engine 處理。
@@ -1829,6 +1830,7 @@ class Orchestrator:
             tw_price=tw_price,
             fx_averages=fx_averages,
             revenue_by_date=revenue_by_date or {},
+            overnight_risk_md=overnight_risk.to_markdown() if overnight_risk else "",
         )
         print(f"\n[系統] 分析結果已同步寫入至 {self.log_path}")
 
@@ -2338,6 +2340,7 @@ class Orchestrator:
                        tw_price: float = 0,
                        fx_averages: Optional[Dict[str, float]] = None,
                        revenue_by_date: Optional[Dict[str, float]] = None,
+                       overnight_risk_md: str = "",
                        ) -> None:
         """將分析結果以 Markdown 格式附加到檔案（重構版：直接產出結構化報告）"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2488,6 +2491,12 @@ class Orchestrator:
             f"> **免責聲明：** 本報告內容僅供內部研究參考，不構成任何投資要約或買賣建議。"
             f"使用者應自行評估風險，作者不對依賴本報告所產生之損失承擔責任。"
         )
+
+        # ═══ ADR / 美股隔夜風險雷達（開盤前預警）═══
+        # 填補原系統「綜合燈號為收盤後回顧性情緒聚合，無法預警外部 / 事件驅動
+        # 單日大跌」的缺口。置於報告最前，確保使用者先看到跳空風險再讀綠燈。
+        if overnight_risk_md:
+            sections.append("---\n\n" + overnight_risk_md)
 
         # ═══ 一、總覽儀表板 ═══
         score_rows = [

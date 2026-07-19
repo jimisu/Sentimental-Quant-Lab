@@ -26,6 +26,7 @@ from rich.table import Table
 from data_cache import fetch_with_cache
 from tsmc_ai_agents import Orchestrator
 from sal import get_finmind, get_twse, get_yahoo, get_sec, get_cache
+from adr_radar import scan_overnight_risk
 
 load_dotenv()
 
@@ -1043,6 +1044,43 @@ def run_self_test():
     console.print("\n[bold cyan]✨ 自測完成。[/bold cyan]\n")
 
 
+def print_overnight_risk_banner(report) -> None:
+    """
+    在控制台以醒目 Panel 顯示 ADR / 美股隔夜風險雷達結果。
+    這是填補原系統「綠燈無法預警外部 / 事件驅動單日大跌」缺口的開盤前預警。
+    """
+    from rich.panel import Panel
+    from rich.console import Console
+    console = Console()
+
+    color = {"red": "red", "yellow": "yellow", "green": "green"}.get(report.level, "green")
+    window = "開盤前預警" if report.is_pre_open else "盤中跟蹤"
+    title = f"{report.emoji} ADR / 美股隔夜風險雷達（{window}）"
+
+    lines = [f"[bold]{report.headline}[/bold]", "", report.recommendation, ""]
+    for m in report.moves:
+        if not m.available or m.change_pct is None:
+            lines.append(f"  · {m.label} ({m.symbol})：資料未取得")
+            continue
+        arrow = "🔻" if m.change_pct < 0 else ("🔺" if m.change_pct > 0 else "➖")
+        c = "red" if m.change_pct < 0 else ("green" if m.change_pct > 0 else "white")
+        lines.append(f"  · {m.label} ({m.symbol})：{arrow} "
+                     f"[{c}]{m.change_pct:+.2f}%[/{c}]  "
+                     f"（{m.price:.2f} / 前收 {m.prev_close:.2f}）")
+    if report.fx_change_pct is not None:
+        fx_c = "red" if report.fx_change_pct > 0 else "green"
+        lines.append(f"  · 匯率 USD/TWD：[{fx_c}]{report.fx_change_pct:+.2f}%[/{fx_c}]")
+    lines.append("")
+    lines.append(f"[dim]掃描時間（台灣）：{report.tw_local_time}[/dim]")
+
+    console.print(Panel(
+        "\n".join(lines),
+        title=title,
+        border_style=color,
+        expand=False,
+    ))
+
+
 def main():
     """
     主程式流程。
@@ -1060,6 +1098,18 @@ def main():
 
     # 可選的 FinMind token，從環境變數讀取
     token = os.getenv("FINMIND_TOKEN")
+
+    # ── ADR / 美股隔夜風險雷達（開盤前預警，置於最前）──
+    # 原系統綜合燈號為台股收盤後回顧性情緒聚合，無法預警外部 / 事件驅動的
+    # 單日大跌；此雷達監控 TSM ADR / NVDA / SMH 隔夜漲跌，在綠燈反應前先給警示。
+    # 即使 Yahoo 抓取失敗也不影響主流程。
+    overnight_risk = None
+    try:
+        overnight_risk = scan_overnight_risk()
+        if overnight_risk is not None:
+            print_overnight_risk_banner(overnight_risk)
+    except Exception as exc:  # noqa: BLE001 — 雷達失敗不該中斷整個分析
+        print(f"[ADR 雷達] 暫時無法取得海外行情：{exc}", file=sys.stderr)
 
     # ══════════════════════════════════════════════════════════════
     # 資料抓取：依變化頻率分為兩個層級
@@ -1123,6 +1173,7 @@ def main():
         quarterly_margins, value_df, chip_data, styled_df,
         market_sentiment_red=market_sentiment_red,
         revenue_by_date=revenue_by_date,
+        overnight_risk=overnight_risk,
     )
 
     print(f"\n{dashboard_summary}")
