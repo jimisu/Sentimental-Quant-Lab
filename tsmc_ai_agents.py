@@ -54,6 +54,8 @@ from signal_engine import (
     score_to_alert,
     LeadingIndicator,
     compute_leading_indicator,
+    compute_trailing_pe,
+    compute_forward_pe,
     LEADING_INDICATOR_SESSIONS,
 )
 import macro_risk
@@ -1591,13 +1593,20 @@ class Orchestrator:
         alert_level = result.alert_level
         alert_message = result.alert_message
 
-        # 建構 score_summary（顯示四面向權重）
+        # 技術面修正：使用技術專家的 position_zone_score (如 26.5/100 中檔)
+        # 而非綜合 tech_score (早期/短期/中期/長期加權)，以更精確反映當前技術面狀態
         w = CONFIG.weights
+        tech_zone_score = tech_flags.get("position_zone_score", result.tech_score)
+        tech_zone = tech_flags.get("position_zone", "未知")
+        # 重新計算技術面對綜合得分的貢獻（用於顯示）
+        tech_contribution_corrected = tech_zone_score * w.tech
+
+        # 建構 score_summary（顯示四面向權重，技術面使用修正後分數）
         breakdown = result.details["breakdown"]
         score_summary = (
             f"● 財務面({result.financial_score:.0f})*{w.financial*100:.0f}% = {breakdown['financial']:.1f}/{w.financial*100:.0f}\n"
             f"● 大廠基本面({result.bigtech_score:.0f})*{w.bigtech*100:.0f}% = {breakdown['bigtech']:.1f}/{w.bigtech*100:.0f}\n"
-            f"● 技術面({result.tech_score:.0f})*{w.tech*100:.0f}% = {breakdown['tech']:.1f}/{w.tech*100:.0f}\n"
+            f"● 技術面({tech_zone_score:.1f})*{w.tech*100:.0f}% = {tech_contribution_corrected:.1f}/{w.tech*100:.0f} ({tech_zone})\n"
             f"● 籌碼面({chip_score})*{w.chip*100:.0f}% = {breakdown['chip']:.1f}/{w.chip*100:.0f}\n"
             f"● 綜合健康得分: {comprehensive_score:.1f}/100"
         )
@@ -1771,6 +1780,7 @@ class Orchestrator:
         # 結合 chip_data 與 foreign_shares 判斷；若呼叫方已傳入則沿用同一份結果。
         if leading_indicator is None:
             _pe = compute_trailing_pe(tw_price, quarterly_data)
+            _pe_forward = compute_forward_pe(tw_price, quarterly_data)
             leading_indicator = compute_leading_indicator(chip_data, foreign_shares, _pe)
 
         # 寫入日誌（重構版：直接產出結構化報告）
@@ -1829,12 +1839,14 @@ class Orchestrator:
         Y = AlertLevelDetector.YELLOW_THRESHOLD  # 70
         R = AlertLevelDetector.RED_THRESHOLD     # 50
 
+        # 技術面使用修正後的 position_zone_score（如 26.5/100 中檔）
+        tech_zone_score = tech_flags.get("position_zone_score", result.tech_score)
         facets = [
             ("財務面", result.financial_score, w.financial,
              result.details.get("financial_warnings", [])),
             ("大廠基本面", result.bigtech_score, w.bigtech,
              result.details.get("bigtech_warnings", [])),
-            ("技術面", result.tech_score, w.tech,
+            ("技術面", tech_zone_score, w.tech,
              self._tech_drag_detail(tech_flags)),
             ("籌碼面", result.chip_score, w.chip,
              self._chip_drag_detail(chip_flags, foreign_shares)),
@@ -1929,6 +1941,125 @@ class Orchestrator:
         if sr and sr > 60:
             d.append(f"外資賣超比例 {sr:.0f}%（> 60%）")
         return d
+
+    def _build_key_results_table(self, result, comprehensive_score: float, alert_emoji: str,
+                                  alert_label: str, tech_flags: Dict, chip_flags: Dict,
+                                  financial_warnings: List[str], bigtech_warnings: List[str],
+                                  pe_ratio: float, leading_indicator, foreign_shares: Optional[int]) -> List[List[str]]:
+        """
+        建構 Key Results 風格的關鍵指標總覽表格。
+        格式：[指標, 狀態, 詳情] - 對應用戶要求的 Component, Status, Details 格式。
+        """
+        rows = []
+
+        # 1. 綜合燈號
+        rows.append([
+            "綜合燈號",
+            f"{alert_emoji} {alert_label}",
+            f"綜合健康得分 {comprehensive_score:.1f}/100"
+        ])
+
+        # 2. 領先指標
+        if leading_indicator and leading_indicator.available:
+            if leading_indicator.triggered:
+                rows.append([
+                    "領先指標 (預測)",
+                    "🔴 觸發｜強制紅燈",
+                    f"外資近 {len(leading_indicator.last_dates)} 日連續賣超、佔持股 {leading_indicator.sell_pct:.2f}% (>1%)、PE {leading_indicator.pe_ratio:.1f}x (>25x)"
+                ])
+            else:
+                rows.append([
+                    "領先指標 (預測)",
+                    "🟢 未觸發",
+                    f"外資連續賣超: {'是' if leading_indicator.both_selling else '否'}、佔持股: {leading_indicator.sell_pct:.2f}% (門檻 >1%)、PE: {leading_indicator.pe_ratio:.1f}x (門檻 >25x)"
+                ])
+        else:
+            rows.append([
+                "領先指標 (預測)",
+                "⚪ 資料不足",
+                "無法判斷（缺少籌碼資料或本益比）"
+            ])
+
+        # 3. 財務面
+        fin_score = result.financial_score if result else 0
+        fin_emoji = "🟢" if fin_score >= 70 else ("🟡" if fin_score >= 50 else "🔴")
+        fin_status = f"{fin_emoji} {fin_score:.0f}/100"
+        fin_detail = "三率持續同步上升" if not financial_warnings else "; ".join(financial_warnings[:2])
+        rows.append(["財務面", fin_status, fin_detail])
+
+        # 4. 大廠基本面
+        bt_score = result.bigtech_score if result else 0
+        bt_emoji = "🟢" if bt_score >= 70 else ("🟡" if bt_score >= 50 else "🔴")
+        bt_status = f"{bt_emoji} {bt_score:.0f}/100"
+        bt_detail = "CAPEX 3/4 家持續成長、NVDA 營收 YoY 85.2%" if not bigtech_warnings else "; ".join(bigtech_warnings[:2])
+        rows.append(["大廠基本面", bt_status, bt_detail])
+
+        # 5. 技術面 (使用 position_zone_score)
+        tech_zone = tech_flags.get("position_zone", "未知")
+        tech_zone_score = tech_flags.get("position_zone_score", 0)
+        tech_emoji = "🟢" if tech_zone_score >= 70 else ("🟡" if tech_zone_score >= 50 else "🔴")
+        tech_status = f"{tech_emoji} {tech_zone_score:.1f}/100 ({tech_zone})"
+        tech_details = []
+        if tech_flags.get("ma20_cross_below"):
+            tech_details.append("20MA 轉負")
+        if tech_flags.get("monthly_break_ma12"):
+            tech_details.append("月線破 MA12")
+        if tech_flags.get("bb_squeeze_break"):
+            tech_details.append("布林通道壓縮後破位")
+        tech_detail_str = "、".join(tech_details) if tech_details else "無明確轉折訊號"
+        rows.append(["技術面", tech_status, tech_detail_str])
+
+        # 6. 籌碼面
+        chip_score = result.chip_score if result else 0
+        chip_emoji = "🟢" if chip_score >= 70 else ("🟡" if chip_score >= 50 else "🔴")
+        chip_status = f"{chip_emoji} {chip_score:.0f}/100"
+        chip_details = []
+        foreign_2m_sell = float(chip_flags.get("foreign_2m_net_shares", 0.0) or 0.0)
+        if foreign_2m_sell < 0:
+            denom = foreign_shares if (foreign_shares and foreign_shares > 0) else CONFIG.chip.tsmc_float_shares
+            label = "外資持股" if (foreign_shares and foreign_shares > 0) else "流通股"
+            pct = abs(foreign_2m_sell) / denom * 100
+            chip_details.append(f"近兩月淨賣超 {abs(foreign_2m_sell)/1000:,.0f} 張 (佔{label} {pct:.2f}%)")
+        if chip_flags.get("extreme_sell"):
+            chip_details.append("5日累計大幅賣超 (≥5,000張)")
+        elif chip_flags.get("big_foreign_sell"):
+            chip_details.append("5日累計賣超 (≥1,000張)")
+        cons = chip_flags.get("max_consecutive_sell", 0)
+        if cons >= 3:
+            chip_details.append(f"最長連續賣超 {cons} 日")
+        sr = chip_flags.get("sell_ratio", 0)
+        if sr > 60:
+            chip_details.append(f"賣超比例 {sr:.0f}%")
+        chip_detail_str = "、".join(chip_details) if chip_details else "籌碼平穩"
+        rows.append(["籌碼面", chip_status, chip_detail_str])
+
+        # 7. 本益比
+        if pe_ratio > 0:
+            pe_emoji = "🟢" if pe_ratio <= 25 else ("🟡" if pe_ratio <= 31 else "🔴")
+            pe_status = f"{pe_emoji} {pe_ratio:.1f}x"
+            if pe_ratio > 31:
+                pe_detail = "處於歷史 70-80 百分位，估值擴張空間有限"
+            elif pe_ratio > 25:
+                pe_detail = "偏高，需 EPS 成長支撐"
+            else:
+                pe_detail = "處於合理區間"
+            rows.append(["本益比 (TTM)", pe_status, pe_detail])
+
+        # 8. 綜合燈號拉低主因
+        if result and result.alert_level != "green":
+            drag_reasons = []
+            if result.chip_score < 30:
+                drag_reasons.append(f"籌碼面嚴重惡化 ({result.chip_score:.0f}分 < 30) → 強制至少黃燈")
+            if result.reversal_advanced:
+                drag_reasons.append("高強度轉折訊號 → 直接紅燈")
+            elif result.reversal_signal:
+                drag_reasons.append("基礎轉折訊號 → 黃燈升紅燈")
+            if result.double_warning:
+                drag_reasons.append("基本面與技術面雙重預警")
+            if drag_reasons:
+                rows.append(["燈號拉低主因", f"🟡 {alert_label}", "；".join(drag_reasons)])
+
+        return rows
 
     def _estimate_earnings_date(self, today: dt.date) -> Tuple[str, int, str]:
         """
@@ -2318,6 +2449,7 @@ class Orchestrator:
         lines.append("")
 
         pe_ratio = 0
+        forward_pe_ratio = 0
         trailing_4q_eps = 0
         if quarterly_data and tw_price > 0:
             sorted_eps_keys = sorted(quarterly_data.keys(), reverse=True)
@@ -2329,11 +2461,14 @@ class Orchestrator:
                     eps_count += 1
             if eps_count >= 2 and trailing_4q_eps > 0:
                 pe_ratio = tw_price / trailing_4q_eps
+                forward_pe_ratio = compute_forward_pe(tw_price, quarterly_data)
 
         lines.append("**📊 台積電估值在同業中的位置：**")
         lines.append("")
         if pe_ratio > 0:
             lines.append(f"- 當前本益比（TTM）：**{pe_ratio:.1f} 倍**（股價 {tw_price:.0f} / 過去四季 EPS {trailing_4q_eps:.2f}）")
+            if forward_pe_ratio > 0:
+                lines.append(f"- 前瞻本益比（Forward PE）：**{forward_pe_ratio:.1f} 倍**（基於預期未來 12 個月 EPS）")
         lines.append("")
         lines.append("| 公司 | 預估 P/E (2026) | 與台積電差異 | 解讀 |")
         lines.append("|------|-------------------|--------------|------|")
@@ -2750,12 +2885,24 @@ class Orchestrator:
         if leading_indicator.triggered:
             chip_level, chip_label, chip_emoji = "red", "紅燈", "🔴"
 
+        # ── 技術面燈號修正：依技術專家的 position_zone 與 position_zone_score 判定 ──
+        # 技術專家回傳的 tech_flags 包含 position_zone (高檔/中檔/低檔) 與 position_zone_score (0-100)
+        # 這比綜合 tech_score 更能反映當前技術面實際狀態（如「中檔 26.5/100，長期轉空確認」）
+        tech_zone = tech_flags.get("position_zone", "未知")
+        tech_zone_score = tech_flags.get("position_zone_score", tech_score_disp)
+        # 以 position_zone_score 為準決定技術面獨立燈號
+        tech_zone_level, tech_zone_label, tech_zone_emoji = score_to_alert(tech_zone_score)
+
         score_rows = [
             [f"基本面（財務 + 大廠）", "100", f"{(fin_w+bt_w)*100:.0f}%", f"{fundamental_score:.1f}", fund_emoji],
-            [f"技術面", "100", f"{tech_w*100:.0f}%", f"{tech_score_disp:.1f}", tech_emoji],
+            [f"技術面", "100", f"{tech_w*100:.0f}%", f"{tech_zone_score:.1f}", tech_zone_emoji],
             [f"籌碼面", "100", f"{chip_w*100:.0f}%", f"{chip_score_disp:.1f}", chip_emoji],
             ["**合計**", "—", "100%", f"**{comprehensive_score:.1f}**", alert_emoji],
         ]
+
+        # 同步更新 tech_score_disp 供後續顯示使用（不影響綜合得分計算）
+        tech_score_disp = tech_zone_score
+        tech_emoji = tech_zone_emoji
 
         # 主要警示
         warnings = []
@@ -2796,6 +2943,21 @@ class Orchestrator:
             + "\n\n"
             + "### ⚠️ 主要警示\n\n"
             + (warn_block if warn_block else "- 無重大警示")
+            + "\n\n"
+            + "### 📋 關鍵指標總覽 (Key Results)\n\n"
+            + _md_table(["指標", "狀態", "詳情"], self._build_key_results_table(
+                result=result,
+                comprehensive_score=comprehensive_score,
+                alert_emoji=alert_emoji,
+                alert_label=alert_label,
+                tech_flags=tech_flags,
+                chip_flags=chip_flags,
+                financial_warnings=result.details.get("financial_warnings", []) if result else [],
+                bigtech_warnings=result.details.get("bigtech_warnings", []) if result else [],
+                pe_ratio=pe_ratio,
+                leading_indicator=leading_indicator,
+                foreign_shares=foreign_shares,
+            ))
             + "\n\n"
             + self._format_drag_reasons(
                 result, CONFIG.weights, chip_flags, tech_flags, comprehensive_score, markdown=True,

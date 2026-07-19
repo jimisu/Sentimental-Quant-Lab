@@ -649,9 +649,9 @@ def compute_leading_indicator(
     分母優先用 foreign_shares（外資當日實際持股），未提供時回退總流通股，
     與現有強制紅燈規則的 fallback 一致。
     """
-    pct_threshold = CONFIG.chip.two_month_high_sellout_pct      # 0.01 (1%)
-    pe_threshold = CONFIG.chip.high_sellout_pe_threshold        # 25.0
-    window_days = CONFIG.chip.two_month_window_days             # 60 自然日
+    pct_threshold = CONFIG.chip.two_month_high_sellout_pct           # 0.01 (1%)
+    pe_threshold = CONFIG.chip.leading_indicator_pe_threshold       # 30.0 (領先指標專用)
+    window_days = CONFIG.chip.two_month_window_days                  # 60 自然日
     denom = foreign_shares if (foreign_shares and foreign_shares > 0) else CONFIG.chip.tsmc_float_shares
     denom_label = "外資持股" if (foreign_shares and foreign_shares > 0) else "流通股"
 
@@ -739,4 +739,55 @@ def compute_trailing_pe(price: float, quarterly_data) -> float:
             eps_count += 1
     if eps_count >= 2 and eps_sum > 0:
         return price / eps_sum
+    return 0.0
+
+
+def compute_forward_pe(price: float, quarterly_data) -> float:
+    """
+    計算 Forward PE（前瞻本益比）= 股價 / 預期未來 12 個月 EPS。
+
+    計算邏輯：
+      1. 若有最新 8 季數據，基於過去 4 季 EPS 增長率推估未來 4 季；
+      2. 若只有最新 4 季，使用最新季度 EPS 乘以 4 作為年化前瞻 EPS；
+      3. 至少需要 2 季有效數據，且預估 EPS > 0 才回傳；否則回傳 0.0。
+
+    quarterly_data 為 {(year, quarter): {"eps": float, ...}} 結構。
+    """
+    if not price or price <= 0 or not quarterly_data:
+        return 0.0
+
+    sorted_keys = sorted(quarterly_data.keys(), reverse=True)
+    
+    # 蒐集最新 8 季的 EPS
+    recent_eps = []
+    for k in sorted_keys[:8]:
+        ev = quarterly_data[k].get("eps")
+        if ev is not None:
+            recent_eps.append(ev)
+
+    if len(recent_eps) < 2:
+        # 數據不足
+        return 0.0
+
+    # 策略 1：若有至少 5 季數據，基於最新 4 季推估
+    if len(recent_eps) >= 5:
+        latest_4_sum = sum(recent_eps[:4])
+        older_4_avg = sum(recent_eps[4:8]) / len(recent_eps[4:8]) if len(recent_eps) >= 8 else sum(recent_eps[4:]) / len(recent_eps[4:])
+        
+        # 計算增長率（避免除以零）
+        if older_4_avg > 0:
+            growth_rate = (latest_4_sum / (older_4_avg * 4)) - 1.0  # 年化增長率
+            # 保守估計：增長率上限為 30%，下限為 -30%
+            growth_rate = max(-0.3, min(0.3, growth_rate))
+        else:
+            growth_rate = 0.0
+        
+        # 預估未來 4 季 EPS = 最新 4 季 × (1 + growth_rate)
+        forward_eps_sum = latest_4_sum * (1.0 + growth_rate)
+    else:
+        # 策略 2：只有 2~4 季，使用最新季度 EPS 乘以 4
+        forward_eps_sum = recent_eps[0] * 4.0
+
+    if forward_eps_sum > 0:
+        return price / forward_eps_sum
     return 0.0
