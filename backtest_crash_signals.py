@@ -171,6 +171,50 @@ def fetch_finmind_inst_rows(stock_id: str, start: dt.date, end: dt.date,
     return rows
 
 
+def fetch_finmind_shareholding(stock_id: str, start: dt.date, end: dt.date,
+                               use_cache: bool = True) -> List[Dict]:
+    """抓取 FinMind 外資持股 (TaiwanStockShareholding)：外資持股股數 / 總股數。"""
+    cache_key = f"finmind_shareholding_{stock_id}_{start}_{end}"
+    if use_cache:
+        c = hcd._read_cache(cache_key)
+        if c is not None:
+            print(f"  -> 使用快取: {cache_key}")
+            return c
+    if not hcd.FINMIND_TOKEN:
+        print("  !! 未設定 FINMIND_TOKEN，無法取得外資持股")
+        return []
+    params = {
+        "dataset": "TaiwanStockShareholding",
+        "data_id": stock_id,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "token": hcd.FINMIND_TOKEN,
+    }
+    try:
+        resp = requests.get(hcd.FINMIND_API_URL, params=params,
+                            headers={"User-Agent": hcd.USER_AGENT}, timeout=30)
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        print(f"  !! FinMind 持股抓取失敗: {exc}")
+        return []
+    if data.get("status") != 200:
+        print(f"  !! FinMind 持股錯誤: {data.get('msg')}")
+        return []
+    rows = [
+        {
+            "date": x.get("date"),
+            "foreign_shares": int(x.get("ForeignInvestmentShares") or 0),
+            "total_shares": int(x.get("NumberOfSharesIssued") or 0),
+            "foreign_ratio": float(x.get("ForeignInvestmentSharesRatio") or 0),
+        }
+        for x in data.get("data", [])
+    ]
+    if use_cache:
+        hcd._write_cache(cache_key, rows)
+    print(f"  -> FinMind 外資持股: {len(rows)} 筆")
+    return rows
+
+
 # ──────────────────────────────────────────────
 # 資料整形
 # ──────────────────────────────────────────────
@@ -212,6 +256,9 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
     twii = hcd.fetch_yahoo_close("^TWII", p1, p2, use_cache)
     print(f"[3/3] 抓取 FinMind 三大法人買賣超 (2330) ...")
     inst_rows = fetch_finmind_inst_rows("2330", start, today, use_cache)
+    print(f"[*] 抓取 FinMind 外資持股 (2330) ...")
+    shareholding = fetch_finmind_shareholding("2330", start, today, use_cache)
+    shareholding.sort(key=lambda x: x["date"])
 
     price_dates = [ts.date() for ts in ohlcv.index]
     engine = SignalEngine()
@@ -254,6 +301,24 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
             chip_signals = ChipSignals(score=chip_score, flags=chip_flags)
             res = engine.analyze(fin_signals, bigtech_signals, tech_signals, chip_signals)
 
+            # ── 外資兩個月累計淨買賣佔持股比 ──
+            cutoff = (as_of - dt.timedelta(days=CONFIG.chip.two_month_window_days)).isoformat()
+            net_2m_shares = sum(
+                (r["buy"] - r["sell"]) for r in inst_rows
+                if r["name"] == "Foreign_Investor" and cutoff <= r["date"] <= as_of_str
+            )
+            foreign_2m_lots = net_2m_shares / 1000.0
+            hold = next((sh for sh in reversed(shareholding) if sh["date"] <= as_of_str), None)
+            if hold and hold["foreign_shares"] > 0:
+                foreign_holdings_lots = hold["foreign_shares"] / 1000.0
+                total_shares_lots = hold["total_shares"] / 1000.0
+                pct_of_foreign_holdings = foreign_2m_lots / foreign_holdings_lots * 100
+                pct_of_total_shares = foreign_2m_lots / total_shares_lots * 100
+            else:
+                foreign_holdings_lots = None
+                pct_of_foreign_holdings = None
+                pct_of_total_shares = None
+
             c_level, c_label, c_emoji = res.alert_level, res.alert_label, res.alert_emoji
             k_level, k_label, k_emoji = score_to_alert(chip_score)
 
@@ -270,7 +335,10 @@ def run_backtest(fetch_days: int = 1200, use_cache: bool = True) -> List[dict]:
                 "foreign_5d_lots": (chip_flags.get("foreign_net_sell_shares") or 0) / 1000.0,
                 "sell_ratio": chip_flags.get("sell_ratio", 0),
                 "max_consecutive_sell": chip_flags.get("max_consecutive_sell", 0),
-                "foreign_2m_lots": (chip_flags.get("foreign_2m_net_shares") or 0) / 1000.0,
+                "foreign_2m_lots": foreign_2m_lots,
+                "foreign_holdings_lots": foreign_holdings_lots,
+                "pct_of_foreign_holdings": pct_of_foreign_holdings,
+                "pct_of_total_shares": pct_of_total_shares,
                 "reversal_basic": res.reversal_signal,
                 "reversal_advanced": res.reversal_advanced,
                 "ma20_cross": tech_flags.get("ma20_cross_below", False),
@@ -299,8 +367,8 @@ def to_markdown(results: List[dict]) -> str:
     lines.append("")
     lines.append("範圍：七個崩盤日的前一個交易日（as-of）。財務/大廠以最新代表值(=100)代入。")
     lines.append("")
-    lines.append("| 崩盤日 | as-of(前一日) | 次日跌幅 | 綜合燈號 | 綜合分 | 籌碼面燈號 | 籌碼分 | 技術(早/短/中/長) | 外資5日(張) | 賣超比 | 連續賣超 | 外資2月(張) | 轉折 | 警示 |")
-    lines.append("|------|------|------:|------|------:|------|------:|------|------:|------:|------:|------:|------|------|")
+    lines.append("| 崩盤日 | as-of(前一日) | 次日跌幅 | 綜合燈號 | 綜合分 | 籌碼面燈號 | 籌碼分 | 技術(早/短/中/長) | 外資5日(張) | 賣超比 | 連續賣超 | 外資2月(張) | 佔外資持股% | 佔總股% | 轉折 | 警示 |")
+    lines.append("|------|------|------:|------|------:|------|------:|------|------:|------:|------:|------:|------:|------:|------|------|")
     for r in results:
         if r.get("error"):
             lines.append(f"| {r['crash_date']} | {r['as_of']} | {r['crash_ret']:+.2f}% | "
@@ -309,12 +377,14 @@ def to_markdown(results: List[dict]) -> str:
         tech = f"{r['tech_early']:.0f}/{r['tech_short']:.0f}/{r['tech_mid']:.0f}/{r['tech_long']:.0f}"
         rev = "進階" if r["reversal_advanced"] else ("基礎" if r["reversal_basic"] else "-")
         warn = "⚠️" if r["warned"] else "—"
+        pct_f = f"{r['pct_of_foreign_holdings']:+.2f}%" if r["pct_of_foreign_holdings"] is not None else "資料缺漏"
+        pct_t = f"{r['pct_of_total_shares']:+.2f}%" if r["pct_of_total_shares"] is not None else "資料缺漏"
         lines.append(
             f"| {r['crash_date']} | {r['as_of']} | {r['crash_ret']:+.2f}% | "
             f"{r['composite_emoji']}{r['composite_label']} | {r['composite_score']:.1f} | "
             f"{r['chip_emoji']}{r['chip_label']} | {r['chip_score']:.0f} | "
             f"{tech} | {r['foreign_5d_lots']:+,.0f} | {r['sell_ratio']:.0f}% | "
-            f"{r['max_consecutive_sell']}日 | {r['foreign_2m_lots']:+,.0f} | {rev} | {warn} |"
+            f"{r['max_consecutive_sell']}日 | {r['foreign_2m_lots']:+,.0f} | {pct_f} | {pct_t} | {rev} | {warn} |"
         )
     # 小計
     n = len([r for r in results if not r.get("error")])
@@ -331,13 +401,15 @@ def to_csv(results: List[dict], path: str) -> None:
         w.writerow(["崩盤日", "as_of前一日", "次日跌幅%", "綜合燈號", "綜合分",
                     "籌碼面燈號", "籌碼分", "技術早", "技術短", "技術中", "技術長",
                     "外資5日淨張", "賣超比%", "連續賣超日", "外資2月淨張",
+                    "外資總持股張", "佔外資持股%", "佔總股%",
                     "轉折基礎", "轉折進階", "ma20破", "月線破MA12", "布林壓縮破",
                     "警示", "錯誤"])
         for r in results:
             if r.get("error"):
                 w.writerow([r["crash_date"], r["as_of"], f"{r['crash_ret']:.2f}",
                             "ERROR", "", "", "", "", "", "", "", "", "", "", "",
-                            "", "", "", "", "", "", r["error"]])
+                            "", "", "",
+                            "", "", "", "", "", r["error"]])
                 continue
             w.writerow([
                 r["crash_date"], r["as_of"], f"{r['crash_ret']:.2f}",
@@ -346,6 +418,9 @@ def to_csv(results: List[dict], path: str) -> None:
                 r["tech_early"], r["tech_short"], r["tech_mid"], r["tech_long"],
                 f"{r['foreign_5d_lots']:.0f}", f"{r['sell_ratio']:.0f}",
                 r["max_consecutive_sell"], f"{r['foreign_2m_lots']:.0f}",
+                f"{(r['foreign_holdings_lots'] or 0):.0f}",
+                f"{(r['pct_of_foreign_holdings'] or 0):.2f}",
+                f"{(r['pct_of_total_shares'] or 0):.2f}",
                 r["reversal_basic"], r["reversal_advanced"],
                 r["ma20_cross"], r["monthly_break"], r["bb_squeeze_break"],
                 r["warned"], "",
