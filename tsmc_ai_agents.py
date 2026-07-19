@@ -107,6 +107,9 @@ class MarketDynamicsAgent(TSMCBaseAgent):
             return ""
 
         df = df.sort_values("日期").copy()
+        # 將日期轉為 datetime 軸，避免 matplotlib 以字串類別 (StrCategoryConverter)
+        # 繪圖，造成 tight_layout / bbox_inches='tight' 觸發 ConversionError。
+        df['_x'] = pd.to_datetime(df['日期'])
         df['5MA'] = df['台積電收盤價'].rolling(window=5).mean()
         df['20MA'] = df['台積電收盤價'].rolling(window=20).mean()
         df['60MA'] = df['台積電收盤價'].rolling(window=60).mean()
@@ -150,11 +153,10 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         # 子圖 4: MACD
         self._plot_macd_chart(ax4, df, macd, signal, histogram)
 
-        # 日期刻度
-        date_count = len(df)
-        max_ticks = min(10, max(5, date_count // 25))
+        # 日期刻度（datetime 軸）
         for ax in axes:
-            ax.xaxis.set_major_locator(MaxNLocator(nbins=max_ticks, integer=False))
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
             ax.tick_params(axis='x', rotation=45)
 
         plt.tight_layout()
@@ -167,16 +169,16 @@ class MarketDynamicsAgent(TSMCBaseAgent):
 
     def _plot_price_chart(self, ax, df, close, k, d):
         """繪製價格子圖：K 線 + 均線 + 布林通道 + 支撐/壓力"""
-        ax.plot(df['日期'], close, label='收盤價', color='black', linewidth=1.2, zorder=5)
-        ax.plot(df['日期'], df['5MA'], label='5MA', color='#1f77b4', linewidth=0.9, linestyle='--')
-        ax.plot(df['日期'], df['20MA'], label='20MA', color='#d62728', linewidth=0.9, linestyle='--')
+        ax.plot(df['_x'], close, label='收盤價', color='black', linewidth=1.2, zorder=5)
+        ax.plot(df['_x'], df['5MA'], label='5MA', color='#1f77b4', linewidth=0.9, linestyle='--')
+        ax.plot(df['_x'], df['20MA'], label='20MA', color='#d62728', linewidth=0.9, linestyle='--')
 
         # 布林通道
-        ax.plot(df['日期'], df['BB_upper'], label='布林上軌', color='#ff7f0e',
+        ax.plot(df['_x'], df['BB_upper'], label='布林上軌', color='#ff7f0e',
                 linewidth=0.7, linestyle=':', alpha=0.7)
-        ax.plot(df['日期'], df['BB_lower'], label='布林下軌', color='#ff7f0e',
+        ax.plot(df['_x'], df['BB_lower'], label='布林下軌', color='#ff7f0e',
                 linewidth=0.7, linestyle=':', alpha=0.7)
-        ax.fill_between(df['日期'], df['BB_upper'], df['BB_lower'],
+        ax.fill_between(df['_x'], df['BB_upper'], df['BB_lower'],
                         alpha=0.06, color='#ff7f0e', label='布林通道')
 
         # 支撐/壓力位（近 60 日高低點）
@@ -204,7 +206,7 @@ class MarketDynamicsAgent(TSMCBaseAgent):
                 current_rsi = rsi14.iloc[-1]
                 swing_price = df.loc[swing_idx, '台積電收盤價']
                 if pd.notna(swing_rsi) and current_price >= swing_price and current_rsi < swing_rsi:
-                    latest_date = df['日期'].iloc[-1]
+                    latest_date = df['_x'].iloc[-1]
                     ax.annotate('RSI 頂背離',
                                 xy=(latest_date, current_price),
                                 xytext=(latest_date, current_price * 1.03),
@@ -217,8 +219,8 @@ class MarketDynamicsAgent(TSMCBaseAgent):
         colors = ['#d62728' if c >= o else '#2ca02c'
                   for c, o in zip(pd.to_numeric(df['台積電收盤價'], errors='coerce'),
                                   pd.to_numeric(df['台積電開盤價'], errors='coerce'))]
-        ax.bar(df['日期'], vol / 1e8, color=colors, alpha=0.6, width=0.8)
-        ax.plot(df['日期'], df['台積電成交金額'].rolling(5).mean() / 1e8,
+        ax.bar(df['_x'], vol / 1e8, color=colors, alpha=0.6, width=0.8)
+        ax.plot(df['_x'], df['台積電成交金額'].rolling(5).mean() / 1e8,
                 label='5 日均量', color='blue', linewidth=0.8)
         ax.set_ylabel('成交量 (億)')
         ax.legend(loc='upper left', fontsize=8)
@@ -226,15 +228,15 @@ class MarketDynamicsAgent(TSMCBaseAgent):
 
     def _plot_oscillator_chart(self, ax, df, rsi14, k, d):
         """繪製 RSI + KD 震盪指標子圖"""
-        ax.plot(df['日期'], rsi14, label='RSI14', color='purple', linewidth=1.2)
-        ax.plot(df['日期'], k, label='%K', color='#1f77b4', linewidth=0.9)
-        ax.plot(df['日期'], d, label='%D', color='#d62728', linewidth=0.9)
+        ax.plot(df['_x'], rsi14, label='RSI14', color='purple', linewidth=1.2)
+        ax.plot(df['_x'], k, label='%K', color='#1f77b4', linewidth=0.9)
+        ax.plot(df['_x'], d, label='%D', color='#d62728', linewidth=0.9)
         ax.axhline(70, color='red', linewidth=0.6, linestyle='--', alpha=0.7)
         ax.axhline(30, color='green', linewidth=0.6, linestyle='--', alpha=0.7)
         ax.axhline(80, color='red', linewidth=0.4, linestyle=':', alpha=0.5)
         ax.axhline(20, color='green', linewidth=0.4, linestyle=':', alpha=0.5)
-        ax.fill_between(df['日期'], 70, 100, alpha=0.05, color='red')
-        ax.fill_between(df['日期'], 0, 30, alpha=0.05, color='green')
+        ax.fill_between(df['_x'], 70, 100, alpha=0.05, color='red')
+        ax.fill_between(df['_x'], 0, 30, alpha=0.05, color='green')
         ax.set_ylabel('RSI / KD')
         ax.set_ylim(0, 100)
         ax.legend(loc='upper left', fontsize=8, ncol=3)
@@ -242,10 +244,10 @@ class MarketDynamicsAgent(TSMCBaseAgent):
 
     def _plot_macd_chart(self, ax, df, macd, signal, histogram):
         """繪製 MACD 子圖"""
-        ax.plot(df['日期'], macd, label='MACD', color='#1f77b4', linewidth=1.0)
-        ax.plot(df['日期'], signal, label='訊號線', color='#d62728', linewidth=1.0)
+        ax.plot(df['_x'], macd, label='MACD', color='#1f77b4', linewidth=1.0)
+        ax.plot(df['_x'], signal, label='訊號線', color='#d62728', linewidth=1.0)
         colors = ['#d62728' if v >= 0 else '#2ca02c' for v in histogram]
-        ax.bar(df['日期'], histogram, color=colors, alpha=0.4, width=0.8, label='柱狀圖')
+        ax.bar(df['_x'], histogram, color=colors, alpha=0.4, width=0.8, label='柱狀圖')
         ax.axhline(0, color='gray', linewidth=0.5)
         ax.set_ylabel('MACD')
         ax.set_xlabel('日期')
@@ -1122,17 +1124,23 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         # 計算外資淨買賣超
         df['net_buy'] = pd.to_numeric(df['buy']) - pd.to_numeric(df['sell'])
         df = df.sort_values('date')
-        
+        # 轉為 datetime 軸，避免字串類別繪圖的 StrCategoryConverter 錯誤
+        df['_x'] = pd.to_datetime(df['date'])
+
         plt.figure(figsize=(10, 4))
         colors = ['red' if x >= 0 else 'green' for x in df['net_buy']]
-        bars = plt.bar(df['date'], df['net_buy'] / 1000, color=colors, alpha=0.7)
+        bars = plt.bar(df['_x'], df['net_buy'] / 1000, color=colors, alpha=0.7)
         plt.title("Foreign Investor Net Buy/Sell (TSMC)")
         plt.ylabel("Net Quantity (Lots/張)")
         plt.axhline(0, color='black', linewidth=0.8)
 
+        chip_ax = plt.gca()
+        chip_ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        chip_ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+
         if not df.empty:
             summary_idx = (df['net_buy'].abs() / 1000).idxmax()
-            summary_date = df.loc[summary_idx, 'date']
+            summary_date = df.loc[summary_idx, '_x']
             summary_value = df.loc[summary_idx, 'net_buy'] / 1000
             summary_label = f"最大{'買超' if summary_value >= 0 else '賣超'} {abs(summary_value):.0f} 張"
             plt.text(
