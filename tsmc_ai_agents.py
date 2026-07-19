@@ -50,7 +50,6 @@ from signal_engine import (
     BigTechSignals,
     TechnicalSignals,
     ChipSignals,
-    MarketSentimentSignals,
     score_to_alert,
 )
 import macro_risk
@@ -1474,61 +1473,6 @@ class Orchestrator:
 
         return signals
 
-    def _build_market_sentiment_signals(
-        self, trading_df: pd.DataFrame, market_sentiment_red: bool
-    ) -> MarketSentimentSignals:
-        """
-        從交易資料建構市場情緒信號。
-
-        評分邏輯：
-        - 個股 + 大盤連三降（market_sentiment_red）→ 40 分
-        - 僅個股連三降 → 60 分
-        - 僅大盤連三降 → 70 分
-        - 正常 → 100 分
-        """
-        signals = MarketSentimentSignals()
-
-        if trading_df.empty or len(trading_df) < 3:
-            return signals
-
-        recent = trading_df.tail(10)
-        tsmc_vals = recent['台積電成交金額'].tolist()[::-1]  # 最新在前
-        mkt_vals = recent['大盤成交金額'].tolist()[::-1]
-
-        # 檢查連三降
-        def _has_three_consecutive_decline(values):
-            if len(values) < 3:
-                return False
-            for i in range(len(values) - 2):
-                if values[i] < values[i + 1] < values[i + 2]:
-                    return True
-            return False
-
-        tsmc_declining = _has_three_consecutive_decline(tsmc_vals)
-        mkt_declining = _has_three_consecutive_decline(mkt_vals)
-
-        signals.tsmc_volume_declining = tsmc_declining
-        signals.market_volume_declining = mkt_declining
-        signals.triple_decline = market_sentiment_red
-
-        if market_sentiment_red:
-            signals.score = 40
-            signals.volume_trend = "declining"
-        elif tsmc_declining and mkt_declining:
-            signals.score = 50
-            signals.volume_trend = "declining"
-        elif tsmc_declining:
-            signals.score = 60
-            signals.volume_trend = "declining"
-        elif mkt_declining:
-            signals.score = 70
-            signals.volume_trend = "declining"
-        else:
-            signals.score = 100
-            signals.volume_trend = "normal"
-
-        return signals
-
     def _get_quarterly_fx_averages(self) -> Dict[str, float]:
         """
         取得最新季與前一季的 USD/TWD 平均匯率。
@@ -1597,7 +1541,6 @@ class Orchestrator:
         chip_signals = ChipSignals(score=chip_score, flags=chip_flags)
 
         # ── Step 3: Signal Engine 整合計算 ──
-        # 註：市場情緒（量能）已移出綜合燈號計算，不參與燈號判定。
         result = self.signal_engine.analyze(
             financial_signals, bigtech_signals, tech_signals, chip_signals
         )
@@ -1609,7 +1552,7 @@ class Orchestrator:
         alert_level = result.alert_level
         alert_message = result.alert_message
 
-        # 建構 score_summary（顯示新權重；市場情緒已移出綜合燈號計算）
+        # 建構 score_summary（顯示四面向權重）
         w = CONFIG.weights
         breakdown = result.details["breakdown"]
         score_summary = (
@@ -1653,9 +1596,6 @@ class Orchestrator:
         print()
         print(f"[機構 13F] > {tracker_report}")
         print()
-
-        # 市場情緒（量能）已移出燈號計算，僅供觀察，不參與判定
-        # 註：量能為落後指標，會在技術/籌碼已轉弱時仍因「量能未萎縮」顯示綠燈，造成失真。
 
         print(f"{'='*50}")
         print(f"{alert_emoji} 燈號：{alert_label}")

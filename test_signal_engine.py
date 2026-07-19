@@ -343,10 +343,10 @@ class TestComprehensiveScoreCalculator:
         )
 
     def test_all_perfect_scores(self):
-        """All 100 -> comprehensive = 90 (4 dims @ 100 * weights summing 0.90)."""
+        """All 100 -> comprehensive = 100 (4 dims @ 100 * weights summing 1.00)."""
         calc = ComprehensiveScoreCalculator()
         result, breakdown = calc.calculate(**self._make_signals())
-        assert result == pytest.approx(90.0)
+        assert result == pytest.approx(100.0)
         assert all(v == pytest.approx(100.0 * calc.weights[k]) for k, v in breakdown.items())
 
     def test_all_zero_scores(self):
@@ -558,7 +558,7 @@ class TestSignalEngine:
             chip_signals=ChipSignals(score=100),
         )
         assert isinstance(result, ComprehensiveResult)
-        assert result.comprehensive_score == pytest.approx(90.0)
+        assert result.comprehensive_score == pytest.approx(100.0)
         assert result.alert_level == "green"
         assert result.financial_score == 100.0
         assert result.bigtech_score == 100

@@ -30,7 +30,6 @@ from signal_engine import (
     TechnicalSignals,
     ChipSignals,
     BigTechSignals,
-    MarketSentimentSignals,
     MacroSignals,
     ComprehensiveResult,
 )
@@ -203,24 +202,6 @@ def bigtech_signals_no_nvda():
         capex_valid_count=4,
         nvda_revenue_yoy=None,
         score=75,
-    )
-
-
-@pytest.fixture
-def market_sentiment_perfect():
-    """Perfect market sentiment."""
-    return MarketSentimentSignals(score=100, volume_trend="normal")
-
-
-@pytest.fixture
-def market_sentiment_weak():
-    """Weak market sentiment — declining volume."""
-    return MarketSentimentSignals(
-        score=40,
-        tsmc_volume_declining=True,
-        market_volume_declining=True,
-        triple_decline=True,
-        volume_trend="declining",
     )
 
 
