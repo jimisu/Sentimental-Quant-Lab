@@ -556,6 +556,89 @@ class TestYahooFinanceProvider:
             rate = provider.get_usd_twd_rate()
             assert rate == 32.06
 
+    def test_get_current_price_zero_returns_none(self, provider):
+        """regularMarketPrice 為 0（無有效報價）應回傳 None，避免以 0 價計算折溢價。"""
+        with patch.object(provider, 'get_chart', return_value=_sample_yahoo_chart("TWD=X", 0.0)):
+            assert provider.get_current_price("TWD=X") is None
+
+    def test_get_current_price_missing_field_returns_none(self, provider):
+        """meta 缺少 regularMarketPrice 時回傳 None（而非 0.0）。"""
+        chart = {"chart": {"result": [{"meta": {"currency": "TWD"}}], "error": None}}
+        with patch.object(provider, 'get_chart', return_value=chart):
+            assert provider.get_current_price("TWD=X") is None
+
+    def test_ratelimited_response_not_cached(self, provider):
+        """Yahoo 限流回應（HTTP 200 但 result=null）不得寫入快取（避免毒化 1 小時 TTL）。"""
+        ratelimited = {"chart": {"result": None, "error": {"code": "Not Found"}}}
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = ratelimited
+
+        with patch.object(provider.session, 'get', return_value=mock_resp), \
+             patch('sal.providers._read_fresh_cache', return_value=None), \
+             patch('sal.providers._read_latest_cache', return_value=None), \
+             patch('sal.providers._write_circular_cache') as mock_write:
+            with pytest.raises(SALProviderError, match="無有效資料"):
+                provider.get_chart("TWD=X")
+            mock_write.assert_not_called()
+
+    def test_ratelimited_response_falls_back_to_valid_cache(self, provider):
+        """限流回應時，應回退最近一次含有效資料的快取，而非降級。"""
+        ratelimited = {"chart": {"result": None, "error": {"code": "Not Found"}}}
+        good_cache = {
+            "source": "YahooFinance",
+            "symbol": "TWD=X",
+            "cached_at": "2026-07-20T00:00:00",
+            "data": _sample_yahoo_chart("TWD=X", 32.06),
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = ratelimited
+
+        with patch.object(provider.session, 'get', return_value=mock_resp), \
+             patch('sal.providers._read_fresh_cache', return_value=None), \
+             patch('sal.providers._read_latest_cache', return_value=good_cache):
+            data = provider.get_chart("TWD=X")
+            # 回傳的是內層 raw response，get_current_price 可正確解析
+            meta = data["chart"]["result"][0]["meta"]
+            assert meta["regularMarketPrice"] == 32.06
+
+    def test_fresh_cache_poisoned_triggers_live_fetch(self, provider):
+        """新鮮但無效的快取（曾被毒化）不可直接回傳，應改走實際請求恢復。"""
+        poisoned_fresh = {
+            "cached_at": "2026-07-20T00:00:00",
+            "data": {"chart": {"result": None, "error": {"code": "Not Found"}}},
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = _sample_yahoo_chart("TWD=X", 32.06)
+
+        with patch('sal.providers._read_fresh_cache', return_value=poisoned_fresh), \
+             patch('sal.providers._read_latest_cache', return_value=None), \
+             patch('sal.providers._write_circular_cache'), \
+             patch.object(provider.session, 'get', return_value=mock_resp) as mock_get:
+            data = provider.get_chart("TWD=X")
+            mock_get.assert_called_once()
+            assert data["chart"]["result"][0]["meta"]["regularMarketPrice"] == 32.06
+
+    def test_http_error_falls_back_to_inner_data(self, provider):
+        """非 200 回退快取時，須回傳內層 data（而非整包 payload），確保 get_current_price 可解析。"""
+        good_cache = {
+            "source": "YahooFinance",
+            "symbol": "TSM",
+            "cached_at": "2026-07-20T00:00:00",
+            "data": _sample_yahoo_chart("TSM", 2465.0),
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 429
+
+        with patch.object(provider.session, 'get', return_value=mock_resp), \
+             patch('sal.providers._read_fresh_cache', return_value=None), \
+             patch('sal.providers._read_latest_cache', return_value=good_cache):
+            data = provider.get_chart("TSM")
+            assert "chart" in data and data["chart"]["result"]
+            assert data["chart"]["result"][0]["meta"]["regularMarketPrice"] == 2465.0
+
 
 # ──────────────────────────────────────────────────────────────────────
 # SECEdgarProvider Tests
