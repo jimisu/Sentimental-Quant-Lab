@@ -856,8 +856,8 @@ class TestInstitutionalInvestorAgentFormatLots:
 
     def test_large_number(self, agent):
         result = agent._format_lots(1234567)
-        # 1234567 / 1000 = 1234.567 → rounds to 1235
-        assert "1235 張" in result
+        # 1234567 / 1000 = 1234.567 → rounds to 1235 → comma format "1,235"
+        assert "1,235 張" in result
 
 
 # ══════════════════════════════════════════════════════════════════════
