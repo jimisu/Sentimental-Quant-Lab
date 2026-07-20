@@ -232,12 +232,16 @@ class TestAnalyzeGlobalRisk:
 
     @patch("sal.providers.YahooFinanceProvider.get_current_price")
     def test_exception_returns_error_and_score_100(self, mock_price):
+        # 外部 Yahoo 抓取失敗（重試後仍失敗）：優雅降級為中性說明，
+        # 不噴出紅色「請檢查網路連線」警示，分數維持滿分。
         mock_price.side_effect = RuntimeError("API down")
 
         agent = GlobalMacroAgent()
         report, score = agent.analyze_global_risk(900.0)
         assert score == 100
-        assert "失敗" in report
+        assert "跳過" in report
+        assert "請檢查網路連線" not in report
+        assert "⚠️" not in report
 
 
 # ══════════════════════════════════════════════════════════════
@@ -401,6 +405,26 @@ class TestFetchYahooPrice:
 
         agent = GlobalMacroAgent()
         assert agent._fetch_yahoo_price("TSM") == 0.0
+
+    @patch("sal.providers.YahooFinanceProvider.get_current_price")
+    def test_fetch_yahoo_price_retries_on_transient_failure(self, mock_price):
+        # 瞬斷失敗一次後成功：重試應吸收該錯誤並回傳價格，
+        # 且不向上拋出（對應並行 run 下偶發的網路/限流錯誤）。
+        mock_price.side_effect = [RuntimeError("API down"), 180.0]
+
+        agent = GlobalMacroAgent()
+        assert agent._fetch_yahoo_price("TSM") == 180.0
+        assert mock_price.call_count == 2
+
+    @patch("sal.providers.YahooFinanceProvider.get_current_price")
+    def test_fetch_yahoo_price_raises_after_retries_exhausted(self, mock_price):
+        # 重試耗盡仍失敗：最後才向上拋出 RuntimeError。
+        mock_price.side_effect = RuntimeError("API down")
+
+        agent = GlobalMacroAgent()
+        with pytest.raises(RuntimeError, match="無法取得"):
+            agent._fetch_yahoo_price("TSM")
+        assert mock_price.call_count == 2
 
 
 # ══════════════════════════════════════════════════════════════
