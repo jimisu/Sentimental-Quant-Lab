@@ -7,7 +7,7 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `fix/tech-light-indicator-dashboard-optimization`（基於 `develop`；聚焦「領先指標邏輯優化：移除外資連續賣超條件、PE 門檻修正為 >30x、未觸發原因顯式化」）
+- **目前所在分支 (Current Branch)**: `fix/remove-duplicate-analyst-conclusion`（基於 `develop`；聚焦「移除報告中重複的『分析師整合結論』章節並重排編號，並將章節十結尾改為不逕行斷言的合規表述」）
 - **本次交接時間 (Timestamp)**: 2026-07-20 (UTC+8)
 - **目前負責人/AI (Handler)**: Claude Code (Jimisu)
 - **價格資料來源**: `local_cache/hcd_yahoo_ohlcv_2330.TW_1672531200_1784419200.json`（2330.TW 日線，2023-01-03 ~ 2026-07-17，852 日；未觸網）
@@ -43,6 +43,21 @@
   狀態：🟢 未觸發
   外資近兩個月累計淨賣超佔比 1.21%（門檻 >1%，✓）｜本益比 30.8 倍（門檻 >30，✓）｜近 5 日最大單日跌幅 7.29%（門檻 ≤5%，✗）
   ```
+
+### 本次 session 完成（2026-07-20 報告結構清理 / 分支 `fix/remove-duplicate-analyst-conclusion`）
+- [x] **報告去重：移除重複的「分析師整合結論」章節**：原報告同時存在「八、分析師整合結論」章節與「產業深度解讀」章節尾部的 `### 📝 分析師整合結論` 小節，標題重複。經與使用者確認（二選一），刪除章節八、保留章節十一結尾那段。
+- [x] **報告章節重排**：刪除章節八後將後續章節依序重編號——九→**八**（宏觀與 ADR）、十→**九**（機構法人 13F）、十一→**十**（產業深度解讀）。同步更新 `CHAPTERS` 目錄清單、`present_chapters` 集合與各區塊標題/註解。
+- [x] **章節十結尾合規化（不逕行斷言）**：原章節十結尾硬寫「外資在高檔系統性出貨」與「等待一個催化劑打破僵局」，違反 CLAUDE.md「核心矛盾不得逕自斷言外資高檔出貨」規範。改為：
+  - 依 `chip_flags` 實際外資賣超，以「原因待確認，可能為基本面轉弱或外部連動效應，建議搭配 macro_risk.py 燈號判讀」措辭（與被刪除章節八的邏輯一致）
+  - 移除「在催化劑出現之前…」硬斷言；法說會前窗口改為客觀描述「市場焦點在於 X 法說會指引」
+- [x] **測試同步更新**：
+  - `test_ai_agents.py`：`test_systemic_risk_annotates_ch7_ch8` → `test_systemic_risk_annotates_ch7`，移除依賴章節八的 `非台積電基本面轉弱` 斷言；`test_non_systemic_keeps_catalyst_narrative_removed` 移除已不復存在的 `外資賣超原因待確認` 斷言；類別 docstring/註解更新。
+  - 新增 `TestIndustryAnalystConclusionCompliance`（2 項），斷言章節十結尾不含「外資在高檔系統性出貨 / 等待催化劑」且外資賣超以「原因待確認」呈現。
+- [x] **驗證**：章節十結尾實際輸出確認無硬斷言；完整報告端到端檢查「外資在高檔系統性出貨」「等待一個催化劑」均不存在，章節編號一~十連續，`分析師整合結論` 全報告僅 1 處；`test_ai_agents.py` 全數 **131 passed**。
+- [x] **提交**：
+  - `d9b8ae2` fix: 移除重複的「分析師整合結論」章節並重排報告編號
+  - `e9deaec` fix: 章節十結尾「分析師整合結論」改為數據驅動、不逕行斷言
+- [x] **⚠️ 已知權衡**：依使用者選擇保留的章節十結尾，其「原因待確認」措辭為 ch8 非系統性分支的安全預設；若日後欲在章節十結尾還原「外部系統性風險」標註（系統性紅燈時），需將 `is_systemic_risk` / `foreign_sell_shares` 傳入 `_build_industry_analysis_section`（目前該方法僅有 `chip_flags`，無宏觀風險信號）。
 
 ### 本次 session 完成（2026-07-16 多項修復）
 - [x] **SEC 13F 傳輸層遷移至 SAL**：`tsmc_institutional_tracker.py` 的 URL 探索與 curl_cffi TLS 繞過邏輯移到 `sal/providers.py` 的 `SECEdgarProvider`（`fetch_submissions_raw` / `_discover_13f_urls` / `fetch_13f_infotable_raw`），tracker 改委派 `get_sec()`。已透過 **PR #23 合併進 `develop`**（commit `d73bd75`）。
@@ -566,7 +581,7 @@ python tsmc_institutional_tracker.py
 > 15. `analyze_all_institutions()` 回傳 `(all_data, combined_report)`，combined_report 含跨機構比較表格
 
 ## 🚀 給下一個 AI 建議
-1. **目前分支**：`fix/tech-light-indicator-dashboard-optimization`（基於 `develop`）。本分支聚焦領先指標邏輯優化：移除外資連續賣超條件、PE 門檻修正為 >30x、未觸發原因顯式化。工作樹無未 commit 變更（所有修改已完成並測試通過）。
+1. **目前分支**：`fix/remove-duplicate-analyst-conclusion`（基於 `develop`）。本分支聚焦報告結構清理：移除重複的「分析師整合結論」章節、重排章節編號（一~十）、並將章節十結尾改為不逕行斷言的合規表述。兩個 commit（`d9b8ae2`、`e9deaec`）已提交、工作樹乾淨，**尚未 push**（依規則禁止自動推送，待人類評估）。
 2. **⚠️ 禁止自動 git push**：任何情況下 AI 都不得自行推送，只能提醒人類評估。
 3. **Pre-flight**：修改前確認分支、讀取 AI_HANDOFF.md、檢查 git status。**不要在 develop/main 上直接 commit**，先開 `feat/` 或 `fix/` 分支。
 4. **測試**：`test_institutional_tracker.py` 42 個全部通過 ✅。`test_financial_agent.py` 仍有 2 個 pre-existing 失敗（FX insight 測試），勿誤認為新 bug。

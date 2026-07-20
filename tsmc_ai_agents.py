@@ -2559,9 +2559,10 @@ class Orchestrator:
         elif foreign_5d:
             narrative_parts.append(f"外資持續賣超，但幅度尚未達極端值")
 
-        # 法說會催化劑
+        # 法說會：僅在確實處於法說會前窗口時客觀描述市場焦點，
+        # 不得框定為「等待催化劑打破僵局」的敘事（參見 CLAUDE.md「核心矛盾」規範）。
         if days_offset > 0 and days_offset <= 45:
-            narrative_parts.append(f"市場正在等待 {earnings_str} 法說會作為打破僵局的催化劑")
+            narrative_parts.append(f"市場焦點在於 {earnings_str} 法說會指引，後續營收與展望將驗證當前評價")
 
         # 估值描述
         if pe_ratio > CONFIG.chip.high_sellout_pe_threshold:
@@ -2572,9 +2573,20 @@ class Orchestrator:
         else:
             core_narrative = "各維度訊號混雜，無明確方向性。"
 
-        lines.append(f"> 台積電當前的核心矛盾是：**AI 結構性成長邏輯完整，但外資在高檔系統性出貨，市場在等待一個催化劑（法說會上修展望 or N2 量產確認）來打破這個僵局。**")
+        # 核心矛盾：不得逕自斷言「外資在高檔系統性出貨」。
+        # 外資賣超原因待確認，可能為基本面轉弱或外部連動效應，
+        # 建議搭配 macro_risk.py 燈號判讀（參見 CLAUDE.md「核心矛盾」規範）。
+        foreign_sell_shares = float(chip_flags.get("foreign_net_sell_shares", 0.0) or 0.0)
+        if foreign_sell_shares < 0:
+            foreign_note = (
+                "且外資近期呈淨賣超（籌碼結構轉弱）；外資賣超原因待確認，"
+                "可能為基本面轉弱或外部連動效應，建議搭配 macro_risk.py 燈號判讀"
+            )
+        else:
+            foreign_note = "技術面價量關係反映短期資金動向，需與籌碼面交叉驗證"
+
+        lines.append(f"> 台積電當前的核心矛盾是：**AI 結構性成長邏輯完整，{foreign_note}。**")
         lines.append(f"> {core_narrative}")
-        lines.append(f"> 在催化劑出現之前，技術面的多頭排列只是慣性，不是新的買入理由。")
         lines.append("")
         lines.append("**各維度因果鏈：**")
         lines.append("")
@@ -2775,7 +2787,7 @@ class Orchestrator:
 
         # ── 外部系統性風險判讀（macro_risk.py）──
         # 區分「台積電自身基本面 / 籌碼變化」與「跨市場連動、槓桿商品斷鏈
-        # 所驅動的外部系統性風險」。此判讀決定 ch7/ch8 是否標註「此次下跌
+        # 所驅動的外部系統性風險」。此判讀決定 ch7 是否標註「此次下跌
         # 主因為外部系統性風險，非台積電基本面轉弱」。
         try:
             analysis_day = _date.fromisoformat(analysis_date)
@@ -2802,10 +2814,9 @@ class Orchestrator:
             ("ch5", "五、籌碼面分析"),
             ("ch6", "六、估值定位"),
             ("ch7", "七、風險管理與操作建議"),
-            ("ch8", "八、分析師整合結論"),
-            ("ch9", "九、宏觀與 ADR 分析（參考資料）"),
-            ("ch10", "十、機構法人 13F 持倉追蹤（參考資料）"),
-            ("ch11", "十一、產業深度解讀（參考資料）"),
+            ("ch9", "八、宏觀與 ADR 分析（參考資料）"),
+            ("ch10", "九、機構法人 13F 持倉追蹤（參考資料）"),
+            ("ch11", "十、產業深度解讀（參考資料）"),
         ]
 
         # ═══ 標題 ═══
@@ -3259,58 +3270,9 @@ class Orchestrator:
             + (f"\n> **外資賣超判因：** {sell_class['note']}" if foreign_sell_shares > 0 else "")
         )
 
-        # ═══ 八、分析師整合結論 ═══
-        # 核心矛盾：不得逕自斷言「外資在高檔系統性出貨」。若 macro_risk 判讀為
-        # 外部系統性風險（紅燈），則明確標註此次下跌主因為外部風險；否則以外資
-        # 賣超「原因待確認」措辭，並建議搭配 macro_risk.py 燈號判讀。
-        if is_systemic_risk:
-            foreign_note = (
-                "但當前股價重挫主因為外部系統性風險（跨市場連動 / 槓桿商品斷鏈），"
-                "非台積電基本面轉弱；外資賣超原因待確認，可能為基本面轉弱或外部連動效應，"
-                "建議搭配 macro_risk.py 燈號判讀"
-            )
-        elif foreign_sell_shares > 0:
-            foreign_note = (
-                "且外資近期呈淨賣超（籌碼結構轉弱）；外資賣超原因待確認，"
-                "可能為基本面轉弱或外部連動效應，建議搭配 macro_risk.py 燈號判讀"
-            )
-        else:
-            foreign_note = "技術面價量關係反映短期資金動向，需與籌碼面交叉驗證"
-
-        contradiction = (
-            f"> **台積電當前的核心矛盾是：AI 結構性成長邏輯完整，{foreign_note}。**\n\n"
-        )
-
-        sections.append(
-            "---\n\n"
-            "<a id=\"ch8\"></a>\n\n## 八、分析師整合結論\n\n"
-            "### 核心矛盾\n\n"
-            + contradiction
-            + "- 技術面多頭排列反映的是**慣性，而非新的買入訊號**\n"
-            + (f"- P/E {pe_ratio:.1f} 倍已反映多數利多，**估值擴張空間有限**\n" if pe_ratio > 0 else "")
-            + (f"- 法說會 **{earnings_str}** 已召開，方向由法說會指引與後續營收驗證主導\n" if earnings_date else "")
-            + "\n"
-            "### 各維度因果鏈\n\n"
-            "```text\n"
-            "Apple / NVIDIA 訂單能見度\n"
-            "        ↓\n"
-            "CoWoS 供需缺口 + N3/N2 良率\n"
-            "        ↓\n"
-            "三率趨勢（毛利率 / 營益率 / 淨利率）\n"
-            "        ↓\n"
-            "EPS 成長（需區分本業 / 業外 / 匯損）\n"
-            "        ↓\n"
-            "外資法人評價 → 籌碼流向\n"
-            "        ↓\n"
-            "技術面價量關係 → 散戶 vs. 法人博弈\n"
-            "        ↓\n"
-            "外部系統性風險（跨市場連動、槓桿商品斷鏈）\n"
-            "        ↓  （與台積電自身基本面無關，但可能短期主導股價波動方向）\n"
-            "ADR 溢價（需過濾匯率因子）\n"
-            "```"
-        )
-
-        # ═══ 九、宏觀與 ADR 分析（參考資料）═══
+        # ═══ 八、宏觀與 ADR 分析（參考資料）═══
+        # （原「八、分析師整合結論」章節已移除：與章節十結尾「分析師整合結論」
+        #   重複；整合結論保留於產業深度解讀章節尾部。）
         # 從 macro_report 解析 ADR 數據
         adr_premium = _re.search(r"溢價 ([\d.]+%)", macro_report)
         adr_premium_val = adr_premium.group(1) if adr_premium else "N/A"
@@ -3321,7 +3283,7 @@ class Orchestrator:
 
         sections.append(
             "---\n\n"
-            "<a id=\"ch9\"></a>\n\n## 九、宏觀與 ADR 分析（參考資料）\n\n"
+            "<a id=\"ch9\"></a>\n\n## 八、宏觀與 ADR 分析（參考資料）\n\n"
             "**資料來源：** Yahoo Finance（TSM ADR、TWD=X）\n\n"
             + _md_table(["項目", "數值"], [
                 ["台股現價", price_str],
@@ -3333,28 +3295,28 @@ class Orchestrator:
             + _demote_headings(macro_report)
         )
 
-        # ═══ 十、機構法人 13F 持倉追蹤（參考資料）═══
+        # ═══ 九、機構法人 13F 持倉追蹤（參考資料）═══
         if tracker_report:
             sections.append(
                 "---\n\n"
-                "<a id=\"ch10\"></a>\n\n## 十、機構法人 13F 持倉追蹤（參考資料）\n\n"
+                "<a id=\"ch10\"></a>\n\n## 九、機構法人 13F 持倉追蹤（參考資料）\n\n"
                 "**資料來源：** SEC EDGAR Form 13F-HR（infotable.xml）\n\n"
                 + _demote_headings(tracker_report)
             )
 
-        # ═══ 十一、產業深度解讀（參考資料）═══
+        # ═══ 十、產業深度解讀（參考資料）═══
         if industry_analysis_md:
-            # 將舊的 ## 📊 五、產業分析框架 改為 ## 十一、產業深度解讀（參考資料）
+            # 將舊的 ## 📊 五、產業分析框架 改為 ## 十、產業深度解讀（參考資料）
             ia_clean = industry_analysis_md.replace(
                 "## 📊 五、產業分析框架與深度解讀",
-                "<a id=\"ch11\"></a>\n\n## 十一、產業深度解讀（參考資料）"
+                "<a id=\"ch11\"></a>\n\n## 十、產業深度解讀（參考資料）"
             )
             sections.append("---\n\n" + ia_clean)
 
         # ── 報告目錄（TOC）────────────────────────────────────────────
         # 核心章節固定出現；追蹤（ch10）與產業（ch11）為條件式參考資料。
         present_chapters.update(
-            {"ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8", "ch9"}
+            {"ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch9"}
         )
         if tracker_report:
             present_chapters.add("ch10")
