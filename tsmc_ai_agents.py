@@ -22,11 +22,18 @@ try:
     HAS_MATPLOTLIB = True
     mpl.rcParams["font.family"] = "sans-serif"
     mpl.rcParams["font.sans-serif"] = [
+        # macOS 優先字型（本機 Linux 不存在，會自動跳過）
         "PingFang HK",
         "Heiti TC",
         "STHeiti",
         "Songti SC",
         "Arial Unicode MS",
+        # Noto Sans CJK 系統已安裝（/usr/share/fonts/.../NotoSansCJK-*.ttc），
+        # 但 matplotlib 僅註冊 .ttc 集合的第一個字重（此機為 "Noto Sans CJK JP"），
+        # 故 TC/SC 在 matplotlib 中解析為 None 而回落 DejaVu Sans 導致缺字警告。
+        # Noto Sans CJK 為單一統合字型（各區域共用相同字模），JP 字重即可正確渲染繁體，
+        # 故將其置於 TC/SC 之前以確保本機優先取用。
+        "Noto Sans CJK JP",
         "Noto Sans CJK TC",
         "Noto Sans CJK SC",
         "DejaVu Sans",
