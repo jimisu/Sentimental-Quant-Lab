@@ -1156,11 +1156,12 @@ class TestOrchestratorEstimateEarningsDate:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# ch7 風險管理 / ch8 分析師結論 重寫驗證
+# ch7 風險管理 重寫驗證
 # 場景：2026-07-16 法說會後，2026-07-17 外部系統性風險暴跌
+# （註：原「八、分析師整合結論」章節已移除，其系統性風險標註邏輯由 ch7 承載）
 # ══════════════════════════════════════════════════════════════════════
 class TestRiskAndAnalystRewrite:
-    """驗證 ch7/ch8 已拋棄過期「法說會前 / 等待催化劑」敘事，
+    """驗證 ch7 已拋棄過期「法說會前 / 等待催化劑」敘事，
     並在 macro_risk 判讀為外部系統性風險時正確標註「此次下跌主因為
     外部系統性風險，非台積電基本面轉弱」。"""
 
@@ -1208,7 +1209,7 @@ class TestRiskAndAnalystRewrite:
         with open(orch.log_path, encoding="utf-8") as f:
             return f.read()
 
-    def test_systemic_risk_annotates_ch7_ch8(self, tmp_path, monkeypatch):
+    def test_systemic_risk_annotates_ch7(self, tmp_path, monkeypatch):
         import macro_risk as mr
         mr._INJECTED["assess_macro_risk"] = mr.MacroRiskSignal(
             level="red", is_red=True, reason="跨市場連動 / 槓桿商品斷鏈",
@@ -1226,8 +1227,6 @@ class TestRiskAndAnalystRewrite:
             # 紅燈警示標註「非台積電基本面轉弱」
             assert "外部系統性風險警示（紅燈）" in content
             assert "非台積電法說會內容或基本面轉弱所致" in content
-            # ch8 核心矛盾標註「非台積電基本面轉弱」
-            assert "非台積電基本面轉弱" in content
             # 過期敘事必須消失
             assert "法說會前" not in content
             assert "等待催化劑" not in content
@@ -1243,7 +1242,7 @@ class TestRiskAndAnalystRewrite:
 
     def test_non_systemic_keeps_catalyst_narrative_removed(self, tmp_path, monkeypatch):
         """無外部系統性風險（綠燈）時：不得出現「等待催化劑」，
-        外資賣超改以「原因待確認」措辭，且不被標為系統性風險驅動。"""
+        且不被標為系統性風險驅動。"""
         import macro_risk as mr
         try:
             orch = self._make_orchestrator(tmp_path)
@@ -1260,8 +1259,6 @@ class TestRiskAndAnalystRewrite:
             assert "法說會前" not in content
             # 非紅燈：不出現紅燈警示標註
             assert "外部系統性風險警示（紅燈）" not in content
-            # 外資賣超「原因待確認」
-            assert "外資賣超原因待確認" in content
             # 賣超被判定為基本面因素（計入轉空），非「系統性風險驅動」
             assert "系統性風險驅動" not in content
             assert "外資 5 日累計賣超 > 5 萬張" in content
