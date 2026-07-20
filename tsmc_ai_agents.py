@@ -1041,7 +1041,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
     def __init__(self):
         super().__init__("籌碼分析 Agent")
         self.source = "FinMind 三大法人買賣超資料集 (TaiwanStockInstitutionalInvestorsBuySell)"
-        self.logic = "追蹤三大法人（外資、投信、自營商）買賣超行為。連續外資賣超被視為 Trend-killer 訊號；三大法人同步買超則視為籌碼共振。新增：賣超分級、動向分歧偵測、個別法人趨勢摘要。"
+        self.logic = "追蹤三大法人（外資、投信、自營商）買賣超行為。連續外資賣超被視為 Trend-killer 訊號。新增：賣超分級、動向分歧偵測、個別法人趨勢摘要。"
         self.charts_dir = "charts"
         self.institution_type_labels = {
             "Foreign_Investor": "外資",
@@ -1174,68 +1174,6 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         direction = "買超" if shares > 0 else "賣超" if shares < 0 else "持平"
         return f"{direction} {abs(shares) / 1000:,.0f} 張"
 
-    def _analyze_three_institution_resonance(self, df: pd.DataFrame, type_col: str) -> Tuple[str, Dict]:
-        normalized = df.copy()
-        normalized["institution_label"] = normalized[type_col].apply(self._normalize_institution_label)
-        normalized = normalized[normalized["institution_label"].notna()].copy()
-
-        if normalized.empty:
-            return "三大法人資料不足，無法判斷是否共振買入。", {
-                "institutional_resonance_buy": False,
-                "three_institution_net_buy": 0,
-            }
-
-        normalized["buy"] = pd.to_numeric(normalized["buy"], errors="coerce").fillna(0)
-        normalized["sell"] = pd.to_numeric(normalized["sell"], errors="coerce").fillna(0)
-        # 直接計算淨買賣股數
-        normalized["net_buy_shares"] = normalized["buy"] - normalized["sell"]
-
-        daily_net = (
-            normalized
-            .groupby(["date", "institution_label"], as_index=False)["net_buy_shares"]
-            .sum()
-        )
-        complete_dates = (
-            daily_net.groupby("date")["institution_label"]
-            .nunique()
-            .loc[lambda series: series >= 3]
-        )
-
-        if complete_dates.empty:
-            return "三大法人資料不足，無法判斷是否共振買入。", {
-                "institutional_resonance_buy": False,
-                "three_institution_net_buy": 0,
-            }
-
-        # 取最近 5 個交易日累計
-        recent_dates = sorted(complete_dates.index)[-5:]
-        start_date = recent_dates[0]
-        end_date = recent_dates[-1]
-
-        recent_data = daily_net[daily_net["date"].isin(recent_dates)]
-        net_by_shares = (
-            recent_data.groupby("institution_label")["net_buy_shares"]
-            .sum()
-            .to_dict()
-        )
-
-        required_labels = ["外資", "投信", "自營商"]
-        is_sync_buy = all(net_by_shares.get(label, 0) > 0 for label in required_labels)
-        total_net_shares = sum(net_by_shares.get(label, 0) for label in required_labels)
-        detail = "，".join(
-            f"{label}{self._format_lots(net_by_shares.get(label, 0))}"
-            for label in required_labels
-        )
-        resonance_text = "是共振買入" if is_sync_buy else "不是共振買入"
-        report = (
-            f"三大法人近 5 日累計 ({start_date} ~ {end_date}): {detail}；"
-            f"合計{self._format_lots(total_net_shares)}，判定：{resonance_text}。"
-        )
-        return report, {
-            "institutional_resonance_buy": is_sync_buy,
-            "three_institution_net_buy": total_net_shares,
-        }
-
     def analyze_flow(self, chip_data: List[Dict], price_df: pd.DataFrame,
                      foreign_shares: Optional[int] = None) -> Tuple[str, Dict, int]:
         report_prefix = f"數據來源: {self.source}\n分析邏輯: {self.logic}\n結論: "
@@ -1260,7 +1198,6 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
 
         # 篩選外資資料用於分析
         foreign_all = df[df["institution_label"] == '外資'].sort_values('date', ascending=True)
-        resonance_report, resonance_flags = self._analyze_three_institution_resonance(df, type_col)
 
         # 依日期加總外資淨買賣股數
         foreign_daily = (
@@ -1272,7 +1209,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         )
 
         if len(foreign_daily) < 5:
-            return f"{report_prefix}籌碼資料不足(需5日)，無法判斷趨勢。{resonance_report}", resonance_flags, 0
+            return f"{report_prefix}籌碼資料不足(需5日)，無法判斷趨勢。", {}, 0
 
         # ── 外資多維度分析 ──────────────────────────────────────────
         foreign_analysis = self._analyze_single_institution(foreign_daily)
@@ -1366,7 +1303,6 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             "foreign_2m_net_shares": foreign_2m_net_shares,  # 近兩個月累計淨買賣，負值=淨賣超
             "foreign_2m_window_start": foreign_2m_window_start,
             "foreign_2m_window_end": foreign_2m_window_end,
-            **resonance_flags,
         }
 
         # ── 組合報告 ────────────────────────────────────────────────
@@ -1399,13 +1335,13 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         if extreme_sell:
             verdict = (f"🚨 外資強力賣出警告：5 日累計賣超 {total_sell_lots:,.0f} 張，"
                        f"賣超比例 {foreign_analysis['sell_ratio']:.0f}%，最長連續賣超 {foreign_analysis['max_consecutive_sell']} 日！"
-                       f"\n{detail_section}\n{trend_section}\n{resonance_report}")
+                       f"\n{detail_section}\n{trend_section}")
         elif is_net_selling:
             verdict = (f"趨勢警告：外資近 5 日呈累計賣超 {total_sell_lots:,.0f} 張。"
-                       f"\n{detail_section}\n{trend_section}\n{resonance_report}")
+                       f"\n{detail_section}\n{trend_section}")
         else:
             verdict = (f"籌碼動向平穩或呈現累計買盤支撐。"
-                       f"\n{detail_section}\n{trend_section}\n{resonance_report}")
+                       f"\n{detail_section}\n{trend_section}")
 
         return f"{report_prefix}{verdict}{image_md}", chip_flags, chip_score
 

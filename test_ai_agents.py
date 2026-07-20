@@ -9,7 +9,7 @@ Covers:
   20MA deviation, enrich_indicators, analyze_sentiment
 - InstitutionalInvestorAgent: sell magnitude grading, single institution analysis,
   individual trends, divergence detection, label normalization, format lots,
-  three institution resonance, analyze_flow
+  analyze_flow
 - Orchestrator: df_to_md_table, build_financial_signals,
   estimate_earnings_date
 """
@@ -858,57 +858,6 @@ class TestInstitutionalInvestorAgentFormatLots:
         result = agent._format_lots(1234567)
         # 1234567 / 1000 = 1234.567 → rounds to 1235 → comma format "1,235"
         assert "1,235 張" in result
-
-
-# ══════════════════════════════════════════════════════════════════════
-# InstitutionalInvestorAgent — Three Institution Resonance
-# ══════════════════════════════════════════════════════════════════════
-
-class TestInstitutionalInvestorAgentResonance:
-    """Tests for _analyze_three_institution_resonance."""
-
-    @pytest.fixture
-    def agent(self):
-        return InstitutionalInvestorAgent()
-
-    def test_empty_data_returns_insufficient(self, agent):
-        df = pd.DataFrame(columns=["date", "type", "buy", "sell"])
-        report, flags = agent._analyze_three_institution_resonance(df, "type")
-        assert "資料不足" in report
-        assert flags["institutional_resonance_buy"] is False
-
-    def test_all_buying_is_resonance(self, agent):
-        records = []
-        for i in range(5):
-            d = f"2026-01-0{i+1}"
-            for inst in ["Foreign_Investor", "Investment_Trust", "Dealer"]:
-                records.append({"date": d, "type": inst, "buy": 10000, "sell": 1000})
-        df = pd.DataFrame(records)
-        report, flags = agent._analyze_three_institution_resonance(df, "type")
-        assert flags["institutional_resonance_buy"] is True
-        assert "共振買入" in report
-
-    def test_not_all_buying_no_resonance(self, agent):
-        records = []
-        for i in range(5):
-            d = f"2026-01-0{i+1}"
-            records.append({"date": d, "type": "Foreign_Investor", "buy": 1000, "sell": 10000})
-            records.append({"date": d, "type": "Investment_Trust", "buy": 10000, "sell": 1000})
-            records.append({"date": d, "type": "Dealer", "buy": 10000, "sell": 1000})
-        df = pd.DataFrame(records)
-        report, flags = agent._analyze_three_institution_resonance(df, "type")
-        assert flags["institutional_resonance_buy"] is False
-        assert "不是共振買入" in report
-
-    def test_resonance_flags_structure(self, agent):
-        records = [
-            {"date": "2026-01-01", "type": t, "buy": 5000, "sell": 1000}
-            for t in ["Foreign_Investor", "Investment_Trust", "Dealer"]
-        ]
-        df = pd.DataFrame(records)
-        _, flags = agent._analyze_three_institution_resonance(df, "type")
-        assert "institutional_resonance_buy" in flags
-        assert "three_institution_net_buy" in flags
 
 
 # ══════════════════════════════════════════════════════════════════════
