@@ -383,6 +383,7 @@ class GlobalMacroAgent:
         growing_count = 0
         valid_count = 0
 
+        source_refs = []  # (accession, sec_filing_url) 供文末「資料來源參考」區塊
         for company_name, meta in CAPEX_COMPANIES.items():
             try:
                 quarters = self._fetch_recent_capex_quarters(meta)
@@ -397,13 +398,16 @@ class GlobalMacroAgent:
                     growing_count += 1
 
                 trend = "持續成長" if is_growing else "未持續成長"
-                values = " -> ".join(
-                    f"{q['period']} {self._format_usd_billions(q['value'])} [{q['method']}; {q['accession']}]"
-                    for q in (oldest, middle, latest)
-                )
+                # 每家拆成多行：標題行（趨勢）+ 各季度小項，避免單行過長
+                report_lines.append(f"- {company_name} ({meta['ticker']}): {trend}")
+                for q in (oldest, middle, latest):
+                    report_lines.append(
+                        f"    · {q['period']} {self._format_usd_billions(q['value'])} "
+                        f"[{q['method']}; {q['accession']}]"
+                    )
                 latest_source = latest.get("sec_filing_url", "")
-                source_suffix = f"；最新 filing: {latest_source}" if latest_source else ""
-                report_lines.append(f"- {company_name} ({meta['ticker']}): {trend}，{values}{source_suffix}")
+                if latest_source:
+                    source_refs.append((latest["accession"], latest_source))
             except Exception as exc:
                 report_lines.append(f"- {company_name} ({meta['ticker']}): 抓取失敗 ({exc})")
 
@@ -425,6 +429,18 @@ class GlobalMacroAgent:
             else:
                 capex_score = 25
                 report_lines.append(f"CAPEX 結論: 僅 {growing_count}/{valid_count} 家持續成長，全面放緩。")
+
+        # ── 資料來源參考（SEC EDGAR filings）──
+        # 將各公司最新的冗長 SEC 網址集中於此，避免內文單行過長、提升可讀性。
+        if source_refs:
+            report_lines.append("")
+            report_lines.append("【資料來源參考】（SEC EDGAR 官方 filings）")
+            seen_accs = set()
+            for acc, url in source_refs:
+                if acc in seen_accs:
+                    continue
+                seen_accs.add(acc)
+                report_lines.append(f"  · {acc} → {url}")
 
         # ── NVDA 營收 YoY ──
         nvda_yoy = None

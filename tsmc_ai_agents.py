@@ -1064,15 +1064,15 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
         """
         daily_avg = total_sell_lots / max(days, 1)
         if total_sell_lots < self.SELL_GRADE_THRESHOLDS["minor"]:
-            return f"輕微（日均賣超 {daily_avg:.0f} 張）"
+            return f"輕微（日均賣超 {daily_avg:,.0f} 張）"
         elif total_sell_lots < self.SELL_GRADE_THRESHOLDS["moderate"]:
-            return f"中度（日均賣超 {daily_avg:.0f} 張）"
+            return f"中度（日均賣超 {daily_avg:,.0f} 張）"
         elif total_sell_lots < self.SELL_GRADE_THRESHOLDS["heavy"]:
-            return f"大幅（日均賣超 {daily_avg:.0f} 張）"
+            return f"大幅（日均賣超 {daily_avg:,.0f} 張）"
         elif total_sell_lots < self.SELL_GRADE_THRESHOLDS["extreme"]:
-            return f"嚴重（日均賣超 {daily_avg:.0f} 張）"
+            return f"嚴重（日均賣超 {daily_avg:,.0f} 張）"
         else:
-            return f"極端（日均賣超 {daily_avg:.0f} 張）"
+            return f"極端（日均賣超 {daily_avg:,.0f} 張）"
 
     def _analyze_single_institution(self, foreign_daily: pd.Series) -> Dict:
         """
@@ -1145,7 +1145,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
                 "net_shares": total,
                 "sell_days": sell_days,
                 "total_days": total_days,
-                "summary": f"{direction} {abs(total) / 1000:.0f} 張 / {total_days} 日中賣超 {sell_days} 日",
+                "summary": f"{direction} {abs(total) / 1000:,.0f} 張 / {total_days} 日中賣超 {sell_days} 日",
             }
         return trends
 
@@ -1160,7 +1160,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             if abs(net) < 10000:  # 忽略小額（< 10000 股）
                 continue
             direction = "買" if net > 0 else "賣"
-            significant_labels.append(f"{label}{direction}超 {abs(net) / 1000:.0f} 張")
+            significant_labels.append(f"{label}{direction}超 {abs(net) / 1000:,.0f} 張")
 
         if len(significant_labels) >= 2:
             return f"法人動向分歧：{'、'.join(significant_labels)}"
@@ -1172,7 +1172,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
 
     def _format_lots(self, shares: float) -> str:
         direction = "買超" if shares > 0 else "賣超" if shares < 0 else "持平"
-        return f"{direction} {abs(shares) / 1000:.0f} 張"
+        return f"{direction} {abs(shares) / 1000:,.0f} 張"
 
     def _analyze_three_institution_resonance(self, df: pd.DataFrame, type_col: str) -> Tuple[str, Dict]:
         normalized = df.copy()
@@ -1371,7 +1371,7 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
 
         # ── 組合報告 ────────────────────────────────────────────────
         detail_parts = [
-            f"外資 5 日累計: {'賣超' if is_net_selling else '買超'} {abs(recent_5d_net_shares) / 1000:.0f} 張",
+            f"外資 5 日累計: {'賣超' if is_net_selling else '買超'} {abs(recent_5d_net_shares) / 1000:,.0f} 張",
             f"外資動向: 佔 {foreign_analysis['total_days']} 日中的 "
             f"買超 {foreign_analysis['buy_days']} 日 / 賣超 {foreign_analysis['sell_days']} 日 "
             f"（賣超比例 {foreign_analysis['sell_ratio']:.0f}%）",
@@ -1390,18 +1390,18 @@ class InstitutionalInvestorAgent(TSMCBaseAgent):
             two_m_pct = abs(foreign_2m_net_shares) / two_m_denom * 100
             detail_parts.append(
                 f"外資近兩個月({foreign_2m_window_start}~{foreign_2m_window_end})累計{two_m_dir} "
-                f"{abs(foreign_2m_net_shares) / 1000:.0f} 張（佔{two_m_denom_label} {two_m_pct:.2f}%）"
+                f"{abs(foreign_2m_net_shares) / 1000:,.0f} 張（佔{two_m_denom_label} {two_m_pct:.2f}%）"
             )
 
         detail_section = "\n".join(detail_parts)
         trend_section = "三大法人個別趨勢:\n" + "\n".join(trend_lines)
 
         if extreme_sell:
-            verdict = (f"🚨 外資強力賣出警告：5 日累計賣超 {total_sell_lots:.0f} 張，"
+            verdict = (f"🚨 外資強力賣出警告：5 日累計賣超 {total_sell_lots:,.0f} 張，"
                        f"賣超比例 {foreign_analysis['sell_ratio']:.0f}%，最長連續賣超 {foreign_analysis['max_consecutive_sell']} 日！"
                        f"\n{detail_section}\n{trend_section}\n{resonance_report}")
         elif is_net_selling:
-            verdict = (f"趨勢警告：外資近 5 日呈累計賣超 {total_sell_lots:.0f} 張。"
+            verdict = (f"趨勢警告：外資近 5 日呈累計賣超 {total_sell_lots:,.0f} 張。"
                        f"\n{detail_section}\n{trend_section}\n{resonance_report}")
         else:
             verdict = (f"籌碼動向平穩或呈現累計買盤支撐。"
@@ -1936,7 +1936,7 @@ class Orchestrator:
             denom = foreign_shares if (foreign_shares and foreign_shares > 0) else CONFIG.chip.tsmc_float_shares
             label = "外資持股" if (foreign_shares and foreign_shares > 0) else "流通股"
             pct = abs(sell) / denom * 100
-            d.append(f"外資近兩個月淨賣超 {abs(sell)/1000:,.0f} 张（佔{label} {pct:.2f}%）")
+            d.append(f"外資近兩個月淨賣超 {abs(sell)/1000:,.0f} 張（佔{label} {pct:.2f}%）")
         if chip_flags.get("extreme_sell"):
             d.append("外資 5 日累計大幅賣超（≥ 5,000 張）")
         elif chip_flags.get("big_foreign_sell"):
