@@ -156,6 +156,24 @@ def _read_fresh_cache(cache_key: str, max_age_hours: int) -> Optional[Dict]:
     return cached
 
 
+def _is_valid_yahoo_chart(data) -> bool:
+    """判斷 Yahoo Finance chart 回應是否含有效資料。
+
+    Yahoo 限流或查無資料時，常以 HTTP 200 回傳
+    ``{"chart": {"result": null, "error": {...}}}``。此類回應不得被視為
+    有效，否則會（1）被寫入 1 小時快取而毒化後續讀取、（2）導致
+    ``get_current_price`` 回傳 None 使宏觀 ADR 分析持續降級。
+    """
+    if not isinstance(data, dict):
+        return False
+    chart = data.get("chart")
+    if not isinstance(chart, dict):
+        return False
+    if chart.get("error"):
+        return False
+    return bool(chart.get("result"))
+
+
 # ──────────────────────────────────────────────
 # FinMind Provider (implements FinancialDataProvider, InstitutionalFlowProvider)
 # ──────────────────────────────────────────────
@@ -637,7 +655,11 @@ class YahooFinanceProvider(QuoteProvider):
         cached = _read_fresh_cache(cache_key, 1)  # 1 hour cache
         if cached:
             # Unwrap to the inner raw response (consistent with live fetch).
-            return cached.get("data")
+            data = cached.get("data")
+            # 只有含有效資料的新鮮快取才可直接回傳；曾被寫入的限流/空回應
+            # 需略過，改走實際請求以嘗試恢復。
+            if _is_valid_yahoo_chart(data):
+                return data
 
         url = f"{YAHOO_FINANCE_URL}/{symbol}"
         params = {
@@ -649,18 +671,37 @@ class YahooFinanceProvider(QuoteProvider):
         try:
             resp = self.session.get(url, params=params, headers=_get_headers(), timeout=15)
         except requests.RequestException as exc:
-            cached = _read_latest_cache(cache_key)
-            if cached:
-                return cached
+            fallback = self._latest_valid_chart(cache_key)
+            if fallback is not None:
+                return fallback
             raise SALProviderError(f"Yahoo Finance request failed: {exc}") from exc
 
         if resp.status_code != 200:
-            cached = _read_latest_cache(cache_key)
-            if cached:
-                return cached
+            fallback = self._latest_valid_chart(cache_key)
+            if fallback is not None:
+                return fallback
             raise SALProviderError(f"Yahoo Finance API {resp.status_code}")
 
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            fallback = self._latest_valid_chart(cache_key)
+            if fallback is not None:
+                return fallback
+            raise SALProviderError(f"Yahoo Finance 回應非 JSON: {exc}") from exc
+
+        if not _is_valid_yahoo_chart(data):
+            # Yahoo 限流或查無資料（result 為 null / 帶 error 物件）。
+            # 絕不寫入快取——否則會毒化 1 小時 TTL，使宏觀 ADR 分析持續降級。
+            # 優先回退最近一次「有效」快取，否則上拋讓上層優雅降級。
+            fallback = self._latest_valid_chart(cache_key)
+            if fallback is not None:
+                return fallback
+            chart_err = data.get("chart", {}).get("error") if isinstance(data, dict) else None
+            raise SALProviderError(
+                f"Yahoo Finance 回應無有效資料: {chart_err or 'result 為空'}"
+            )
+
         _write_circular_cache(
             cache_key,
             {
@@ -672,13 +713,32 @@ class YahooFinanceProvider(QuoteProvider):
         )
         return data
 
-    def get_current_price(self, symbol: str) -> Optional[float]:
-        """Get current regular market price."""
-        data = self.get_chart(symbol)
-        if not data or "chart" not in data or not data["chart"]["result"]:
+    def _latest_valid_chart(self, cache_key: str) -> Optional[Dict]:
+        """回退到最近一次含有效資料的快取（略過曾寫入的限流/空回應）。"""
+        cached = _read_latest_cache(cache_key)
+        if cached is None:
             return None
-        meta = data["chart"]["result"][0]["meta"]
-        return float(meta.get("regularMarketPrice", 0))
+        data = cached.get("data")
+        return data if _is_valid_yahoo_chart(data) else None
+
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """Get current regular market price.
+
+        回傳 None（而非 0.0）表示無有效報價，讓上層（如宏觀 ADR 分析）
+        能明確偵測並優雅降級，避免以 0 價進行折溢價計算。
+        """
+        data = self.get_chart(symbol)
+        if not _is_valid_yahoo_chart(data):
+            return None
+        meta = data["chart"]["result"][0].get("meta", {})
+        price = meta.get("regularMarketPrice")
+        if price is None:
+            return None
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            return None
+        return price if price > 0 else None
 
     def get_tsmc_adr_price(self) -> Optional[float]:
         """Get TSM ADR current price."""
