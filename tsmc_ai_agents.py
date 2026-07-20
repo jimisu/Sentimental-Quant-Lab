@@ -2559,9 +2559,10 @@ class Orchestrator:
         elif foreign_5d:
             narrative_parts.append(f"外資持續賣超，但幅度尚未達極端值")
 
-        # 法說會催化劑
+        # 法說會：僅在確實處於法說會前窗口時客觀描述市場焦點，
+        # 不得框定為「等待催化劑打破僵局」的敘事（參見 CLAUDE.md「核心矛盾」規範）。
         if days_offset > 0 and days_offset <= 45:
-            narrative_parts.append(f"市場正在等待 {earnings_str} 法說會作為打破僵局的催化劑")
+            narrative_parts.append(f"市場焦點在於 {earnings_str} 法說會指引，後續營收與展望將驗證當前評價")
 
         # 估值描述
         if pe_ratio > CONFIG.chip.high_sellout_pe_threshold:
@@ -2572,9 +2573,20 @@ class Orchestrator:
         else:
             core_narrative = "各維度訊號混雜，無明確方向性。"
 
-        lines.append(f"> 台積電當前的核心矛盾是：**AI 結構性成長邏輯完整，但外資在高檔系統性出貨，市場在等待一個催化劑（法說會上修展望 or N2 量產確認）來打破這個僵局。**")
+        # 核心矛盾：不得逕自斷言「外資在高檔系統性出貨」。
+        # 外資賣超原因待確認，可能為基本面轉弱或外部連動效應，
+        # 建議搭配 macro_risk.py 燈號判讀（參見 CLAUDE.md「核心矛盾」規範）。
+        foreign_sell_shares = float(chip_flags.get("foreign_net_sell_shares", 0.0) or 0.0)
+        if foreign_sell_shares < 0:
+            foreign_note = (
+                "且外資近期呈淨賣超（籌碼結構轉弱）；外資賣超原因待確認，"
+                "可能為基本面轉弱或外部連動效應，建議搭配 macro_risk.py 燈號判讀"
+            )
+        else:
+            foreign_note = "技術面價量關係反映短期資金動向，需與籌碼面交叉驗證"
+
+        lines.append(f"> 台積電當前的核心矛盾是：**AI 結構性成長邏輯完整，{foreign_note}。**")
         lines.append(f"> {core_narrative}")
-        lines.append(f"> 在催化劑出現之前，技術面的多頭排列只是慣性，不是新的買入理由。")
         lines.append("")
         lines.append("**各維度因果鏈：**")
         lines.append("")
