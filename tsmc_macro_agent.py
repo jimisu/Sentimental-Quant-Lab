@@ -353,7 +353,16 @@ class GlobalMacroAgent:
             )
             return report, score
         except Exception as e:
-            return f"⚠️ 宏觀專家: 外部數據抓取失敗 ({e})，請檢查網路連線或 API 狀態。", 100
+            # 外部 Yahoo Finance 抓取失敗（網路/限流/瞬斷），ADR 折溢價與
+            # 匯率為次要信號：優雅降級為中性說明並跳過該段落，不噴出
+            # 紅色錯誤警示（避免誤導為系統性風險），分數維持滿分。
+            return (
+                f"數據來源: {self.source}\n"
+                f"分析邏輯: {self.logic}\n"
+                f"結論: 外部價格（Yahoo Finance TSM ADR / TWD=X）暫時無法取得，"
+                f"ADR 折溢價與匯率分析跳過。\n"
+                f"（{e}）"
+            ), 100
 
     def analyze_bigtech_fundamentals(self, quarterly_data: Dict = None) -> Tuple[Dict, str]:
         """
@@ -624,13 +633,26 @@ class GlobalMacroAgent:
 
         return None, []
 
-    def _fetch_yahoo_price(self, ticker: str) -> float:
-        """使用 SAL YahooFinanceProvider 取得即時價格"""
-        yahoo = get_yahoo()
-        price = yahoo.get_current_price(ticker)
-        if price is None:
-            raise RuntimeError(f"Yahoo Finance 無法取得 {ticker} 價格")
-        return price
+    def _fetch_yahoo_price(self, ticker: str, retries: int = 2) -> float:
+        """使用 SAL YahooFinanceProvider 取得即時價格。
+
+        失敗時重試以抵禦並行抓取下的瞬斷（Orchestrator.run_full_analysis
+        以 ThreadPoolExecutor 同時扇出多個 Agent，共用同一 session，偶發
+        網路/限流錯誤），減少無謂的外部依賴降級。
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(retries):
+            try:
+                yahoo = get_yahoo()
+                price = yahoo.get_current_price(ticker)
+                if price is None:
+                    raise RuntimeError(f"Yahoo Finance 無法取得 {ticker} 價格")
+                return price
+            except Exception as exc:  # noqa: BLE001 - 外部依賴，重試後仍失敗才上拋
+                last_exc = exc
+                if attempt < retries - 1:
+                    time.sleep(0.3 * (attempt + 1))
+        raise RuntimeError(f"Yahoo Finance 無法取得 {ticker} 價格：{last_exc}")
 
     def _fetch_recent_capex_quarters(self, company_meta: Dict) -> List[Dict]:
         cik = company_meta["cik"]
