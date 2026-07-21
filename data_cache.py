@@ -54,6 +54,8 @@ DATA_POLICIES: Dict[str, CachePolicy] = {
     "sec_13f":           CachePolicy(ttl_hours=2160, keep_count=3),
     # US CPI/PPI 月度數據 → 24 小時快取
     "macro_inflation":   CachePolicy(ttl_hours=24,   keep_count=3),
+    # 領先指標歷史追蹤 → 永久保留（不檢查新鮮度），每次執行更新
+    "leading_indicator_history": CachePolicy(ttl_hours=0, keep_count=10),
 }
 
 
