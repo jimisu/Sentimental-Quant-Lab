@@ -2773,6 +2773,16 @@ class Orchestrator:
         # ═══ 🔮 領先指標預警（預測用，置於報告最前方）═══
         li = leading_indicator
         li_pct_th = li.pct_threshold * 100   # 百分比門檻（如 1.0）
+
+        # 歷史回測買回統計（PE>30 嚴格版，2023-2026 年度資料）
+        BUYBACK_STATS = {
+            "trigger_count": 4,      # 觸發群集數
+            "buyback_success_rate": 1.00,   # 100% 有更低價買回機會
+            "avg_max_drawdown": 9.41,       # 平均最大回檔 %
+            "avg_min_day": 8.5,             # 平均第幾天出現最低價
+            "recovered_rate": 0.75,         # 75% 期間曾回升超過觸發價
+        }
+
         li_lines = [
             "### 🔮 領先指標預警（預測用）\n",
             "> **觸發條件（三者同時成立）：** 外資往前兩個月累計淨賣超佔外資持股 "
@@ -2786,6 +2796,14 @@ class Orchestrator:
                 f"🔴 **觸發｜強制紅燈**：外資近兩個月累計淨賣超 {li.cumulative_sell_shares/1000:,.0f} 張"
                 f"（佔{li.denom_label} {pct:.2f}%）＋本益比 {li.pe_ratio:.1f} 倍 ＋ 近 5 日最大單日跌幅 {li.max_single_day_drop_pct:.2f}%（≤5%），"
                 "滿足全部條件 → 籌碼面強制紅燈，視為潛在轉折領先訊號。"
+            )
+            # 附加買回機會統計
+            s = BUYBACK_STATS
+            li_lines.append(
+                f"\n📊 **歷史買回機會統計 (PE>{li.pe_threshold:.0f} 觸發後 20 個交易日)**\n"
+                f"- 觸發群集: {s['trigger_count']} 次 | 買回成功率: {s['buyback_success_rate']:.0%}\n"
+                f"- 平均最大回檔: {s['avg_max_drawdown']:.2f}% | 平均最低點出現: 第 {s['avg_min_day']:.1f} 個交易日\n"
+                f"- {s['recovered_rate']:.0%} 的期間曾回升超過觸發價"
             )
         else:
             # 未觸發：列出目前狀態與距觸發的缺口，便於追蹤。

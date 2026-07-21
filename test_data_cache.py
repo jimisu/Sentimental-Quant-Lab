@@ -56,13 +56,15 @@ class TestCachePolicy:
 
 class TestDataPolicies:
     def test_nine_policies_defined(self):
-        assert len(DATA_POLICIES) == 9
+        # 當前有 10 個策略 (新增 leading_indicator_history)
+        assert len(DATA_POLICIES) == 10
 
     def test_all_required_keys_present(self):
         required = {
             "twse_daily", "institutional", "monthly_revenue",
             "quarterly_margins", "macro_adr", "macro_capex",
             "nvda_revenue", "sec_13f", "macro_inflation",
+            "leading_indicator_history",
         }
         assert set(DATA_POLICIES.keys()) == required
 
@@ -95,7 +97,9 @@ class TestDataPolicies:
 
     def test_all_policies_have_keep_count_3(self):
         for name, policy in DATA_POLICIES.items():
-            assert policy.keep_count == 3, f"{name} has keep_count != 3"
+            # leading_indicator_history 保留 10 份歷史紀錄以利回測
+            expected = 10 if name == "leading_indicator_history" else 3
+            assert policy.keep_count == expected, f"{name} has keep_count != {expected}"
 
 
 # ══════════════════════════════════════════════════════════════

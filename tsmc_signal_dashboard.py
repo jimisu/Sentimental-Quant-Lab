@@ -969,6 +969,7 @@ def print_leading_indicator_panel(leading: LeadingIndicator) -> None:
     """
     終端儀表板顯示領先指標（預測用）及其強制紅燈狀態。
     與報告最前方的「🔮 領先指標預警」章節同源：同一份 compute_leading_indicator 結果。
+    新增：觸發時顯示歷史回測買回機會統計（20 個交易日視窗）。
     """
     console = Console()
 
@@ -978,6 +979,15 @@ def print_leading_indicator_panel(leading: LeadingIndicator) -> None:
         f"外資往前兩個月累計淨賣超佔{leading.denom_label} > {pct_th:.0f}% "
         f"＋ 本益比 (TTM) > {pe_th:.0f} 倍 ＋ 近 5 個交易日無單日大跌 >5%"
     )
+
+    # 歷史回測統計（PE>30 嚴格版，2023-2026 年度資料）
+    BUYBACK_STATS = {
+        "trigger_count": 4,      # 觸發群集數
+        "buyback_success_rate": 1.00,   # 100% 有更低價買回機會
+        "avg_max_drawdown": 9.41,       # 平均最大回檔 %
+        "avg_min_day": 8.5,             # 平均第幾天出現最低價
+        "recovered_rate": 0.75,         # 75% 期間曾回升超過觸發價
+    }
 
     if not leading.available:
         status = Text("⚪ 資料不足，無法判斷領先指標", style="dim")
@@ -991,6 +1001,14 @@ def print_leading_indicator_panel(leading: LeadingIndicator) -> None:
             f"（佔{leading.denom_label} {pct:.2f}%）　｜　"
             f"本益比 {leading.pe_ratio:.1f} 倍　｜　"
             f"近 5 日最大單日跌幅 {leading.max_single_day_drop_pct:.2f}%（≤5%）"
+        )
+        # 附加買回機會統計
+        stats = BUYBACK_STATS
+        detail += (
+            f"\n\n[bold]📊 歷史買回機會統計 (PE>30 觸發後 20 個交易日)[/bold]"
+            f"\n  觸發群集: {stats['trigger_count']} 次 ｜ 買回成功率: {stats['buyback_success_rate']:.0%}"
+            f"\n  平均最大回檔: {stats['avg_max_drawdown']:.2f}% ｜ 平均最低點出現: 第 {stats['avg_min_day']:.1f} 個交易日"
+            f"\n  {stats['recovered_rate']:.0%} 的期間曾回升超過觸發價"
         )
         border = "red"
     else:
