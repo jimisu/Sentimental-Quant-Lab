@@ -1107,7 +1107,6 @@ class TestOrchestratorEstimateEarningsDate:
 # ══════════════════════════════════════════════════════════════════════
 # ch7 風險管理 重寫驗證
 # 場景：2026-07-16 法說會後，2026-07-17 外部系統性風險暴跌
-# （註：原「八、分析師整合結論」章節已移除，其系統性風險標註邏輯由 ch7 承載）
 # ══════════════════════════════════════════════════════════════════════
 class TestRiskAndAnalystRewrite:
     """驗證 ch7 已拋棄過期「法說會前 / 等待催化劑」敘事，
@@ -1228,54 +1227,6 @@ class TestRiskAndAnalystRewrite:
             assert "法說會前" not in content
         finally:
             mr._INJECTED.clear()
-
-
-# ══════════════════════════════════════════════════════════════════════
-# 章節十結尾「分析師整合結論」合規性：不得逕行斷言「外資在高檔系統性出貨」
-# 或「等待催化劑打破僵局」；外資賣超應以「原因待確認」措辭。
-# ══════════════════════════════════════════════════════════════════════
-class TestIndustryAnalystConclusionCompliance:
-    """驗證產業深度解讀章節（章節十）結尾的「分析師整合結論」：
-
-    - 不硬寫「外資在高檔系統性出貨」（CLAUDE.md「核心矛盾」規範）
-    - 不框定「等待催化劑打破僵局」的敘事
-    - 外資賣超改以「原因待確認」措辭，建議搭配 macro_risk.py 判讀
-    """
-
-    def _build_section(self, chip_flags):
-        import pandas as pd
-        orch = Orchestrator.__new__(Orchestrator)
-        md = orch._build_industry_analysis_section(
-            quarterly_data={},
-            styled_df=pd.DataFrame(),
-            chip_flags=chip_flags,
-            chip_score=30,
-            tech_flags={"position_zone": "高檔"},
-            tech_scores={},
-            macro_report="",
-            bigtech_data={},
-            result=None,
-            tw_price=1000.0,
-            fx_averages={},
-        )
-        # 僅取出「分析師整合結論」小節，避免被其他小節內容干擾
-        if "### 📝 分析師整合結論" not in md:
-            return ""
-        return md.split("### 📝 分析師整合結論", 1)[1].split("**各維度因果鏈：**", 1)[0]
-
-    def test_no_unsupported_foreign_selling_assertion(self):
-        sec = self._build_section({
-            "big_foreign_sell": True, "extreme_sell": True,
-            "foreign_net_sell_shares": -90000.0,
-        })
-        assert "外資在高檔系統性出貨" not in sec
-        assert "原因待確認" in sec
-
-    def test_no_catalyst_waiting_narrative(self):
-        sec = self._build_section({})
-        assert "等待一個催化劑" not in sec
-        assert "等待催化劑" not in sec
-        assert "在催化劑出現之前" not in sec
 
 
 # ══════════════════════════════════════════════════════════════════════

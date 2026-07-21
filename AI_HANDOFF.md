@@ -14,7 +14,17 @@
 
 ## ✅ 已完成的工作 (What's Done)
 
-### 本次 session 完成（2026-07-21 領先指標 PE>30 崩盤預警回測 + 買回機會驗證 + 儀表板整合）
+### 本次 session 完成（2026-07-21 移除重複的「分析師整合結論」章節）
+
+- [x] **移除報告最後的 `### 📝 分析師整合結論` 小節**：
+  - 該章節包含「核心矛盾」與「各維度因果鏈」內容，與章節八（已刪除）重複
+  - 位於 `tsmc_ai_agents.py` 的 `_build_industry_analysis_section()` 方法中（原第 2485-2550 行）
+  - 內容包含：「台積電當前的核心矛盾是：AI 結構性成長邏輯完整，且外資近期呈淨賣超（籌碼結構轉弱）；外資賣超原因待確認，可能為基本面轉弱或外部連動效應，建議搭配 macro_risk.py 燈號判讀。 技術面處於中檔，多頭排列反映的是慣性而非新的買入訊號；外資 5 日累計大幅賣超，籌碼結構正在惡化；P/E 31.2 倍已反映多數利多，估值擴張空間有限。」及因果鏈圖表
+
+- [x] **同步更新 `test_ai_agents.py`**：
+  - 移除 `TestIndustryAnalystConclusionCompliance` 測試類（原專門驗證該章節合規性）
+  - 移除 `TestRiskAndAnalystRewrite` 類註解中對已刪除章節的引用
+  - 全測試 **125 passed**
 
 - [x] **`signal_engine.py:595` 修正硬編碼 PE 門檻**：
   - `LeadingIndicator.pe_threshold` 預設值從硬編碼 `25.0` 改為讀取 `CONFIG.chip.leading_indicator_pe_threshold` (= 30.0)
