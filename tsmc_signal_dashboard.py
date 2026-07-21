@@ -72,7 +72,20 @@ NET_INCOME_ORIGIN_KEYWORDS = ["本期淨利", "稅後淨利"]
 NET_INCOME_ORIGIN_EXCLUDE_KEYWORDS = ["稅前", "綜合損益", "其他綜合", "歸屬"]
 
 # 日期範圍
-TODAY = dt.date.today()
+# 全域基準日（可被 --asof 覆寫）
+_BASE_DATE: dt.date = dt.date.today()
+
+def get_base_date() -> dt.date:
+    """取得目前的基準日（可被 --asof 參數覆寫）。"""
+    return _BASE_DATE
+
+def set_base_date(d: dt.date) -> None:
+    """設定基準日（供 --asof 參數呼叫）。"""
+    global _BASE_DATE
+    _BASE_DATE = d
+
+# 初始值
+TODAY = get_base_date()
 TWO_YEARS_AGO = TODAY - dt.timedelta(days=730)  # 約兩年，以便計算 YoY
 
 # TWSE 限制：查詢日期地板，根據回傳訊息彈性調整 (最早可達民國 79/01/04)
@@ -1071,7 +1084,23 @@ def main():
     """
     parser = argparse.ArgumentParser(description="TSMC 信號儀表板")
     parser.add_argument("--test", action="store_true", help="執行系統診斷自測")
+    parser.add_argument("--asof", type=str, default=None,
+                        help="指定基準日期 (YYYY-MM-DD)，以該日資料進行回測/分析")
     args = parser.parse_args()
+
+    # 設定基準日（用於所有 TODAY 相關計算）
+    if args.asof:
+        try:
+            asof_date = dt.datetime.strptime(args.asof, "%Y-%m-%d").date()
+            set_base_date(asof_date)
+            # 重新計算衍生日期變數
+            global TODAY, TWO_YEARS_AGO
+            TODAY = asof_date
+            TWO_YEARS_AGO = TODAY - dt.timedelta(days=730)
+            print(f"📅 使用基準日期: {TODAY}")
+        except ValueError:
+            print(f"❌ 日期格式錯誤: {args.asof}，請使用 YYYY-MM-DD")
+            sys.exit(1)
 
     if args.test:
         run_self_test()

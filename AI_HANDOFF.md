@@ -14,16 +14,33 @@
 
 ## ✅ 已完成的工作 (What's Done)
 
-### 本次 session 完成（2026-07-21 兩分支 PR 建立 + 共識 EPS 調查）
+### 本次 session 完成（2026-07-21 領先指標回測參數化 / 交互式輸入 + 回測執行 + 儀表板 `--asof` 參數）
 
+- [x] **`leading_indicator_backtest.py` 參數化與交互式輸入**：
+  - 新增 `--start` / `--latest` CLI 參數，預設互動式提示輸入起始日（預設 2026-06-01）
+  - 核心邏輯抽離為 `run_backtest(start_date: str)`，方便複用
+  - 起始日自動向後找最近交易日（非交易日/缺資料自動修正）
+  - 回測區間：從起始日往前掃描到最早交易日，或連續 10 日未觸發停止（`STOP_NO_TRIGGER_STREAK = 10`）
+  - 輸出表格欄位整齊對齊：日期、觸發、收盤價、淨賣超佔比、本益比、近5日最大跌幅
+
+- [x] **`tsmc_signal_dashboard.py` 新增 `--asof` 參數**：
+  - 指定基準日（YYYY-MM-DD），所有資料抓取、快取查找、技術指標、領先指標、AI 分析均以該日可得資料計算
+  - 內部呼叫 `set_base_date()` 設定 `TODAY`、`TWO_YEARS_AGO` 等衍生變數
+  - 用法：`python tsmc_signal_dashboard.py --asof 2026-05-20`
+
+- [x] **`long_term_monitor.py` 合理價區間表格優化**：
+  - 當日收盤價單獨一行顯示並標註 `Current Price (今日收盤)`
+  - Forward EPS、Trailing 4Q EPS、PE Band、Fair Value Range、Upside 同表格對齊
+
+- [x] **領先指標回測停止條件放寬**：`STOP_NO_TRIGGER_STREAK` 從 3 → 10 天
+
+### 本次 session 完成（2026-07-21 兩分支 PR 建立 + 共識 EPS 調查）
 - [x] **兩個本地分支依序 push 並建立 PR（目標 `develop`）**：
   - `fix/macro-adr-yahoo-cache-poisoning`（commit `46748c9`）：修正宏觀 ADR 分析因 Yahoo 快取毒化持續降級——新增 `_is_valid_yahoo_chart()` 驗證、無效回應不入快取、回退最近有效快取、報價缺失回傳 `None`、`test_sal.py` 新增 6 項回歸測試。全測試 834 passed。
   - `refactor/remove-chip-resonance`（commit `4297380`，當前分支）：移除籌碼專家「三大法人共振」判斷——刪除 `_analyze_three_institution_resonance`、相關報告輸出與 dead flag（`institutional_resonance_buy` / `three_institution_net_buy`）、`test_ai_agents.py` 對應測試類別；`config.py` 的 `resonance_buy_bonus` 依「禁止未授權修改」規範保留未動。全測試 824 passed。
   - 兩分支各領先 `develop` 1 個 commit、彼此獨立；PR #49 / #50 已建立並 **merge 進 `develop`**（見待辦 #16）。
 - [x] **共識 EPS（Forward PE）調查（任務 b）**：確認 `compute_forward_pe`（`signal_engine.py:755`）已實作並接線到儀表板 / AI 代理 / 長期監看板（3 項單元測試通過）。進一步串接 FinMind / Yahoo 共識預測（1Y/2Y Forward EPS）時，**發現 Yahoo `quoteSummary` / `earningsTrend` 端點在此環境回傳 401（即便帶 crumb 亦然），`chart` 端點（價格）則免 auth 正常**；FinMind register 級 token 無分析師共識端點。故「即時共識 EPS」在此環境無法抓取，會恆降級回年化。見待辦 #11（已標註封鎖）。
 - [x] **測試驗證**：`test_sal.py` + `test_ai_agents.py` 共 **190 passed**（push 前確認綠燈）。
-
-### 本次 session 完成（2026-07-20 領先指標邏輯優化 / 分支 `fix/tech-light-indicator-dashboard-optimization`）
 - [x] **領先指標（預測用）觸發條件重構**：
   - 移除「外資近 2 日連續賣超」條件（原 `LEADING_INDICATOR_SESSIONS = 2`）
   - 保留「外資往前兩個月累計淨賣超佔外資持股 > 1%」（`two_month_high_sellout_pct`）

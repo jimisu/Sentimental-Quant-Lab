@@ -2,7 +2,7 @@
 """
 領先指標（預測用）as-of 回測
 
-從 2026-07-16 起往前逐交易日，以「當日可得資料」計算領先指標：
+從指定日期起往前逐交易日，以「當日可得資料」計算領先指標：
   - chip_data        : 截至該日的三大法人買賣超（外資每日淨買賣）
   - foreign_shares   : 截至該日的外資實際持股（強制紅燈分母）
   - pe_ratio         : 該日收盤價 ÷ 截至該日可得的近四季 EPS（含財報發布時滯 +50 日）
@@ -17,10 +17,16 @@
 以及觸發天數與各觸發日收盤價；連續 3 個交易日未觸發即停止。
 
 資料全程來自 local_cache，不觸網。
+
+用法：
+  python leading_indicator_backtest.py              # 互動式輸入起始日
+  python leading_indicator_backtest.py --start 2026-06-01  # 指定起始日
+  python leading_indicator_backtest.py --latest     # 從最新交易日往前回測
 """
 
 import json
 import datetime as dt
+import argparse
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -28,8 +34,8 @@ import pandas as pd
 from signal_engine import compute_leading_indicator, compute_trailing_pe
 
 # ── 回測參數 ──
-START_DATE = "2026-06-01"
-STOP_NO_TRIGGER_STREAK = 3          # 連續 N 日未觸發即停止
+DEFAULT_START_DATE = "2026-06-01"
+STOP_NO_TRIGGER_STREAK = 10          # 連續 N 日未觸發即停止
 EPS_REPORT_LAG_DAYS = 50            # 季報視為「可得」的發布時滯（季底 + 50 日）
 
 # ── 讀取 local_cache ──
@@ -87,26 +93,27 @@ def price_df_asof(asof: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def main():
+def run_backtest(start_date: str):
+    """執行回測，起始日為 start_date"""
     # 交易日宇宙：同時具備法人買賣超與收盤價的日期，降冪排序
     inst_dates = {r["date"] for r in INST_ROWS}
     trading_days = sorted(
         (d for d in inst_dates if d in CLOSE and d in SH_BY_DATE), reverse=True
     )
 
-    if START_DATE not in trading_days:
+    if start_date not in trading_days:
         # 向後找最近的交易日
-        earlier = [d for d in trading_days if d <= START_DATE]
+        earlier = [d for d in trading_days if d <= start_date]
         start = earlier[0] if earlier else trading_days[0]
-        print(f"⚠️ {START_DATE} 非交易日/缺資料，改自 {start} 起算")
+        print(f"⚠️ {start_date} 非交易日/缺資料，改自 {start} 起算")
     else:
-        start = START_DATE
+        start = start_date
 
     # 自 start 往前的交易日序列
     seq = [d for d in trading_days if d <= start]
 
-    print(f"{'日期':<12} {'觸發':<6} {'收盤價':>9} {'淨賣超佔比':>12} {'本益比':>8} {'近5日最大跌':>12}")
-    print("-" * 78)
+    print(f"{'日期':<12} {'觸發':<6} {'收盤價':>10} {'淨賣超佔比':>14} {'本益比':>10} {'近5日最大跌幅':>14}")
+    print("-" * 80)
 
     triggered_days = []          # (date, close)
     streak_no_trigger = 0
@@ -125,8 +132,8 @@ def main():
         sell_pct = f"{li.sell_pct:.2f}%" if li.sell_pct is not None else "N/A"
         pe_str = f"{pe:.1f}" if pe > 0 else "N/A"
         drop = f"{li.max_single_day_drop_pct:.2f}%"
-        flag = "🔴是" if li.triggered else "—否"
-        print(f"{d:<12} {flag:<6} {close:>9.1f} {sell_pct:>12} {pe_str:>8} {drop:>12}")
+        flag = "🔴 是" if li.triggered else "— 否"
+        print(f"{d:<12} {flag:<8} {close:>10.1f} {sell_pct:>14} {pe_str:>10} {drop:>14}")
 
         if li.triggered:
             triggered_days.append((d, close))
@@ -138,7 +145,7 @@ def main():
                 break
 
     # ── 摘要 ──
-    print("-" * 78)
+    print("-" * 80)
     print(f"掃描交易日數（含停止日）: {total_scanned}")
     print(f"連續 {STOP_NO_TRIGGER_STREAK} 日未觸發停止於: {stop_date}")
     print(f"領先指標觸發天數: {len(triggered_days)}")
@@ -148,6 +155,31 @@ def main():
             print(f"  {d}  收盤價 {c:.1f}")
     else:
         print("無任何交易日觸發領先指標。")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="領先指標（預測用）as-of 回測")
+    parser.add_argument("--start", type=str, default=None, help="起始日期 (YYYY-MM-DD)，預設為互動式輸入")
+    parser.add_argument("--latest", action="store_true", help="從最新交易日往前回測")
+    args = parser.parse_args()
+
+    if args.latest:
+        # 找最新交易日
+        inst_dates = {r["date"] for r in INST_ROWS}
+        trading_days = sorted(
+            (d for d in inst_dates if d in CLOSE and d in SH_BY_DATE), reverse=True
+        )
+        start_date = trading_days[0]
+        print(f"使用最新交易日: {start_date}")
+    elif args.start:
+        start_date = args.start
+    else:
+        # 互動式輸入
+        print(f"預設起始日: {DEFAULT_START_DATE}")
+        user_input = input(f"請輸入起始日期 (YYYY-MM-DD) [直接按 Enter 使用 {DEFAULT_START_DATE}]: ").strip()
+        start_date = user_input if user_input else DEFAULT_START_DATE
+
+    run_backtest(start_date)
 
 
 if __name__ == "__main__":
