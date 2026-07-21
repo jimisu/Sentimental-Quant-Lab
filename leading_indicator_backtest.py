@@ -28,7 +28,7 @@ import pandas as pd
 from signal_engine import compute_leading_indicator, compute_trailing_pe
 
 # ── 回測參數 ──
-START_DATE = "2026-07-16"
+START_DATE = "2026-06-01"
 STOP_NO_TRIGGER_STREAK = 3          # 連續 N 日未觸發即停止
 EPS_REPORT_LAG_DAYS = 50            # 季報視為「可得」的發布時滯（季底 + 50 日）
 
