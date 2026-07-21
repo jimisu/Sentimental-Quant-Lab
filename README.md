@@ -32,6 +32,29 @@ pip install -r requirements.txt
 python tsmc_signal_dashboard.py
 ```
 
+## 🎯 Backtest & Analysis Scripts
+
+```bash
+# 領先指標（預測用）As-of 回測：從 2026-07-16 往前逐交易日測試
+# 統計觸發天數與收盤價，連續 3 日未觸發即停止
+python leading_indicator_backtest.py
+
+# 賣出→20 日內買回回測（指定 as-of 日期）
+python sell_buyback_backtest.py
+
+# 統計賣出後 20 日低於賣價天數
+python sell_below_count.py
+
+# 強制紅燈壓力測試
+python stress_test_forced_red.py
+
+# 崩盤訊號回測
+python backtest_crash_signals.py
+
+# 技術型態分析
+python analyze_tech_pattern.py
+```
+
 ## 📈 Long-term Investment Monitor (3-5 Year Horizon)
 
 A structural monitor that filters out short-term noise and tracks only the variables that matter for multi-year holders:
