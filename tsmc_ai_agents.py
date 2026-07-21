@@ -2920,6 +2920,78 @@ class Orchestrator:
             )
         )
 
+        # ═══ 領先指標（預測）歷史追蹤 ═══
+        # 載入歷史快取
+        li_history = None
+        try:
+            from data_cache import read_cache, write_cache
+            li_history = read_cache("leading_indicator_history", max_age_hours=0, directory="local_cache")
+        except Exception:
+            li_history = None
+
+        if li_history is None:
+            li_history = {
+                "records": [],           # 列表 of dict: {date, triggered, light, close, sell_pct, pe, max_drop}
+                "consecutive_no_trigger": 0,
+                "tracking_active": True,  # 連續 5 日未觸發後設為 False
+            }
+
+        # 更新歷史
+        if li_history.get("tracking_active", True):
+            if leading_indicator.triggered:
+                # 觸發：記錄此次，重置連續未觸發計數
+                record = {
+                    "date": analysis_date,
+                    "triggered": True,
+                    "light": "🔴 觸發",
+                    "close": f"{tw_price:,.1f}",
+                    "sell_pct": f"{leading_indicator.sell_pct:.2f}%" if leading_indicator.sell_pct is not None else "N/A",
+                    "pe": f"{leading_indicator.pe_ratio:.1f}" if leading_indicator.pe_ratio > 0 else "N/A",
+                    "max_drop": f"{leading_indicator.max_single_day_drop_pct:.2f}%",
+                }
+                li_history["records"].append(record)
+                li_history["consecutive_no_trigger"] = 0
+            else:
+                # 未觸發：計數遞增
+                li_history["consecutive_no_trigger"] += 1
+                # 只有在已經有觸發記錄且連續 5 日未觸發時才停止追蹤
+                if li_history["consecutive_no_trigger"] >= 5 and li_history["records"]:
+                    li_history["tracking_active"] = False
+
+            # 寫回快取
+            try:
+                from data_cache import write_cache
+                write_cache("leading_indicator_history", li_history, directory="local_cache", keep_count=10)
+            except Exception:
+                pass
+
+        # 產生追蹤表格（只顯示有記錄時）
+        li_tracking_md = ""
+        if li_history.get("records"):
+            tracking_rows = []
+            for rec in li_history["records"]:
+                tracking_rows.append([
+                    rec["date"],
+                    rec["light"],
+                    rec["close"],
+                    rec["sell_pct"],
+                    rec["pe"],
+                    rec["max_drop"],
+                ])
+            li_tracking_md = (
+                "\n\n### 📈 領先指標（預測）觸發歷史追蹤\n\n"
+                + _md_table(["日期", "觸發燈號", "收盤價", "淨賣超佔比", "本益比", "近5日最大跌"], tracking_rows)
+                + "\n"
+            )
+            if not li_history.get("tracking_active", True):
+                li_tracking_md += "\n> ⏹️ 已連續 5 個交易日未觸發，停止追蹤。\n"
+            elif li_history.get("consecutive_no_trigger", 0) > 0:
+                li_tracking_md += f"\n> ⚠️ 連續 {li_history['consecutive_no_trigger']} 個交易日未觸發（連續 5 日將停止追蹤）。\n"
+
+        # 將追蹤表格加入 sections（緊接在 一、總覽儀表板 之後）
+        if li_tracking_md:
+            sections.append(li_tracking_md)
+
         # ═══ 二、財務面分析 ═══
         # 三率趨勢表格
         q_rows = []
