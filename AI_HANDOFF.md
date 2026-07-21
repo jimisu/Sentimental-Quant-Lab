@@ -7,12 +7,21 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `fix/remove-duplicate-analyst-conclusion`（基於 `develop`；聚焦「移除報告中重複的『分析師整合結論』章節並重排編號，並將章節十結尾改為不逕行斷言的合規表述」）
-- **本次交接時間 (Timestamp)**: 2026-07-20 (UTC+8)
+- **目前所在分支 (Current Branch)**: `refactor/remove-chip-resonance`（基於 `develop`；移除籌碼專家「三大法人共振」判斷）
+- **本次交接時間 (Timestamp)**: 2026-07-21 (UTC+8)
 - **目前負責人/AI (Handler)**: Claude Code (Jimisu)
 - **價格資料來源**: `local_cache/hcd_yahoo_ohlcv_2330.TW_1672531200_1784419200.json`（2330.TW 日線，2023-01-03 ~ 2026-07-17，852 日；未觸網）
 
 ## ✅ 已完成的工作 (What's Done)
+
+### 本次 session 完成（2026-07-21 兩分支 PR 建立 + 共識 EPS 調查）
+
+- [x] **兩個本地分支依序 push 並建立 PR（目標 `develop`）**：
+  - `fix/macro-adr-yahoo-cache-poisoning`（commit `46748c9`）：修正宏觀 ADR 分析因 Yahoo 快取毒化持續降級——新增 `_is_valid_yahoo_chart()` 驗證、無效回應不入快取、回退最近有效快取、報價缺失回傳 `None`、`test_sal.py` 新增 6 項回歸測試。全測試 834 passed。
+  - `refactor/remove-chip-resonance`（commit `4297380`，當前分支）：移除籌碼專家「三大法人共振」判斷——刪除 `_analyze_three_institution_resonance`、相關報告輸出與 dead flag（`institutional_resonance_buy` / `three_institution_net_buy`）、`test_ai_agents.py` 對應測試類別；`config.py` 的 `resonance_buy_bonus` 依「禁止未授權修改」規範保留未動。全測試 824 passed。
+  - 兩分支各領先 `develop` 1 個 commit、彼此獨立；PR #49 / #50 已建立並 **merge 進 `develop`**（見待辦 #16）。
+- [x] **共識 EPS（Forward PE）調查（任務 b）**：確認 `compute_forward_pe`（`signal_engine.py:755`）已實作並接線到儀表板 / AI 代理 / 長期監看板（3 項單元測試通過）。進一步串接 FinMind / Yahoo 共識預測（1Y/2Y Forward EPS）時，**發現 Yahoo `quoteSummary` / `earningsTrend` 端點在此環境回傳 401（即便帶 crumb 亦然），`chart` 端點（價格）則免 auth 正常**；FinMind register 級 token 無分析師共識端點。故「即時共識 EPS」在此環境無法抓取，會恆降級回年化。見待辦 #11（已標註封鎖）。
+- [x] **測試驗證**：`test_sal.py` + `test_ai_agents.py` 共 **190 passed**（push 前確認綠燈）。
 
 ### 本次 session 完成（2026-07-20 領先指標邏輯優化 / 分支 `fix/tech-light-indicator-dashboard-optimization`）
 - [x] **領先指標（預測用）觸發條件重構**：
@@ -301,6 +310,7 @@
 9. **[待提交] `test_institutional_tracker.py` 修復**：3 個測試從 FAIL → PASS，尚未 commit。建議 commit 訊息：`fix: institutional tracker tests — mock should_fetch_from_sec and _HAS_CURL_CFFI`
 10. **[優先級：高] SEC Archives 403 封鎖 — 離線快取下載方案**：見下方「🚨 SEC Archives 封鎖問題與解決方案」章節。
 11. **[優先級：中] 共識 EPS 估測整合**：長期監看板目前用「最新季 × 4」做 Forward EPS，可串接 FinMind / Yahoo Finance 共識預測（1Y/2Y Forward EPS）替代簡單年化。
+    - **[2026-07-21 封鎖]** Yahoo `quoteSummary`/`earningsTrend`（唯一免費共識 EPS 來源）在此環境回傳 401（即便帶 crumb/cookie 亦然）；`chart` 端點（價格）免 auth 正常。FinMind register 級 token 無分析師共識端點。→ 即時共識 EPS 在此環境無法抓取，會恆降級回年化。可行解法：(a) 在 Yahoo 可達環境執行並依賴離線快取；(b) 加 `local_cache/consensus_eps_2330.json` 手動填入共識數字；(c) 更換可達數據源。建議等數據源可達後再實作。
 12. **[優先級：中] 三個待合併分支**：`fix/macro-agent-yahoo-sal-tests`（`eed7924`，macro 測試）、`fix/monthly-revenue-cache-parse`（`c3c6ca4`，月營收快取解析）、`docs/update-handoff-readme`（`934c128`，文件）均已完成、待建立 PR 合併進 develop。注意 `fix/macro-agent-yahoo-sal-tests` 分支指標本 session 曾遺失，已從 dangling commit 重建，請勿重複刪除。
 13. **[優先級：中] Q2 2026 財報待 FinMind 上架**：7/16 法說會已公布 2026Q2（4/5/6 月）三率 + EPS，但 FinMind `TaiwanStockFinancialStatements` API 目前只到 2026Q1（2026-03-31），資料落後法說會。使用者選擇「等 FinMind」不自動處理。FinMind 上架 Q2 後，季報快取 7 天 TTL 到期會自動補進；若要更快反映，清除 `finmind_TaiwanStockFinancialStatements_2330_*` / `financial_agent_quarterly_margins_2330_*` / `tsmc_eps_quarterly.json` 強制重抓。`tsmc_earnings_signals.json` 仍只到 2025Q2，待使用者提供法說會質化信號後補 2026Q2 條目。
 14. **[優先級：中] 提交 `fix/chip-red-light-threshold-1pct` 分支未追蹤的分析腳本**（該分支與本分支分離）：該分支上有多個未 commit 檔案，建議依邏輯單元分次提交（禁止自動 push）：
@@ -309,6 +319,7 @@
     - 修改：`backtest_crash_signals.csv`（含本益比 / 強制紅燈欄位）
     - 其它：`.claude/plans/`（若有內容）
 15. **[優先級：中] 2026-07-17 賣出買回回測待補資料**：2026-07-16 之後目前僅 1 個交易日（07-17），20 交易日窗未滿。待 Yahoo 日線更新到約 **2026-08-13** 後，用 `sell_below_count.py` 對 `2026-07-16` 補算「20 日內低於賣價天數」與 buyback edge，確認 2026-07-17 強制紅燈是否真為誤判。
+16. **[優先級：中] 兩分支 PR 已合併（2026-07-21）**：`fix/macro-adr-yahoo-cache-poisoning`（`46748c9`，PR #49）與 `refactor/remove-chip-resonance`（`4297380`，PR #50）已 push、開 PR 並 **merge 進 `develop`**。各自領先 1 commit、彼此獨立。⚠️ 合併後可本地刪除這兩個分支（未自動刪除，請人類確認）。
 
 ---
 
