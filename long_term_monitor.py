@@ -512,9 +512,13 @@ def render_dashboard(snap: LongTermSnapshot) -> str:
     lines.append(f"  │ {badge_fv} Assessment: {fv.assessment}")
     # Calculate trailing 4Q for reference
     trailing_4q = sum(snap.eps.eps_values[-4:]) if len(snap.eps.eps_values) >= 4 else fv.forward_eps
-    lines.append(f"  │ Forward EPS (latest Q × 4): {fv.forward_eps:.1f}  |  Trailing 4Q EPS: {trailing_4q:.1f}")
-    lines.append(f"  │ PE Band: {fv.pe_low}x – {fv.pe_high}x  |  Fair Value: {fv.fair_low:,.1f} – {fv.fair_high:,.1f}")
-    lines.append(f"  │ Current Price: {fv.current_price:,.1f}  |  Upside/Downside: {fv.upside_low_pct:+.1f}% to {fv.upside_high_pct:+.1f}%")
+    lines.append(f"  │ Forward EPS (latest Q × 4):   {fv.forward_eps:.1f}")
+    lines.append(f"  │ Trailing 4Q EPS:              {trailing_4q:.1f}")
+    lines.append(f"  │ PE Band:                      {fv.pe_low}x – {fv.pe_high}x")
+    lines.append(f"  │ Fair Value Range:             {fv.fair_low:,.1f} – {fv.fair_high:,.1f}")
+    lines.append(f"  │ Current Price (今日收盤):       {fv.current_price:,.1f}")
+    lines.append(f"  │ Upside to Low Band:           {fv.upside_low_pct:+.1f}%")
+    lines.append(f"  │ Upside to High Band:          {fv.upside_high_pct:+.1f}%")
     lines.append("  └─────────────────────────────────────────────────────────────┘")
     lines.append("")
 

@@ -2545,8 +2545,6 @@ class Orchestrator:
         lines.append("外資法人評價 → 籌碼流向")
         lines.append("    ↓")
         lines.append("技術面價量關係 → 散戶 vs 法人博弈")
-        lines.append("    ↓")
-        lines.append("ADR 溢價（需過濾匯率因子）")
         lines.append("```")
         lines.append("")
         return "\n".join(lines)
