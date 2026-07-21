@@ -22,13 +22,13 @@ from config import CONFIG
 
 
 # ══════════════════════════════════════════════════════════════
-# 領先指標（預測用）：往前兩個月累計淨賣超佔外資持股 ≥1% + 本益比 > 30 + 近 5 日無單日大跌 >5%
+# 領先指標（預測用）：往前兩個月累計淨賣超佔外資持股 > 1% + 本益比 > 25 + 近 5 日無單日大跌 >5%
 # ══════════════════════════════════════════════════════════════
 
 # 已移除「外資近 N 日連續賣超」條件（原 LEADING_INDICATOR_SESSIONS = 2）。
 # 現行條件：
 #   1. 往前兩個月累計淨賣超佔外資持股 > 1%（two_month_high_sellout_pct）
-#   2. 本益比 (TTM) > 30 倍（leading_indicator_pe_threshold）
+#   2. 本益比 (TTM) > 25 倍（leading_indicator_pe_threshold，優化版降低自 30）
 #   3. 往前五個交易日，不曾單日大跌超過 5%
 # 兩個月視窗天數（two_month_window_days=60）直接複用 CONFIG.chip 既有值，
 # 與「兩個月高檔出貨」強制紅燈規則完全同源。
@@ -592,7 +592,7 @@ class LeadingIndicator:
     sell_pct: Optional[float] = None         # 佔外資持股 %（None=無法計算）
     pct_threshold: float = 0.01              # 分數（0.01 = 1%）
     pe_ratio: float = 0.0
-    pe_threshold: float = 30.0
+    pe_threshold: float = CONFIG.chip.leading_indicator_pe_threshold  # 從 CONFIG 讀取（預設 30，泡沫區才預警）
     max_single_day_drop_pct: float = 0.0     # 近 5 日最大單日跌幅%
     note: str = ""
 
@@ -638,7 +638,7 @@ def compute_leading_indicator(
     觸發條件（三者同時成立）：
       1. 往前兩個月（two_month_window_days 自然日）累計淨賣超佔
          「外資當日實際持股」> 1%；
-      2. 本益比 (TTM) > 30 倍；
+      2. 本益比 (TTM) > 25 倍（優化版：降低自 30 以提高崩盤召回率）；
       3. 往前五個交易日，不曾單日大跌超過 5%。
 
     觸發即視為「強制紅燈」領先訊號。
@@ -650,7 +650,7 @@ def compute_leading_indicator(
     與現有強制紅燈規則的 fallback 一致。
     """
     pct_threshold = CONFIG.chip.two_month_high_sellout_pct           # 0.01 (1%)
-    pe_threshold = CONFIG.chip.leading_indicator_pe_threshold       # 30.0 (領先指標專用)
+    pe_threshold = CONFIG.chip.leading_indicator_pe_threshold       # 25.0 (領先指標專用，優化版)
     window_days = CONFIG.chip.two_month_window_days                  # 60 自然日
     denom = foreign_shares if (foreign_shares and foreign_shares > 0) else CONFIG.chip.tsmc_float_shares
     denom_label = "外資持股" if (foreign_shares and foreign_shares > 0) else "流通股"

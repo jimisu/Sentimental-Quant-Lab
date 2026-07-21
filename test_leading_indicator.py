@@ -229,3 +229,25 @@ def test_compute_forward_pe_returns_zero_without_eps():
     assert compute_forward_pe(0.0, {}) == 0.0
     assert compute_forward_pe(100.0, {(2026, 1): {"eps": None}}) == 0.0
     assert compute_forward_pe(100.0, {(2026, 1): {"eps": 5.0}}) == 0.0  # 只有 1 季
+
+
+def test_leading_indicator_pe_threshold_boundary_at_30():
+    """PE 門檻邊界測試：PE=30 不觸發（需 > 30），PE=30.01 觸發"""
+    from config import CONFIG
+    # 確認 CONFIG 的門檻是 30
+    assert CONFIG.chip.leading_indicator_pe_threshold == 30.0
+
+    chip = _chip_days("2026-07-17", [-3_000_000] * 40)
+    price_df = _price_df_no_crash("2026-07-17")
+
+    # PE = 30.0 剛好等於門檻，不應觸發（需嚴格大於）
+    r = compute_leading_indicator(chip, FOREIGN_SHARES, pe_ratio=30.0, price_df=price_df)
+    assert r.pe_ratio == 30.0
+    assert r.pe_threshold == 30.0
+    assert bool(r.triggered) is False, "PE=30 等於門檻不應觸發"
+    assert "本益比" in r.note or r.note == ""
+
+    # PE = 30.01 > 30，應觸發
+    r = compute_leading_indicator(chip, FOREIGN_SHARES, pe_ratio=30.01, price_df=price_df)
+    assert bool(r.triggered) is True, "PE=30.01 大於門檻應觸發"
+    assert bool(r.forced_red) is True
