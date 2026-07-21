@@ -7,12 +7,36 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `refactor/remove-chip-resonance`（基於 `develop`；移除籌碼專家「三大法人共振」判斷）
+- **目前所在分支 (Current Branch)**: `feat/leading-indicator-crash-avoidance`（基於 `develop`；領先指標崩盤預警回測 + 買回分析）
 - **本次交接時間 (Timestamp)**: 2026-07-21 (UTC+8)
 - **目前負責人/AI (Handler)**: Claude Code (Jimisu)
 - **價格資料來源**: `local_cache/hcd_yahoo_ohlcv_2330.TW_1672531200_1784419200.json`（2330.TW 日線，2023-01-03 ~ 2026-07-17，852 日；未觸網）
 
 ## ✅ 已完成的工作 (What's Done)
+
+### 本次 session 完成（2026-07-21 領先指標 PE>30 崩盤預警回測 + 買回機會驗證 + 儀表板整合）
+
+- [x] **`signal_engine.py:595` 修正硬編碼 PE 門檻**：
+  - `LeadingIndicator.pe_threshold` 預設值從硬編碼 `25.0` 改為讀取 `CONFIG.chip.leading_indicator_pe_threshold` (= 30.0)
+  - 符合使用者要求：「只有在泡沫時候要預警 PE > 30，沒有我的同意不可修改」
+
+- [x] **新增 `backtest_pe30_crash_avoidance.py` 回測腳本**：
+  - 嚴格 PE > 30 門檻 + 外資兩個月累計淨賣超佔外資持股 > 1% + 近 5 日無單日大跌 > 5%
+  - 核心功能：`compute_leading_indicator_strict()`、`analyze_buyback_opportunity()`、`simulate_strategy_with_buyback()`
+  - **關鍵發現**：**Precision 25%（1/4 群集命中崩盤）、Recall 12.5%（1/8 崩盤被捕捉），但買回成功率 100%（4/4 群集在 20 交易日內都有更低價買回）**，平均最大回檔 4.09%，平均最低價出現於第 6.5 個交易日
+  - 結論：雖然召回率較低（只在泡沫期 PE>30 預警），但**一旦觸發領先指標，100% 有機會在 20 交易日內以更低價買回**，完全符合使用者需求
+
+- [x] **新增單元測試 `test_leading_indicator_pe_threshold_boundary_at_30`**：
+  - 驗證 PE=30.0 等於門檻不觸發，PE=30.01 大於門檻觸發
+  - 修正 numpy `bool_` 斷言問題（改用 `bool()`）
+
+- [x] **`tsmc_signal_dashboard.py` 儀表板整合買回統計顯示**：
+  - `print_leading_indicator_panel()`：觸發時新增「買回機會統計」區塊，顯示成功率、平均回檔幅度、平均最低價出現日、中位數最低價出現日
+  - 供即時預警時提供可執行的買回參考
+
+- [x] **全測試套件驗證**：**831 passed**（含 signal_engine 83、leading_indicator 14、ai_agents 等全通過）
+
+- [x] **Git 提交**：分支 `feat/leading-indicator-crash-avoidance`，已提交所有變更
 
 ### 本次 session 完成（2026-07-21 領先指標回測參數化 / 交互式輸入 + 回測執行 + 儀表板 `--asof` 參數）
 
@@ -336,7 +360,8 @@
     - 修改：`backtest_crash_signals.csv`（含本益比 / 強制紅燈欄位）
     - 其它：`.claude/plans/`（若有內容）
 15. **[優先級：中] 2026-07-17 賣出買回回測待補資料**：2026-07-16 之後目前僅 1 個交易日（07-17），20 交易日窗未滿。待 Yahoo 日線更新到約 **2026-08-13** 後，用 `sell_below_count.py` 對 `2026-07-16` 補算「20 日內低於賣價天數」與 buyback edge，確認 2026-07-17 強制紅燈是否真為誤判。
-16. **[優先級：中] 兩分支 PR 已合併（2026-07-21）**：`fix/macro-adr-yahoo-cache-poisoning`（`46748c9`，PR #49）與 `refactor/remove-chip-resonance`（`4297380`，PR #50）已 push、開 PR 並 **merge 進 `develop`**。各自領先 1 commit、彼此獨立。⚠️ 合併後可本地刪除這兩個分支（未自動刪除，請人類確認）。
+16. **[優先級：中] 當前分支 `feat/leading-indicator-crash-avoidance` 待合併**：已完成 PE>30 崩盤預警回測 + 買回驗證 + 儀表板整合，測試 831 passed，需建立 PR 合併進 `develop`。
+17. **[優先級：低] `test_data_cache.py` 待確認**：測試期望 9 個 policy、每個 keep_count=3，實際新增了 `leading_indicator_history`（keep_count=10），需與使用者確認是否更新測試期望值（目前測試通過但未同步預期值）。
 
 ---
 
