@@ -101,13 +101,15 @@ def cluster_triggers(
 
 
 def _get_trigger_value(record: Dict[str, Any], key: str) -> bool:
-    """從記錄中取得觸發值，支援巢狀鍵（如 'li_opt.triggered'）"""
+    """從記錄中取得觸發值，支援巢狀鍵（如 'li_opt.triggered'）。"""
     if "." in key:
         parts = key.split(".")
         val = record
         for part in parts:
             if isinstance(val, dict):
                 val = val.get(part)
+            elif hasattr(val, part):
+                val = getattr(val, part)
             else:
                 return False
         return bool(val)

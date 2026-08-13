@@ -14,6 +14,13 @@ from .buyback_analyzer import BuybackSummary
 from .cluster import TriggerCluster
 
 
+def _detail_get(detail, key: str, default=None):
+    """Read either an EvaluationDetail dataclass or legacy dict detail."""
+    if isinstance(detail, dict):
+        return detail.get(key, default)
+    return getattr(detail, key, default)
+
+
 def print_evaluation(result: EvaluationResult, label: str = "",
                      crash_threshold: float = -5.0, warning_window: int = 10) -> None:
     """
@@ -36,18 +43,21 @@ def print_evaluation(result: EvaluationResult, label: str = "",
     print("-"*70)
 
     for d in result.tp_details:
-        cl = d["cluster"]
+        cl = _detail_get(d, "cluster", {})
         print(f"  ✅ 群集 {cl['start_date']}~{cl['end_date']} → "
-              f"{d['lead_days']}日後崩盤 {d['crash_date']} ({d['crash_return']:+.2f}%)")
+              f"{_detail_get(d, 'lead_days')}日後崩盤 "
+              f"{_detail_get(d, 'crash_date')} ({_detail_get(d, 'crash_return'):+.2f}%)")
 
     for d in result.fn_details:
-        near = f" (最近群集結束: {d['nearest_cluster_end']})" if d.get("nearest_cluster_end") else " (前無群集)"
-        print(f"  ❌ 崩盤 {d['crash_date']} ({d['crash_return']:+.2f}%){near}")
+        nearest = _detail_get(d, "nearest_cluster_end")
+        near = f" (最近群集結束: {nearest})" if nearest else " (前無群集)"
+        print(f"  ❌ 崩盤 {_detail_get(d, 'crash_date')} "
+              f"({_detail_get(d, 'crash_return'):+.2f}%){near}")
 
     for d in result.fp_details[:10]:
-        cl = d["cluster"]
+        cl = _detail_get(d, "cluster", {})
         print(f"  ⚠️ 群集 {cl['start_date']}~{cl['end_date']} → "
-              f"未來 {warning_window} 日最大跌幅 {d['max_drop_in_window']:+.2f}%")
+              f"未來 {warning_window} 日最大跌幅 {_detail_get(d, 'max_drop_in_window'):+.2f}%")
 
     if len(result.fp_details) > 10:
         print(f"  ... 及其他 {len(result.fp_details) - 10} 群")
@@ -255,10 +265,12 @@ def generate_markdown_report(
         lines.append("| 群集區間 | 代表日 | 領先天數 | 崩盤日 | 崩盤跌幅 |")
         lines.append("|----------|--------|----------|--------|----------|")
         for d in evaluation.tp_details:
-            cl = d["cluster"]
+            cl = _detail_get(d, "cluster", {})
             lines.append(f"| {cl['start_date']}~{cl['end_date']} | "
                         f"{cl.get('rep_date', '-') or '-'} | "
-                        f"{d['lead_days']} | {d['crash_date']} | {d['crash_return']:+.2f}% |")
+                        f"{_detail_get(d, 'lead_days')} | "
+                        f"{_detail_get(d, 'crash_date')} | "
+                        f"{_detail_get(d, 'crash_return'):+.2f}% |")
         lines.append("")
 
     # FN 明細
@@ -268,8 +280,9 @@ def generate_markdown_report(
         lines.append("| 崩盤日 | 崩盤跌幅 | 最近群集結束 |")
         lines.append("|--------|----------|--------------|")
         for d in evaluation.fn_details:
-            near = d.get("nearest_cluster_end", "無")
-            lines.append(f"| {d['crash_date']} | {d['crash_return']:+.2f}% | {near} |")
+            near = _detail_get(d, "nearest_cluster_end", "無") or "無"
+            lines.append(f"| {_detail_get(d, 'crash_date')} | "
+                        f"{_detail_get(d, 'crash_return'):+.2f}% | {near} |")
         lines.append("")
 
     # FP 明細
@@ -279,9 +292,10 @@ def generate_markdown_report(
         lines.append("| 群集區間 | 代表日 | 窗口內最大跌幅 |")
         lines.append("|----------|--------|----------------|")
         for d in evaluation.fp_details[:20]:
-            cl = d["cluster"]
+            cl = _detail_get(d, "cluster", {})
             lines.append(f"| {cl['start_date']}~{cl['end_date']} | "
-                        f"{cl.get('rep_date', '-') or '-'} | {d['max_drop_in_window']:+.2f}% |")
+                        f"{cl.get('rep_date', '-') or '-'} | "
+                        f"{_detail_get(d, 'max_drop_in_window'):+.2f}% |")
         if len(evaluation.fp_details) > 20:
             lines.append(f"| ... | ... | ... (共 {len(evaluation.fp_details)} 筆) |")
         lines.append("")

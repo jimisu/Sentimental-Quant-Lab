@@ -14,7 +14,7 @@
   3) 往前五個交易日無單日大跌 > 5%
 
 輸出：每個掃描交易日（日期 / 是否觸發 / 收盤價 / 三條件數值），
-以及觸發天數與各觸發日收盤價；連續 3 個交易日未觸發即停止。
+以及觸發天數與各觸發日收盤價；連續 10 個交易日未觸發即停止。
 
 資料全程來自 local_cache，不觸網。
 
@@ -24,83 +24,65 @@
   python leading_indicator_backtest.py --latest     # 從最新交易日往前回測
 """
 
-import json
-import datetime as dt
 import argparse
-from datetime import datetime, timedelta
+import sys
+from typing import List, Dict
 
-import pandas as pd
+from backtest_core import (
+    BacktestDataLoader,
+    CachedDataPaths,
+    EPSTimeline,
+    LeadingIndicatorAnalyzer,
+    LeadingIndicatorConfig,
+)
 
-from signal_engine import compute_leading_indicator, compute_trailing_pe
 
 # ── 回測參數 ──
 DEFAULT_START_DATE = "2026-06-01"
 STOP_NO_TRIGGER_STREAK = 10          # 連續 N 日未觸發即停止
-EPS_REPORT_LAG_DAYS = 50            # 季報視為「可得」的發布時滯（季底 + 50 日）
-
-# ── 讀取 local_cache ──
-def _load(path: str):
-    with open(path) as f:
-        return json.load(f)["data"]
+EPS_REPORT_LAG_DAYS = 50             # 季報視為「可得」的發布時滯（季底 + 50 日）
 
 
-INST_ROWS = _load("local_cache/hcd_finmind_inst_rows_2330_2023-04-06_2026-07-19.json")
-SHAREHOLDING = _load("local_cache/hcd_finmind_shareholding_2330_2023-04-06_2026-07-19.json")
-OHLC = _load("local_cache/hcd_yahoo_ohlcv_2330.TW_1672531200_1784419200.json")
-WIDE_FIN = json.load(
-    open("local_cache/finmind_TaiwanStockFinancialStatements_2330_wide_20260719_213936_266291.json")
-)["data"]
-
-# EPS 時間線：季底日 -> EPS（來自 wide 財報）
-EPS_BY_QEND = {}
-for r in WIDE_FIN:
-    if r["type"] == "EPS" and r.get("value") is not None:
-        EPS_BY_QEND[r["date"]] = float(r["value"])
-
-# 每季 EPS 的「可得日」= 季底 + 時滯；外加 (year, quarter) 解析
-EPS_KNOWN = []  # list of (report_date_str, year, quarter, eps)
-for qend, eps in sorted(EPS_BY_QEND.items()):
-    qe = datetime.strptime(qend, "%Y-%m-%d")
-    report = (qe + timedelta(days=EPS_REPORT_LAG_DAYS)).strftime("%Y-%m-%d")
-    year, month = qe.year, qe.month
-    quarter = {3: 1, 6: 2, 9: 3, 12: 4}[month]
-    EPS_KNOWN.append((report, year, quarter, eps))
-EPS_KNOWN.sort()
-
-
-def eps_asof(asof: str) -> dict:
-    """截至 asof 可得的近四季 EPS，組成 {(year, quarter): {"eps": v}}。"""
-    known = [(y, q, e) for (rep, y, q, e) in EPS_KNOWN if rep <= asof]
-    return {(y, q): {"eps": e} for (y, q, e) in known[-4:]}
-
-
-# 收盤價查表（日期 -> 收盤）
-CLOSE = {r["date"]: float(r["close"]) for r in OHLC}
-# 外資持股查表（日期 -> foreign_shares），用於取「最新 <= asof」
-SH_BY_DATE = {r["date"]: r for r in SHAREHOLDING}
-
-
-def foreign_shares_asof(asof: str) -> float:
-    cand = [d for d in SHAREHOLDING if d["date"] <= asof]
-    if not cand:
-        return None
-    return float(max(cand, key=lambda r: r["date"])["foreign_shares"])
-
-
-def price_df_asof(asof: str) -> pd.DataFrame:
-    rows = [{"date": r["date"], "台積電收盤價": float(r["close"])}
-            for r in OHLC if r["date"] <= asof]
-    return pd.DataFrame(rows)
-
-
-def run_backtest(start_date: str):
+def run_backtest(start_date: str) -> None:
     """執行回測，起始日為 start_date"""
-    # 交易日宇宙：同時具備法人買賣超與收盤價的日期，降冪排序
-    inst_dates = {r["date"] for r in INST_ROWS}
-    trading_days = sorted(
-        (d for d in inst_dates if d in CLOSE and d in SH_BY_DATE), reverse=True
+    # 1. 載入所有快取資料
+    print("載入快取資料...")
+    loader = BacktestDataLoader()
+    data = loader.load_all()
+
+    inst_rows = data["inst_rows"]
+    shareholding = data["shareholding"]
+    ohlc = data["ohlc"]
+    wide_fin = data["wide_fin"]
+
+    # 2. 建構 EPS 時間線
+    eps_timeline = EPSTimeline.from_wide_financial(wide_fin, EPS_REPORT_LAG_DAYS)
+
+    # 3. 建立分析器（標準版：PE > 30）
+    config = LeadingIndicatorConfig(pe_threshold=30.0)
+    analyzer = LeadingIndicatorAnalyzer(
+        config=config,
+        eps_timeline=eps_timeline,
+        inst_rows=inst_rows,
+        shareholding_data=shareholding,
+        ohlc_data=ohlc,
     )
 
+    # 4. 交易日宇宙：同時具備法人買賣超、收盤價、外資持股的日期
+    inst_dates = {r["date"] for r in inst_rows}
+    close_lookup = {r["date"]: float(r["close"]) for r in ohlc}
+    shareholding_lookup = {r["date"]: r for r in shareholding}
+
+    trading_days = sorted(
+        (d for d in inst_dates if d in close_lookup and d in shareholding_lookup),
+        reverse=True
+    )
+
+    if not trading_days:
+        print("❌ 找不到有效交易日，請檢查快取資料")
+        sys.exit(1)
+
+    # 5. 決定起始日
     if start_date not in trading_days:
         # 向後找最近的交易日
         earlier = [d for d in trading_days if d <= start_date]
@@ -109,24 +91,42 @@ def run_backtest(start_date: str):
     else:
         start = start_date
 
-    # 自 start 往前的交易日序列
+    # 6. 自 start 往前的交易日序列
     seq = [d for d in trading_days if d <= start]
 
-    print(f"{'日期':<12} {'觸發':<6} {'收盤價':>10} {'淨賣超佔比':>14} {'本益比':>10} {'近5日最大跌幅':>14}")
-    print("-" * 80)
+    # 7. 逐日計算領先指標
+    daily_results: List[Dict] = []
 
+    for d in seq:
+        li = analyzer.compute_for_date(d)
+        close = close_lookup[d]
+
+        daily_results.append({
+            "date": d,
+            "close": close,
+            "pe": li.pe_ratio if li.pe_ratio else 0.0,
+            "li": li,
+        })
+
+    # 8. 輸出結果
+    print_leading_indicator_scan(daily_results, STOP_NO_TRIGGER_STREAK)
+
+
+def print_leading_indicator_scan(daily_results: List[Dict], stop_streak: int) -> None:
+    """列印領先指標掃描結果"""
     triggered_days = []          # (date, close)
     streak_no_trigger = 0
     stop_date = None
     total_scanned = 0
 
-    for d in seq:
-        chip_data = [r for r in INST_ROWS if r["date"] <= d]
-        fsh = foreign_shares_asof(d)
-        close = CLOSE[d]
-        pe = compute_trailing_pe(close, eps_asof(d))
-        pdf = price_df_asof(d)
-        li = compute_leading_indicator(chip_data, fsh, pe, price_df=pdf)
+    print(f"{'日期':<12} {'觸發':<6} {'收盤價':>10} {'淨賣超佔比':>14} {'本益比':>10} {'近5日最大跌幅':>14}")
+    print("-" * 80)
+
+    for dr in daily_results:
+        d = dr["date"]
+        li = dr["li"]
+        close = dr["close"]
+        pe = dr["pe"]
 
         total_scanned += 1
         sell_pct = f"{li.sell_pct:.2f}%" if li.sell_pct is not None else "N/A"
@@ -140,14 +140,14 @@ def run_backtest(start_date: str):
             streak_no_trigger = 0
         else:
             streak_no_trigger += 1
-            if streak_no_trigger >= STOP_NO_TRIGGER_STREAK:
+            if streak_no_trigger >= stop_streak:
                 stop_date = d
                 break
 
     # ── 摘要 ──
     print("-" * 80)
     print(f"掃描交易日數（含停止日）: {total_scanned}")
-    print(f"連續 {STOP_NO_TRIGGER_STREAK} 日未觸發停止於: {stop_date}")
+    print(f"連續 {stop_streak} 日未觸發停止於: {stop_date}")
     print(f"領先指標觸發天數: {len(triggered_days)}")
     if triggered_days:
         print("觸發日與當日收盤價:")
@@ -165,9 +165,14 @@ def main():
 
     if args.latest:
         # 找最新交易日
-        inst_dates = {r["date"] for r in INST_ROWS}
+        loader = BacktestDataLoader()
+        data = loader.load_all()
+        inst_dates = {r["date"] for r in data["inst_rows"]}
+        close_lookup = {r["date"]: float(r["close"]) for r in data["ohlc"]}
+        shareholding_lookup = {r["date"]: r for r in data["shareholding"]}
         trading_days = sorted(
-            (d for d in inst_dates if d in CLOSE and d in SH_BY_DATE), reverse=True
+            (d for d in inst_dates if d in close_lookup and d in shareholding_lookup),
+            reverse=True
         )
         start_date = trading_days[0]
         print(f"使用最新交易日: {start_date}")
