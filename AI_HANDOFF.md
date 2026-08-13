@@ -7,16 +7,91 @@
 
 ## 📌 基本資訊
 
-- **目前所在分支 (Current Branch)**: `feat/leading-indicator-crash-avoidance`（基於 `develop`；領先指標崩盤預警回測 + 買回分析）
-- **本次交接時間 (Timestamp)**: 2026-07-21 (UTC+8)
-- **目前負責人/AI (Handler)**: Claude Code (Jimisu)
+- **目前所在分支 (Current Branch)**: `refactor/backtest-modularization`（基於 `develop`；回測腳本模組化重構）
+- **本次交接時間 (Timestamp)**: 2026-08-13 (UTC+8)
+- **目前負責人/AI (Handler)**: Codex
 - **價格資料來源**: `local_cache/hcd_yahoo_ohlcv_2330.TW_1672531200_1784419200.json`（2330.TW 日線，2023-01-03 ~ 2026-07-17，852 日；未觸網）
 
 ## ✅ 已完成的工作 (What's Done)
 
-### 本次 session 完成（2026-07-21 移除重複的「分析師整合結論」章節）
+### 本次 session 完成（2026-08-13 Codex 接手 / 分支 `refactor/backtest-modularization`）
 
-- [x] **移除報告最後的 `### 📝 分析師整合結論` 小節**：
+- [x] **讀取專案上下文**：
+  - 已讀 `PROJECT_ARCHITECTURE.md`、`README.md`、`AI_HANDOFF.md`、`AI_COLLABORATION_RULES.md`、`DEVELOPMENT_FLOW.md`、`CHANGELOG.md`、`config.py`、`sal/`、`backtest_core/` 與主要入口。
+  - 確認目前核心：`tsmc_signal_dashboard.py` 主儀表板、`signal_engine.py` 燈號/領先指標、`tsmc_ai_agents.py` Orchestrator、`sal/` Provider 抽象層、`backtest_core/` 回測模組。
+
+- [x] **執行主儀表板**：
+  - 指令：`python tsmc_signal_dashboard.py`
+  - 結果：成功跑完；因沙盒/網路 DNS 解析失敗，FinMind / SEC 即時抓取失敗，但程式成功用本機快取降級完成分析。
+  - 儀表板結果：`🟡 黃燈`，綜合健康得分 `79.7/100`。
+  - 領先指標：`🔴 觸發｜強制紅燈`；外資近兩個月累計賣超約 `237,708` 張，佔外資持股 `1.32%`；TTM P/E 約 `31.6`；近 5 日最大單日跌幅 `2.29%`。
+  - 執行過程出現 matplotlib cache directory warning（`~/.matplotlib` 不可寫，改用 `/tmp`），不影響結果。
+
+- [x] **Push 目前分支**：
+  - 使用者明確要求「把現在的 branch push」後執行。
+  - 指令：`git push -u origin refactor/backtest-modularization`
+  - 第一次因沙盒 DNS 無法解析 `github.com` 失敗；取得網路權限後重跑成功。
+  - 目前本地分支追蹤：`origin/refactor/backtest-modularization`
+  - GitHub PR 建立連結：`https://github.com/jimisu/Sentimental-Quant-Lab/pull/new/refactor/backtest-modularization`
+  - 注意：push 只包含已提交 commit；未提交工作樹變更未被 push。
+
+- [x] **測試兩支回測腳本並修復本輪發現的相容性問題**：
+  - `python leading_indicator_backtest.py --latest` ✅ 通過
+    - 使用最新交易日 `2026-07-17`
+    - 掃描 36 個交易日，觸發 25 天；因 2026-07-17 近 5 日最大單日跌幅 `7.29%`，當日不觸發。
+  - `python backtest_pe30_crash_avoidance.py --no-sim` 初跑失敗，已修復後 ✅ 通過
+    - 修復 1：`backtest_core/reporting.py` 的 `print_evaluation()` / Markdown 報告 detail 讀取支援 `EvaluationDetail` dataclass 與 legacy dict，避免 `AttributeError: 'EvaluationDetail' object has no attribute 'get'`。
+    - 修復 2：`backtest_core/cluster.py` 的 `_get_trigger_value()` 支援巢狀 dataclass 屬性（例如 `li.triggered`），避免列出 57 次觸發但群集數為 0 的假通過。
+    - 修復後結果：嚴格版 PE>30 觸發 57 次，合併成 4 個群集；Precision `25.0%`、Recall `12.5%`、F1 `16.7%`；買回成功率 `100.0%`，平均最大回檔 `4.09%`。
+
+- [x] **追加測試驗證**：
+  - 指令：`python -m pytest test_leading_indicator.py test_signal_engine.py -q`
+  - 結果：`97 passed in 0.07s`
+
+- [x] **目前 Git 狀態（交班時）**：
+  - 分支：`refactor/backtest-modularization...origin/refactor/backtest-modularization`
+  - 未提交變更：
+    - `AI_HANDOFF.md`（本交班更新）
+    - `backtest_core/cluster.py`（本輪修復）
+    - `backtest_core/reporting.py`（本輪修復）
+    - `backtest_crash_signals.csv`（本輪之前已存在的未提交變更）
+    - `backtest_pe30_crash_avoidance.py`（本輪之前已存在的未提交重構）
+    - `leading_indicator_backtest.py`（本輪之前已存在的未提交重構）
+
+### 本次 session 完成（2026-07-22 回測腳本模組化重構 / 分支 `refactor/backtest-modularization`）
+
+- [x] **建立 `backtest_core/` 模組化套件**：將 4 支回測腳本（`leading_indicator_backtest.py`、`leading_indicator_crash_avoidance_backtest.py`、`backtest_pe30_crash_avoidance.py`、`backtest_crash_signals.py`）的共通邏輯提取、去重、模組化
+  - `data_loader.py`：統一快取載入器（4 個 JSON 檔），支援自訂路徑與 lazy loading
+  - `eps_calculator.py`：EPS 時間線建構、TTM P/E 計算、各類查表函數
+  - `technical_indicators.py`：日報酬率、近 N 日最大跌幅、價格 DataFrame 建構
+  - `signal_analyzer.py`：領先指標分析器（三版本：標準版/優化版 PE>25/嚴格版 PE>30）+ 崩盤訊號完整分析器（四大面向）
+  - `cluster.py`：觸發日群集化（最大間隔 3 交易日）
+  - `evaluator.py`：TP/FP/FN、Precision/Recall/F1 評估
+  - `simulator.py`：策略模擬（避險持有窗口、冷卻期、買回觀察窗口）
+  - `buyback_analyzer.py`：專項買回機會分析（成功率、平均回檔、最低價天數、回升率）
+  - `reporting.py`：統一列印與 Markdown 報告生成
+  - `__init__.py`：統一公開 API
+  - `README.md`：完整 API 文檔、使用範例、來源腳本對照表
+
+- [x] **三種領先指標版本統一介面**：
+  ```python
+  # 只需切換一行
+  li = analyzer.compute_for_date(d)           # 標準版 (signal_engine 原版)
+  li = analyzer.compute_optimized_for_date(d) # 優化版 (PE>25, 提高召回)
+  li = analyzer.compute_strict_for_date(d)    # 嚴格版 (PE>30, 高精確)
+  ```
+
+- [x] **全測試套件驗證**：**829 passed**（含 signal_engine 83、leading_indicator 13、ai_agents 等全通過）
+
+- [x] **原始 4 支回測腳本零破壞驗證**：
+  - `python leading_indicator_backtest.py --latest` ✅
+  - `python backtest_pe30_crash_avoidance.py --no-sim` ✅
+  - `python leading_indicator_crash_avoidance_backtest.py --no-sim` ✅
+  - `python leading_indicator_backtest.py --start 2026-06-01` ✅
+
+- [x] **Git 狀態**：分支 `refactor/backtest-modularization`，`backtest_core/` 為 untracked 新增檔案，**尚未 commit**（待人類確認後再提交）
+
+### 本次 session 完成（2026-07-21 移除重複的「分析師整合結論」報告章節）
   - 該章節包含「核心矛盾」與「各維度因果鏈」內容，與章節八（已刪除）重複
   - 位於 `tsmc_ai_agents.py` 的 `_build_industry_analysis_section()` 方法中（原第 2485-2550 行）
   - 內容包含：「台積電當前的核心矛盾是：AI 結構性成長邏輯完整，且外資近期呈淨賣超（籌碼結構轉弱）；外資賣超原因待確認，可能為基本面轉弱或外部連動效應，建議搭配 macro_risk.py 燈號判讀。 技術面處於中檔，多頭排列反映的是慣性而非新的買入訊號；外資 5 日累計大幅賣超，籌碼結構正在惡化；P/E 31.2 倍已反映多數利多，估值擴張空間有限。」及因果鏈圖表
@@ -372,6 +447,11 @@
 15. **[優先級：中] 2026-07-17 賣出買回回測待補資料**：2026-07-16 之後目前僅 1 個交易日（07-17），20 交易日窗未滿。待 Yahoo 日線更新到約 **2026-08-13** 後，用 `sell_below_count.py` 對 `2026-07-16` 補算「20 日內低於賣價天數」與 buyback edge，確認 2026-07-17 強制紅燈是否真為誤判。
 16. **[優先級：中] 當前分支 `feat/leading-indicator-crash-avoidance` 待合併**：已完成 PE>30 崩盤預警回測 + 買回驗證 + 儀表板整合，測試 831 passed，需建立 PR 合併進 `develop`。
 17. **[優先級：低] `test_data_cache.py` 待確認**：測試期望 9 個 policy、每個 keep_count=3，實際新增了 `leading_indicator_history`（keep_count=10），需與使用者確認是否更新測試期望值（目前測試通過但未同步預期值）。
+18. **[優先級：高] `refactor/backtest-modularization` 本地未提交變更待整理提交**：本分支已 push 到 `origin/refactor/backtest-modularization`，但目前仍有未提交變更，尚未包含在遠端 branch。建議下一步檢查 diff 後提交：
+    - `backtest_core/cluster.py`：支援 `li.triggered` 這類 dataclass 巢狀屬性，修復群集數為 0 的問題。
+    - `backtest_core/reporting.py`：支援 `EvaluationDetail` dataclass 與 legacy dict，修復 `print_evaluation()` 崩潰。
+    - `backtest_pe30_crash_avoidance.py` / `leading_indicator_backtest.py` / `backtest_crash_signals.csv`：為本輪之前已存在的未提交變更，提交前需與人類確認是否一起納入同一 commit 或拆分。
+    - `AI_HANDOFF.md`：本交班更新。
 
 ---
 
